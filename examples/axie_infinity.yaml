@@ -1,0 +1,214 @@
+# Axie Infinity (AXS + SLP) — play-to-earn dual token.
+# Famous failure case from 2022. Encoded with public design parameters that
+# were known PRE-collapse (late 2021). The verifier should flag FM1, FM2,
+# FM3, FM4 simultaneously — the same supply-side reinforcing triad the paper
+# warns about in §3.1.
+meta:
+  name: Axie Infinity
+  description: >-
+    Dual-token P2E. AXS is the governance/access token (capped); SLP is the
+    in-game medium of exchange (uncapped emission, fixed-cost breeding burn).
+    Implicit assumption of perpetual exponential player growth; verifier
+    should expose this as a counterexample under any non-positive growth.
+  archetype: play_to_earn_dual
+  nfrs:
+    resilience: 2
+    adaptability: 3
+    accessibility: 4
+    transparency: 4
+    proportionality: 3
+    circulation_speed: circulate_fast
+    governance_maturity: short_term
+
+tokens:
+  - id: AXS
+    function: [governance_right, access_right, store_of_value]
+    value_anchor: none
+    transferable: true
+    holding_incentive_present: true
+    holding_incentives:
+      - governance_rights
+      - staking
+    earning_mechanisms:
+      - algorithmic_issuance
+      - exchange_purchase
+    contribution_verification: smart_contract_automation
+    redemption_mechanism: open_market_exchange
+    offer_variety_K:
+      min: 5
+      max: 20            # gameplay modes / staking offerings
+    emission_rules:
+      - trigger:
+          kind: time_based
+          event_predicate: per_block_staking_reward
+        function:
+          sign: decreasing_positive
+          asymptotic_class:
+            family: constant
+            parameter_ranges:
+              c:
+                min: 50000
+                max: 150000      # AXS/week from staking + P2E
+    burn_rules:
+      - trigger:
+          kind: demand_driven
+          event_predicate: axie_breed
+          event_frequency:
+            family: unspecified
+            parameter_ranges:
+              value:
+                min: 0
+                max: 100000
+        function:
+          sign: always_negative
+          asymptotic_class:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 0.5
+              b:
+                min: 0
+                max: 5000
+    initial_distribution:
+      kind: pre_minted_reserve
+      amount:
+        min: 270000000
+        max: 270000000
+  - id: SLP
+    function: [medium_of_exchange]
+    value_anchor: none
+    transferable: true
+    holding_incentive_present: false
+    holding_incentives:
+      - none            # zero structural incentive to hold; spend on breed
+    earning_mechanisms:
+      - behavioral_reward
+    contribution_verification: smart_contract_automation
+    redemption_mechanism: specific_goods_or_services    # SLP is spent on breeding (goods)
+    offer_variety_K:
+      min: 1
+      max: 5             # very narrow utility (only breeding)
+    emission_rules:
+      - trigger:
+          kind: behavioral_event
+          event_predicate: player_adventure_or_pvp_win
+          event_frequency:
+            family: linear
+            parameter_ranges:
+              # event frequency scales with active player count
+              a:
+                min: 0
+                max: 10
+              b:
+                min: 100000
+                max: 100000000   # daily-active scale, unconstrained ceiling
+        function:
+          sign: always_positive
+          asymptotic_class:
+            family: constant
+            parameter_ranges:
+              # ~150 SLP per active player per day = ~1050/week
+              c:
+                min: 50
+                max: 1500
+    burn_rules:
+      - trigger:
+          kind: demand_driven
+          event_predicate: axie_breed
+          event_frequency:
+            # CRUCIAL: breeding demand depends on player growth, NOT player count.
+            # When growth slows, breeding demand collapses while emission continues.
+            family: unspecified
+            parameter_ranges:
+              value:
+                min: 0
+                max: 100000
+        function:
+          sign: always_negative
+          asymptotic_class:
+            family: constant
+            parameter_ranges:
+              c:
+                min: 600
+                max: 1300        # SLP per breed
+    initial_distribution:
+      kind: none
+
+cross_token_flows:
+  - source_token: SLP
+    source_event: axie_breed
+    target_token: AXS
+    target_action: burn
+    amount:
+      family: constant
+      parameter_ranges:
+        c:
+          min: 0.5
+          max: 1.0
+
+participants:
+  count_N:
+    min: 100000
+    max: 3000000
+  expected_Q:
+    # Daily SLP transactions; large but does NOT scale with breeding alone.
+    min: 1000000
+    max: 100000000
+  average_demand_d:
+    min: 1.0
+    max: 5.0
+  growth_g:
+    family: unspecified
+    parameter_ranges:
+      # CRITICAL: must include negative growth — that is the failure scenario.
+      value:
+        min: -0.5
+        max: 1.0
+  topology: well_mixed
+  agent_types:
+    - id: scholar          # earns SLP, sells immediately for fiat
+      fraction: 0.6
+      role: consumer       # consumes via spending, doesn't produce demand-side value
+      expected_holding_time:
+        expected_periods:
+          min: 0.1
+          max: 1.0
+      balance_share: 0.3
+    - id: manager
+      fraction: 0.3
+      role: governance_only
+      expected_holding_time:
+        expected_periods:
+          min: 1
+          max: 4
+      balance_share: 0.4
+    - id: breeder          # contributor: produces new Axies
+      fraction: 0.1
+      role: contributor
+      expected_holding_time:
+        expected_periods:
+          min: 1
+          max: 50
+      balance_share: 0.3
+
+governance:
+  type: centralized
+  rule_structure:
+    slp_emission_rate: single_entity
+    breeding_cost: single_entity
+    adventure_rewards: single_entity
+    pvp_rewards: single_entity
+    new_axie_supply: single_entity
+    economic_parameters: single_entity
+  monitoring_capacity_gamma:
+    min: 0.5
+    max: 0.8
+  sanction_structure:
+    kind: exclusion
+    S_normalized:
+      min: 0.5
+      max: 0.8
+  token_balance_gini:
+    min: 0.5
+    max: 0.7

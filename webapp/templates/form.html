@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Economy Verifier — Questionnaire</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='form.css') }}" />
+</head>
+<body>
+  <header class="page-header compact">
+    <div class="header-row">
+      <h1>Token Economy Verifier</h1>
+      <nav>
+        <a href="/yaml" class="nav-link">Advanced (YAML editor) →</a>
+      </nav>
+    </div>
+    <p class="subtitle">
+      Answer the questions on the left to describe your token economy.
+      The verifier runs the six failure-mode checks and shows
+      verdicts, critical values, and concrete redesign recommendations
+      on the right. Each question links to the failure modes it feeds
+      and the paper section that justifies it.
+    </p>
+    <details class="explainer">
+      <summary>How to use this</summary>
+      <ol>
+        <li>
+          Either fill in the form section by section, or click an
+          example below to pre-populate every field with a known
+          token economy (Bitcoin, Ethereum, MakerDAO, Curve, Axie).
+        </li>
+        <li>
+          Click <strong>Verify</strong>. The right pane shows a
+          per-failure-mode verdict with the critical parameter value
+          you'd need to clear, plus the structured-choice mechanisms
+          that satisfy it.
+        </li>
+        <li>
+          Tweak any field and click <strong>Verify</strong> again to
+          see the verdict update — this is how you explore the
+          design space.
+        </li>
+        <li>
+          Use <strong>Download YAML</strong> at the bottom to save
+          your spec, or <strong>Upload YAML</strong> to load one.
+        </li>
+      </ol>
+      <p>
+        <strong>"I don't know" is a valid answer.</strong> When you
+        leave a range field with a wide span (e.g. γ ∈ [0, 1]), the
+        verifier searches across the whole range and tells you the
+        critical value at which the verdict flips.
+      </p>
+    </details>
+  </header>
+
+  <div class="quick-actions">
+    <span class="qa-label">Load example:</span>
+    {% for ex in examples %}
+    <button type="button" class="example-btn" data-example="{{ ex }}">{{ ex }}</button>
+    {% endfor %}
+    <span class="qa-sep"></span>
+    <input type="file" id="upload-yaml" accept=".yaml,.yml" hidden />
+    <button type="button" id="upload-btn" class="ghost">Upload YAML…</button>
+    <button type="button" id="reset-btn" class="ghost">Reset form</button>
+  </div>
+
+  <main class="layout-form">
+    <form id="te-form" autocomplete="off">
+
+      <!-- =================================================== Stage 1 — Meta -->
+      <section class="form-stage" id="stage-meta">
+        <header class="stage-header">
+          <h2><span class="stage-num">1</span> System identity</h2>
+          <p class="stage-lead">
+            Name your token economy and pick the archetype that best
+            fits its intent. The archetype shapes which failure modes
+            apply most acutely.
+          </p>
+        </header>
+
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            <strong>Archetype</strong> drives sensible defaults and
+            highlights the failure modes most relevant to your design.
+            For example, a stablecoin's value-anchor question becomes
+            decisive (FM3); a play-to-earn dual token immediately
+            triggers FM1 + FM2 + FM3 + FM4 evaluation.
+          </p>
+          <p>
+            See <code>docs/specification-flow.md</code> Stage 1 for
+            archetype routing semantics.
+          </p>
+        </details>
+
+        <div class="field">
+          <label for="meta-name">Name</label>
+          <input type="text" id="meta-name" name="meta-name"
+                 placeholder="Acme Token Economy" required />
+        </div>
+
+        <div class="field">
+          <label for="meta-description">One-line description</label>
+          <input type="text" id="meta-description" name="meta-description"
+                 placeholder="Community reward token for volunteer work…" />
+        </div>
+
+        <div class="field">
+          <label for="meta-archetype">Archetype</label>
+          <select id="meta-archetype" name="meta-archetype">
+            {% for a in archetypes %}
+            <option value="{{ a }}">{{ a }}</option>
+            {% endfor %}
+          </select>
+          <p class="hint">
+            <code>native_protocol_asset</code> = Bitcoin, Ethereum.
+            <code>stablecoin</code> = DAI, USDC.
+            <code>governance_utility_pair</code> = MakerDAO, Curve.
+            <code>play_to_earn_dual</code> = Axie, STEPN.
+            <code>community_reward</code> = volunteer-reward systems.
+          </p>
+        </div>
+      </section>
+
+      <!-- =================================================== Stage 2 — Token design -->
+      <section class="form-stage" id="stage-token">
+        <header class="stage-header">
+          <h2><span class="stage-num">2</span> Token design <small>(Roadmap Group 1)</small></h2>
+          <p class="stage-lead">
+            For now the form supports a single token. Multi-token
+            systems (DAI/MKR, AXS/SLP) can be specified via the
+            advanced YAML editor.
+          </p>
+        </header>
+
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            These choices feed FM2 (velocity trap), FM4 (free-rider),
+            and FM5 (critical mass). The verifier derives γ
+            (monitoring capacity) from your <em>verification
+            mechanism</em> choice and τ (holding time floor) from
+            your <em>holding incentives</em>, so picking these
+            structurally is what unlocks accurate verdicts.
+          </p>
+        </details>
+
+        <div class="field">
+          <label for="token-id">Token ID</label>
+          <input type="text" id="token-id" name="token-id"
+                 placeholder="T" required />
+        </div>
+
+        <div class="field">
+          <label>Token function (1.1) — multi-select</label>
+          <div class="multi">
+            {% for f in token_functions %}
+            <label class="checkbox">
+              <input type="checkbox" name="token-function" value="{{ f }}" />
+              <span>{{ f.replace('_', ' ') }}</span>
+            </label>
+            {% endfor %}
+          </div>
+          <p class="hint">
+            Pure <code>medium_of_exchange</code> with no
+            <code>governance_right</code> or <code>store_of_value</code>
+            is most vulnerable to FM2 (velocity trap).
+          </p>
+        </div>
+
+        <div class="field">
+          <label>Earning mechanisms (1.2) — multi-select</label>
+          <div class="multi">
+            {% for em in earning_mechanisms %}
+            <label class="checkbox">
+              <input type="checkbox" name="token-earning" value="{{ em }}" />
+              <span>{{ em.replace('_', ' ') }}</span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="token-anchor">Value anchor (1.3)</label>
+          <select id="token-anchor" name="token-anchor">
+            {% for v in value_anchors %}
+            <option value="{{ v }}">{{ v.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
+          <label>Holding incentives (1.4) — multi-select</label>
+          <div class="multi">
+            {% for hi in holding_incentives %}
+            <label class="checkbox">
+              <input type="checkbox" name="token-holding" value="{{ hi }}" />
+              <span>{{ hi.replace('_', ' ') }}</span>
+            </label>
+            {% endfor %}
+          </div>
+          <p class="hint">
+            Each mechanism implies a τ floor (`none` ≈ 1 period;
+            `staking` / `governance_rights` / `time_locked_rewards`
+            ≈ 4 periods). The verifier takes the maximum across your
+            selections as the default τ when agent types don't pin
+            holding times directly.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="token-verification">Contribution verification (1.5)</label>
+          <select id="token-verification" name="token-verification">
+            <option value="">— not specified —</option>
+            {% for cv in verification_choices %}
+            <option value="{{ cv }}">{{ cv.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+          <p class="hint">
+            <strong>This is the elicitation handle for γ in FM4.</strong>
+            <code>physical_presence</code> implies γ ∈ [0.85, 0.95];
+            <code>self_reporting</code> implies γ ∈ [0.05, 0.20].
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="token-redemption">Redemption mechanism (1.6)</label>
+          <select id="token-redemption" name="token-redemption">
+            <option value="">— not specified —</option>
+            {% for rm in redemption_choices %}
+            <option value="{{ rm }}">{{ rm.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+          <p class="hint">
+            Combined with verification, drives FM4's temptation gap
+            T − R. <code>peer_to_peer_transfer</code> + demand-driven
+            burn is structurally incoherent — the verifier will warn.
+          </p>
+        </div>
+
+        <div class="field range-field">
+          <label>Offer variety K (1.7) — number of distinct redemption opportunities</label>
+          <div class="range">
+            <input type="number" name="token-K-min" min="1" step="1" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="token-K-max" min="1" step="1" placeholder="max" />
+          </div>
+          <p class="hint">
+            Drives FM4 (φ ≥ d/K) and FM5 (N ≥ 2Kd + 1). Use
+            min = max for a known value; a wide range tells the
+            verifier to sweep.
+          </p>
+        </div>
+      </section>
+
+      <!-- =================================================== Stage 3 — Emission -->
+      <section class="form-stage" id="stage-emission">
+        <header class="stage-header">
+          <h2><span class="stage-num">3</span> Emission <small>(Roadmap Group 2)</small></h2>
+          <p class="stage-lead">
+            One emission rule. For multiple emission rules or
+            piecewise schedules, use the advanced YAML editor.
+          </p>
+        </header>
+
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            Emission rate E(t) feeds FM1 (oversupply) and FM3
+            (burn coverage). The verifier needs the
+            <strong>asymptotic class</strong> of the function — not
+            its exact formula — and reasons over the parameter
+            ranges you commit to.
+          </p>
+        </details>
+
+        <div class="field">
+          <label for="emit-trigger">Emission basis (2.1)</label>
+          <select id="emit-trigger" name="emit-trigger">
+            {% for et in emission_triggers %}
+            <option value="{{ et }}">{{ et.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="emit-frequency">Event frequency family</label>
+          <select id="emit-frequency" name="emit-frequency">
+            <option value="constant">constant (same rate per period)</option>
+            <option value="linear">linear (grows with time / users)</option>
+            <option value="bounded_range">bounded_range (between min and max)</option>
+            <option value="unspecified">unspecified ("I don't know")</option>
+          </select>
+        </div>
+
+        <div class="field range-field">
+          <label>Frequency value range (per period)</label>
+          <div class="range">
+            <input type="number" name="emit-freq-min" step="any" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="emit-freq-max" step="any" placeholder="max" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="emit-sign">Function sign (2.2 step 1)</label>
+          <select id="emit-sign" name="emit-sign">
+            {% for s in function_signs %}
+            <option value="{{ s }}" {% if s == 'always_positive' %}selected{% endif %}>
+              {{ s.replace('_', ' ') }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="emit-class">Function asymptotic class</label>
+          <select id="emit-class" name="emit-class">
+            <option value="constant">constant — Y = c</option>
+            <option value="linear">linear — Y = a·x + b</option>
+            <option value="bounded_range">bounded_range — between bounds</option>
+            <option value="unspecified">unspecified</option>
+          </select>
+        </div>
+
+        <div class="field range-field">
+          <label>Tokens emitted per trigger (range)</label>
+          <div class="range">
+            <input type="number" name="emit-fn-min" step="any" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="emit-fn-max" step="any" placeholder="max" />
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================== Stage 4 — Burn -->
+      <section class="form-stage" id="stage-burn">
+        <header class="stage-header">
+          <h2><span class="stage-num">4</span> Burn <small>(Roadmap Group 3)</small></h2>
+          <p class="stage-lead">
+            Optional. Leave the trigger as <code>none</code> to declare
+            a no-burn design (FM3 will flag the structural risk).
+          </p>
+        </header>
+
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            FM3 distinguishes <em>demand-driven</em> burn (B(t)
+            tracks redemption volume — structurally sound) from
+            <em>rule-driven</em> burn (fixed schedule — drifts as
+            the system scales). No burn at all is the most-flagged
+            case.
+          </p>
+        </details>
+
+        <div class="field">
+          <label for="burn-trigger">Burn trigger (3.2)</label>
+          <select id="burn-trigger" name="burn-trigger">
+            <option value="none">none (no burn — supply only grows)</option>
+            <option value="demand_driven">demand_driven (fires on redemption)</option>
+            <option value="rule_driven">rule_driven (fixed schedule)</option>
+            <option value="threshold_driven">threshold_driven (when supply &gt; target)</option>
+            <option value="expiry">expiry (tokens expire after N periods)</option>
+          </select>
+        </div>
+
+        <div class="field range-field">
+          <label>Burn frequency value range (when trigger ≠ none)</label>
+          <div class="range">
+            <input type="number" name="burn-freq-min" step="any" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="burn-freq-max" step="any" placeholder="max" />
+          </div>
+        </div>
+
+        <div class="field range-field">
+          <label>Tokens burned per trigger (range)</label>
+          <div class="range">
+            <input type="number" name="burn-fn-min" step="any" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="burn-fn-max" step="any" placeholder="max" />
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================== Stage 5 — Governance -->
+      <section class="form-stage" id="stage-gov">
+        <header class="stage-header">
+          <h2><span class="stage-num">5</span> Governance <small>(Roadmap Group 4)</small></h2>
+        </header>
+
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            FM6 measures Γ — the fraction of governance decisions
+            controlled unilaterally. The seven decision levers below
+            (4.2) determine Γ directly. γ (monitoring capacity, FM4)
+            and S (sanction magnitude, FM4) round out the
+            free-rider story.
+          </p>
+        </details>
+
+        <div class="field">
+          <label for="gov-type">Governance type (4.1)</label>
+          <select id="gov-type" name="gov-type">
+            {% for gt in governance_types %}
+            <option value="{{ gt }}">{{ gt.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <fieldset class="rule-structure">
+          <legend>Rule structure (4.2): who controls each decision?</legend>
+          {% for decision in [
+            'emission_rate_adjustment',
+            'burn_rate_adjustment',
+            'participant_eligibility',
+            'provider_onboarding',
+            'exchange_ratios',
+            'reward_structure_modification',
+            'system_rule_modification',
+          ] %}
+          <div class="rs-row">
+            <span class="rs-label">{{ decision.replace('_', ' ') }}</span>
+            <select name="gov-rule-{{ decision }}">
+              <option value="">— not specified —</option>
+              {% for ca in controlling_actors %}
+              <option value="{{ ca }}">{{ ca.replace('_', ' ') }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endfor %}
+        </fieldset>
+
+        <div class="field range-field">
+          <label>Monitoring capacity γ (4.4) — overrides verification-derived γ</label>
+          <div class="range">
+            <input type="number" name="gov-gamma-min" min="0" max="1" step="0.01" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="gov-gamma-max" min="0" max="1" step="0.01" placeholder="max" />
+          </div>
+          <p class="hint">
+            Leave blank if you set <code>contribution_verification</code>
+            on the token; γ will be derived. Filled values take
+            precedence.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="gov-sanction-kind">Sanction kind (4.5)</label>
+          <select id="gov-sanction-kind" name="gov-sanction-kind">
+            {% for sk in sanction_kinds %}
+            <option value="{{ sk }}" {% if sk == 'warning' %}selected{% endif %}>
+              {{ sk.replace('_', ' ') }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field range-field">
+          <label>Sanction magnitude S (normalized, 0–1)</label>
+          <div class="range">
+            <input type="number" name="gov-S-min" min="0" max="1" step="0.05" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="gov-S-max" min="0" max="1" step="0.05" placeholder="max" />
+          </div>
+        </div>
+
+        <div class="field range-field">
+          <label>Token-balance Gini (FM6 secondary signal)</label>
+          <div class="range">
+            <input type="number" name="gov-gini-min" min="0" max="1" step="0.01" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="gov-gini-max" min="0" max="1" step="0.01" placeholder="max" />
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================== Stage 6 — Participants -->
+      <section class="form-stage" id="stage-participants">
+        <header class="stage-header">
+          <h2><span class="stage-num">6</span> Participants &amp; network <small>(Roadmap Group 5)</small></h2>
+        </header>
+
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            N, K, and d together drive FM5 (critical mass). Q drives
+            FM1 (oversupply). g(t) drives FM3 (burn-vs-growth). The
+            agent type list drives FM2 (velocity) via wealth-weighted
+            holding times.
+          </p>
+        </details>
+
+        <div class="field range-field">
+          <label>Participant count N (5.1)</label>
+          <div class="range">
+            <input type="number" name="part-N-min" min="1" step="1" placeholder="min" required />
+            <span>to</span>
+            <input type="number" name="part-N-max" min="1" step="1" placeholder="max" required />
+          </div>
+        </div>
+
+        <div class="field range-field">
+          <label>Expected transaction volume Q per period (5.2)</label>
+          <div class="range">
+            <input type="number" name="part-Q-min" min="0" step="any" placeholder="min" required />
+            <span>to</span>
+            <input type="number" name="part-Q-max" min="0" step="any" placeholder="max" required />
+          </div>
+        </div>
+
+        <div class="field range-field">
+          <label>Average demand d per participant per period (5.7)</label>
+          <div class="range">
+            <input type="number" name="part-d-min" min="0" step="any" placeholder="min" required />
+            <span>to</span>
+            <input type="number" name="part-d-max" min="0" step="any" placeholder="max" required />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="part-growth">Growth rate family (5.4)</label>
+          <select id="part-growth" name="part-growth">
+            <option value="constant">constant (g ≈ 0)</option>
+            <option value="linear">linear (steady growth)</option>
+            <option value="bounded_range">bounded_range (with explicit min/max)</option>
+            <option value="unspecified">unspecified — verifier sweeps</option>
+          </select>
+        </div>
+
+        <div class="field range-field">
+          <label>Growth value range</label>
+          <div class="range">
+            <input type="number" name="part-growth-min" step="any" placeholder="min (e.g. -0.1)" />
+            <span>to</span>
+            <input type="number" name="part-growth-max" step="any" placeholder="max (e.g. 0.5)" />
+          </div>
+          <p class="hint">
+            <strong>Forced "worst-case decline" question.</strong> Even
+            for fast-growth designs, supply a non-positive lower bound
+            here so the verifier explores the post-saturation collapse
+            scenario. This is the discipline Axie's designers lacked.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="part-topology">Interaction topology (5.8)</label>
+          <select id="part-topology" name="part-topology">
+            {% for t in topologies %}
+            <option value="{{ t }}">{{ t.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field range-field" id="topology-degree" hidden>
+          <label>Network average degree (per-participant connections)</label>
+          <div class="range">
+            <input type="number" name="part-degree-min" min="0" step="any" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="part-degree-max" min="0" step="any" placeholder="max" />
+          </div>
+          <p class="hint">
+            Network-corrected condition: <code>avg_degree ≥ 2·K·d</code>
+            (independent of N).
+          </p>
+        </div>
+      </section>
+
+      <!-- =================================================== Stage 7 — Agent types -->
+      <section class="form-stage" id="stage-agents">
+        <header class="stage-header">
+          <h2><span class="stage-num">7</span> Agent types <small>(Roadmap 5.5–5.6)</small></h2>
+          <p class="stage-lead">
+            Add one or more agent types. Their fractions must sum to
+            ~1.0. Holding times feed τ̄ (FM2); roles feed φ (FM4).
+          </p>
+        </header>
+
+        <div id="agent-types-container">
+          <!-- Agent rows injected by JS -->
+        </div>
+
+        <button type="button" id="add-agent-btn" class="ghost">+ Add agent type</button>
+      </section>
+
+      <!-- =================================================== Stage 8 — NFRs -->
+      <section class="form-stage" id="stage-nfrs">
+        <header class="stage-header">
+          <h2><span class="stage-num">8</span> Non-functional requirements</h2>
+          <p class="stage-lead">
+            These declarations reweight verdicts. NFR6 +
+            <code>circulate_fast</code> turns a velocity-trap finding
+            into <code>pass_as_intended</code>; NFR7 +
+            <code>indefinite</code> + centralized governance turns FM6
+            capture into <code>pass_as_intended</code>.
+          </p>
+        </header>
+
+        {% for nfr_id, nfr_name in [
+          ('resilience', 'NFR1: Resilience'),
+          ('adaptability', 'NFR2: Adaptability'),
+          ('accessibility', 'NFR3: Accessibility'),
+          ('transparency', 'NFR4: Transparency'),
+          ('proportionality', 'NFR5: Proportionality'),
+        ] %}
+        <div class="field nfr-rating">
+          <label>{{ nfr_name }} (1 = not important, 5 = critical)</label>
+          <div class="rating-row">
+            {% for n in [1, 2, 3, 4, 5] %}
+            <label class="rating">
+              <input type="radio" name="nfr-{{ nfr_id }}" value="{{ n }}" {% if n == 3 %}checked{% endif %} />
+              <span>{{ n }}</span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+
+        <div class="field">
+          <label for="nfr-circulation">NFR6: Circulation speed</label>
+          <select id="nfr-circulation" name="nfr-circulation">
+            {% for cs in circulation_speeds %}
+            <option value="{{ cs }}" {% if cs == 'balanced' %}selected{% endif %}>{{ cs.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="nfr-maturity">NFR7: Governance maturity timeline</label>
+          <select id="nfr-maturity" name="nfr-maturity">
+            {% for gm in governance_maturities %}
+            <option value="{{ gm }}" {% if gm == 'medium_term' %}selected{% endif %}>{{ gm.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </section>
+
+      <!-- =================================================== Submit -->
+      <section class="form-actions">
+        <button type="button" id="verify-btn" class="primary">▶ Verify</button>
+        <button type="button" id="download-btn" class="ghost">⬇ Download YAML</button>
+        <span id="verify-status"></span>
+      </section>
+    </form>
+
+    <!-- ====================================== Right column: verdict -->
+    <aside class="layout-verdict" id="verdict-pane">
+      <div class="verdict-empty" id="verdict-empty">
+        <h2>Verdict</h2>
+        <p>
+          The right pane will show the per-failure-mode verdict
+          here once you click <strong>Verify</strong>. For each
+          failure mode, you'll see:
+        </p>
+        <ul>
+          <li><strong>Status</strong> — pass, fail, pass-as-intended, inconclusive, or N/A.</li>
+          <li><strong>Critical value</strong> — the threshold parameter you'd need to clear.</li>
+          <li><strong>Recommendation</strong> — a concrete redesign instruction with mechanism options ranked safe / partially safe / unsafe.</li>
+          <li><strong>Counterexample</strong> — a concrete failing assignment with binding-constraint indicator.</li>
+        </ul>
+        <p>
+          Click an example above to see what a worked verdict looks
+          like.
+        </p>
+      </div>
+      <div id="verdict-content" hidden>
+        <h2>Verdict</h2>
+        <div id="report-summary"></div>
+        <div id="coherence-issues"></div>
+        <div id="verdict-cards"></div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="page-footer">
+    <p>
+      Tier-1 verifier (Z3 + closed-form critical-value extraction).
+      Documentation: <code>docs/proofs/</code> for the math,
+      <code>docs/elicitation-mapping.md</code> for the question →
+      parameter table, <code>docs/recommendation-shapes.md</code>
+      for verdict semantics.
+    </p>
+  </footer>
+
+  <!-- Pass enum data to JS -->
+  <script id="enums-data" type="application/json">
+{
+  "agent_roles": {{ agent_roles | tojson }},
+  "asymptotic_families": {{ asymptotic_families | tojson }},
+  "function_signs": {{ function_signs | tojson }}
+}
+  </script>
+  <script src="{{ url_for('static', filename='form.js') }}"></script>
+  <script src="{{ url_for('static', filename='verdict.js') }}"></script>
+</body>
+</html>

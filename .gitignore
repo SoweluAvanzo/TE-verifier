@@ -1,0 +1,42 @@
+# Environment / secrets
+.env
+.env.*
+*.env
+secrets/
+*.pem
+*.key
+credentials*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Tests / type-checkers
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local-only files (not for the public repo)
+.claude/settings.local.json
+CLAUDE.md
+Roadmap Simulatore Irene.docx
+Six_Failure_Modes__A_Pre_Deployment_Diagnostic_Framework_for_Tokenized_Collaborative_Economies.pdf

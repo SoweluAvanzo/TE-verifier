@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Economy Verifier</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header class="page-header">
+    <h1>Token Economy Verifier</h1>
+    <p class="subtitle">
+      A pre-deployment diagnostic for community token economies, based on
+      the six failure-mode framework
+      (<em>Domenicale &amp; Avanzo &amp; Schifanella, DLT2026</em>).
+    </p>
+    <details class="explainer">
+      <summary>How does this work?</summary>
+      <p>
+        The verifier checks your token-economy design against six formal
+        sustainability conditions from §3 of the paper. For each
+        condition, it either proves the condition holds across all
+        plausible parameter values or returns a concrete counterexample
+        — a parameter assignment that triggers the failure — together
+        with a critical value showing exactly what you'd need to change.
+      </p>
+      <p>
+        The questions you answer fall into five groups (token design,
+        emission, burn, governance, participants &amp; network) plus
+        seven non-functional requirements. Most parameters are
+        structured choices; a few are numeric ranges. <strong>"I don't
+        know" is a legitimate answer</strong> — the verifier searches
+        across all plausible values for fields you can't pin down.
+      </p>
+      <p>
+        The verdict for each failure mode includes:
+      </p>
+      <ul>
+        <li><strong>Status:</strong> pass, fail, pass-as-intended (when an NFR you declared makes the "failure" intentional), inconclusive, or not-applicable.</li>
+        <li><strong>Critical value:</strong> the boundary parameter value at which the verdict flips. For example, FM4 (free-rider collapse) reports γ\* — the minimum monitoring capacity at which cooperation is structurally viable.</li>
+        <li><strong>Recommendation:</strong> a concrete numeric instruction you can act on, plus the structured-choice mechanisms that satisfy the threshold.</li>
+        <li><strong>Counterexample:</strong> a specific failing assignment with a binding-constraint indicator showing which clause failed.</li>
+      </ul>
+    </details>
+  </header>
+
+  <section class="explainer-grid">
+    <h2>The six failure modes</h2>
+    <p class="lead">
+      Each card below explains <em>why</em> we check this condition,
+      <em>what a violation looks like in the real world</em>, and
+      <em>which design knobs</em> you can move. The verdict screen
+      displays the formal verification result alongside this context.
+    </p>
+    <div class="fm-cards">
+      {% for fm_id, cond in conditions.items() %}
+      <article class="fm-card" id="fm-card-{{ fm_id }}">
+        <header>
+          <span class="fm-badge">{{ fm_id }}</span>
+          <h3>{{ cond.name }}</h3>
+          <span class="paper-ref">{{ cond.paper_section }}</span>
+        </header>
+        <details>
+          <summary>{{ cond.plain_statement }}</summary>
+          <h4>Why it matters</h4>
+          <p>{{ cond.why_it_matters }}</p>
+          <h4>Real-world signal</h4>
+          <p>{{ cond.real_world_signal }}</p>
+          <h4>Formal condition</h4>
+          <pre>{{ cond.sustainability_ascii }}</pre>
+          <h4>Design knobs you can move</h4>
+          <ul>
+            {% for path, label in cond.design_knobs %}
+            <li><code>{{ path }}</code> — {{ label }}</li>
+            {% endfor %}
+          </ul>
+          <h4>Elicitation hooks (Roadmap docx questions)</h4>
+          <p>
+            {% for q in cond.elicitation_questions %}<code>{{ q }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+          </p>
+          {% if cond.nfr_reweightings %}
+          <h4>NFR reweightings</h4>
+          <ul>
+            {% for nfr_id, effect in cond.nfr_reweightings %}
+            <li><strong>{{ nfr_id }}:</strong> {{ effect }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </details>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="verifier-panel">
+    <h2>Verify a token economy</h2>
+    <p class="lead">
+      Load one of the case-study YAMLs to see what a worked example
+      looks like, edit it to explore the design space, or paste your
+      own TE-IR. Click Verify to run the six failure-mode checks.
+    </p>
+
+    <div class="example-loader">
+      <span>Load example:</span>
+      {% for ex in examples %}
+      <button type="button" class="example-btn" data-example="{{ ex }}">
+        {{ ex }}
+      </button>
+      {% endfor %}
+    </div>
+
+    <textarea id="yaml-input" rows="30" spellcheck="false"
+              placeholder="# Click an example above to load a starter YAML."></textarea>
+
+    <div class="verify-row">
+      <button type="button" id="verify-btn" class="primary">Verify</button>
+      <span id="verify-status"></span>
+    </div>
+  </section>
+
+  <section id="report-section" class="report hidden">
+    <h2>Verification report</h2>
+    <div id="report-summary"></div>
+    <div id="coherence-issues"></div>
+    <div id="verdict-cards"></div>
+  </section>
+
+  <footer class="page-footer">
+    <p>
+      Tier-1 verifier (Z3 + closed-form critical-value extraction).
+      Source code, proofs, and full documentation in the repository.
+    </p>
+  </footer>
+
+  <script src="{{ url_for('static', filename='verdict.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

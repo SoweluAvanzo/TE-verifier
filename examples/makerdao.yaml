@@ -1,0 +1,184 @@
+# MakerDAO (DAI + MKR) — collateral-backed stablecoin + governance pair.
+# Encoded against TE-IR v0.1. Tier-1 model: cross-token flows and external
+# signals (oracle delays) are NOT modeled — that is Tier-2 work and is
+# documented in docs/case-studies.md as the gap that prevents the verifier
+# from reproducing Black Thursday at this tier.
+meta:
+  name: MakerDAO
+  description: >-
+    Decentralized stablecoin DAI backed by ETH (and other) collateral, with
+    MKR as the governance token whose burn comes from stability-fee surplus.
+  archetype: governance_utility_pair
+  nfrs:
+    resilience: 4
+    adaptability: 4
+    accessibility: 3
+    transparency: 5
+    proportionality: 4
+    circulation_speed: circulate_fast
+    governance_maturity: short_term
+
+tokens:
+  - id: DAI
+    function: [medium_of_exchange, unit_of_account]
+    value_anchor: pegged
+    transferable: true
+    holding_incentive_present: false
+    offer_variety_K:
+      min: 1000
+      max: 100000
+    emission_rules:
+      - trigger:
+          kind: behavioral_event
+          event_predicate: vault_collateral_locked
+          event_frequency:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 100
+              b:
+                min: 100000
+                max: 5000000      # DAI minted per week
+        function:
+          sign: always_positive
+          asymptotic_class:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 50
+              b:
+                min: 50000
+                max: 2000000
+    burn_rules:
+      - trigger:
+          kind: demand_driven
+          event_predicate: vault_debt_repaid_or_liquidated
+        function:
+          sign: always_negative
+          asymptotic_class:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 50
+              b:
+                min: 50000
+                max: 2000000      # closely tracks DAI minting in steady state
+    initial_distribution:
+      kind: none
+  - id: MKR
+    function: [governance_right]
+    value_anchor: none
+    transferable: true
+    holding_incentive_present: true
+    emission_rules: []  # no scheduled emission; emergency mints not modeled at Tier-1
+    burn_rules:
+      - trigger:
+          kind: demand_driven
+          event_predicate: surplus_auction_completed
+          event_frequency:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 5
+              b:
+                min: 0
+                max: 50           # auctions per week
+        function:
+          sign: always_negative
+          asymptotic_class:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 1
+              b:
+                min: 0
+                max: 200          # MKR burned per week from surplus
+    initial_distribution:
+      kind: pre_minted_reserve
+      amount:
+        min: 1000000
+        max: 1000000
+
+cross_token_flows:
+  - source_token: DAI
+    source_event: stability_fees_accrued > debt_auction_threshold
+    target_token: MKR
+    target_action: burn
+    amount:
+      family: linear
+      parameter_ranges:
+        a:
+          min: 0
+          max: 1
+        b:
+          min: 0
+          max: 100
+
+participants:
+  count_N:
+    min: 10000
+    max: 200000
+  expected_Q:
+    min: 100000
+    max: 5000000
+  average_demand_d:
+    min: 0.5
+    max: 5.0
+  growth_g:
+    family: linear
+    parameter_ranges:
+      a:
+        min: 0.0
+        max: 0.05
+      b:
+        min: 0.0
+        max: 0.02
+  topology: well_mixed
+  agent_types:
+    - id: vault_owner
+      fraction: 0.7
+      expected_holding_time:
+        expected_periods:
+          min: 4
+          max: 52
+      balance_share: 0.5
+    - id: dai_user
+      fraction: 0.25
+      expected_holding_time:
+        expected_periods:
+          min: 0.5
+          max: 4
+      balance_share: 0.4
+    - id: mkr_governor
+      fraction: 0.05
+      expected_holding_time:
+        expected_periods:
+          min: 50
+          max: 200
+      balance_share: 0.1
+
+governance:
+  type: dao
+  rule_structure:
+    stability_fee: token_holder_vote
+    collateral_onboarding: token_holder_vote
+    emergency_shutdown: token_holder_vote
+    debt_ceiling: token_holder_vote
+    liquidation_ratio: token_holder_vote
+    oracle_source: token_holder_vote
+  monitoring_capacity_gamma:
+    min: 0.95
+    max: 1.0
+  sanction_structure:
+    kind: economic
+    S_normalized:
+      min: 0.7
+      max: 0.9
+  token_balance_gini:
+    min: 0.55
+    max: 0.75

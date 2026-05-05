@@ -1,0 +1,137 @@
+# Ethereum (post-Merge, EIP-1559) — demand-burning fee economy.
+# Encoded against TE-IR v0.1. Public parameters as of late 2024.
+meta:
+  name: Ethereum
+  description: >-
+    Post-Merge proof-of-stake Ethereum with EIP-1559 base fee burn.
+    Demand-driven burn proportional to transaction throughput.
+  archetype: native_protocol_asset
+  nfrs:
+    resilience: 5
+    adaptability: 3
+    accessibility: 3
+    transparency: 5
+    proportionality: 4
+    circulation_speed: balanced
+    governance_maturity: medium_term
+
+tokens:
+  - id: ETH
+    function: [medium_of_exchange, store_of_value, governance_right]
+    value_anchor: none
+    transferable: true
+    holding_incentive_present: true
+    offer_variety_K:
+      min: 1000
+      max: 100000
+    emission_rules:
+      - trigger:
+          kind: time_based
+          event_predicate: per_slot
+        function:
+          sign: always_positive
+          asymptotic_class:
+            family: linear
+            parameter_ranges:
+              # Per-period (week) issuance rate over current ~30M ETH staked
+              # is ~10000-15000 ETH/week, well-bounded.
+              a:
+                min: 0
+                max: 50          # rate of growth per period
+              b:
+                min: 8000
+                max: 16000        # baseline issuance per week
+    burn_rules:
+      - trigger:
+          kind: demand_driven
+          event_predicate: transaction_included
+          event_frequency:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 1000
+              b:
+                min: 1000000
+                max: 10000000     # transactions per week
+        function:
+          sign: always_negative
+          asymptotic_class:
+            family: linear
+            parameter_ranges:
+              # Burn ≈ base_fee × gas_used aggregated to per-week.
+              # Historical range ~5000-30000 ETH/week, can exceed issuance.
+              a:
+                min: 0
+                max: 100
+              b:
+                min: 5000
+                max: 30000
+    initial_distribution:
+      kind: pre_minted_reserve
+      amount:
+        min: 60000000
+        max: 60000000
+
+participants:
+  count_N:
+    min: 5000000
+    max: 50000000
+  expected_Q:
+    min: 5000000
+    max: 30000000
+  average_demand_d:
+    min: 1.0
+    max: 10.0
+  growth_g:
+    family: log
+    parameter_ranges:
+      a:
+        min: 0.0
+        max: 0.1
+      b:
+        min: 0.0
+        max: 0.05
+  topology: well_mixed
+  agent_types:
+    - id: hodler
+      fraction: 0.5
+      expected_holding_time:
+        expected_periods:
+          min: 50
+          max: 150
+      balance_share: 0.6
+    - id: defi_user
+      fraction: 0.3
+      expected_holding_time:
+        expected_periods:
+          min: 4
+          max: 30
+      balance_share: 0.2
+    - id: validator
+      fraction: 0.2
+      expected_holding_time:
+        expected_periods:
+          min: 50
+          max: 200
+      balance_share: 0.2
+
+governance:
+  type: hybrid
+  rule_structure:
+    protocol_change: committee
+    issuance_curve: not_adjustable
+    base_fee_target: smart_contract
+    eip_acceptance: committee
+    validator_rules: smart_contract
+  monitoring_capacity_gamma:
+    min: 0.95
+    max: 1.0
+  sanction_structure:
+    kind: economic
+    S_normalized:
+      min: 0.7
+      max: 0.95
+  token_balance_gini:
+    min: 0.5
+    max: 0.7

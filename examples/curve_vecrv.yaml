@@ -1,0 +1,184 @@
+# Curve / veCRV — vote-escrow governance pair.
+# Encoded against TE-IR v0.1. Time-decaying veCRV positions are approximated
+# at Tier-1 by giving veCRV a continuous burn rule; the per-position decay
+# semantics are Tier-2 work (LinearlyDecayingBalance IR construct).
+meta:
+  name: Curve / veCRV
+  description: >-
+    DEX governance via vote-escrow tokens. Locking CRV mints non-transferable
+    veCRV with voting power decaying linearly over the lock period (max 4y).
+    No protocol-level CRV burn; "Curve Wars" concentration is real.
+  archetype: governance_utility_pair
+  nfrs:
+    resilience: 4
+    adaptability: 3
+    accessibility: 3
+    transparency: 5
+    proportionality: 4
+    circulation_speed: retain_value
+    governance_maturity: short_term
+
+tokens:
+  - id: CRV
+    function: [governance_right, medium_of_exchange]
+    value_anchor: none
+    transferable: true
+    holding_incentive_present: true
+    offer_variety_K:
+      min: 100
+      max: 500             # number of pools and gauges
+    emission_rules:
+      - trigger:
+          kind: time_based
+          event_predicate: per_block
+        function:
+          sign: decreasing_positive
+          asymptotic_class:
+            # Per-period rate (CRV/week). Cumulative supply caps at 3.03B
+            # (implied by the decreasing schedule, not part of the rate class).
+            family: constant
+            parameter_ranges:
+              c:
+                min: 0
+                max: 15400000        # ~weekly emission early years
+    burn_rules: []           # no protocol-level CRV burn
+    initial_distribution:
+      kind: founder_allocation
+      amount:
+        min: 909000000
+        max: 909000000
+  - id: veCRV
+    function: [governance_right]
+    value_anchor: none
+    transferable: false
+    holding_incentive_present: true
+    emission_rules:
+      - trigger:
+          kind: behavioral_event
+          event_predicate: user_locks_crv
+          event_frequency:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 100
+              b:
+                min: 100
+                max: 100000
+        function:
+          sign: always_positive
+          asymptotic_class:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 1000
+              b:
+                min: 0
+                max: 1000000
+    burn_rules:
+      - trigger:
+          kind: demand_driven
+          event_predicate: lock_decay_per_block
+        function:
+          sign: decreasing_positive
+          asymptotic_class:
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 1000
+              b:
+                min: 0
+                max: 1000000
+    initial_distribution:
+      kind: none
+
+cross_token_flows:
+  - source_token: CRV
+    source_event: user.lock(amount, duration)
+    target_token: veCRV
+    target_action: mint
+    amount:
+      family: linear
+      parameter_ranges:
+        a:
+          min: 0
+          max: 1
+        b:
+          min: 0
+          max: 0
+  - source_token: veCRV
+    source_event: lock_expired
+    target_token: CRV
+    target_action: transfer
+    amount:
+      family: constant
+      parameter_ranges:
+        c:
+          min: 1
+          max: 1
+
+participants:
+  count_N:
+    min: 10000
+    max: 500000
+  expected_Q:
+    min: 100000
+    max: 5000000
+  average_demand_d:
+    min: 0.1
+    max: 5.0
+  growth_g:
+    family: log
+    parameter_ranges:
+      a:
+        min: 0.0
+        max: 0.05
+      b:
+        min: 0.0
+        max: 0.02
+  topology: network
+  agent_types:
+    - id: crv_holder
+      fraction: 0.6
+      expected_holding_time:
+        expected_periods:
+          min: 8
+          max: 50
+      balance_share: 0.3
+    - id: liquidity_provider   # contributor role for FM4
+      fraction: 0.3
+      expected_holding_time:
+        expected_periods:
+          min: 4
+          max: 30
+      balance_share: 0.2
+    - id: vecrv_locker
+      fraction: 0.1
+      expected_holding_time:
+        expected_periods:
+          min: 100
+          max: 208            # 4 years × 52 weeks
+      balance_share: 0.5
+
+governance:
+  type: dao
+  rule_structure:
+    gauge_weights: token_holder_vote
+    pool_admin_fee: token_holder_vote
+    emission_distribution: token_holder_vote
+    new_pool_listing: token_holder_vote
+    parameter_changes: token_holder_vote
+  monitoring_capacity_gamma:
+    min: 0.95
+    max: 1.0
+  sanction_structure:
+    kind: none
+    S_normalized:
+      min: 0
+      max: 0.05
+  token_balance_gini:
+    # veCRV is highly concentrated due to Convex aggregation (~50% peak).
+    min: 0.7
+    max: 0.85
