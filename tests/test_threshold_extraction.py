@@ -189,6 +189,9 @@ def test_fm5_n_star_closed_form() -> None:
 
 
 def test_fm5_n_star_passes_when_n_above_threshold() -> None:
+    """N=500 well above N*=101 (≈5× margin). After P3, the N* critical
+    value is hidden when N_lo > 2·N* — it's degenerate noise on a
+    comfortably-passing verdict."""
     te = _make_te(
         tokens=[_emission_token("T", K=10)],
         participants=ParticipantsSpec(
@@ -202,9 +205,10 @@ def test_fm5_n_star_passes_when_n_above_threshold() -> None:
     report = verify(te)
     fm5 = next(v for v in report.verdicts if "FM5" in v.failure_mode)
     assert fm5.status == Status.PASS
-    # Critical value still reported on PASS so the user sees the margin
-    n_star_cv = next(cv for cv in fm5.critical_values if cv.parameter == "N")
-    assert n_star_cv.value == pytest.approx(2 * 10 * 5 + 1, abs=EPS)
+    # P3: N* critical value suppressed when N_lo > 2× N*. The user
+    # already comfortably clears the threshold; surfacing the number
+    # adds noise.
+    assert not any(cv.parameter == "N" for cv in fm5.critical_values)
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +250,8 @@ def test_fm6_n_demote_closed_form() -> None:
 
 
 def test_fm6_n_demote_zero_when_passing() -> None:
-    """All distributed → n_demote* = 0."""
+    """All distributed → Γ = 0 → P3 suppresses the Γ-channel critical
+    values entirely (n_demote = 0 is degenerate noise)."""
     rules: dict[str, ControllingActor] = {
         f"decision_{i}": ControllingActor.TOKEN_HOLDER_VOTE for i in range(5)
     }
@@ -265,8 +270,11 @@ def test_fm6_n_demote_zero_when_passing() -> None:
     report = verify(te)
     fm6 = next(v for v in report.verdicts if "FM6" in v.failure_mode)
     assert fm6.status == Status.PASS
-    cv = next(c for c in fm6.critical_values if c.parameter == "n_demote")
-    assert cv.value == pytest.approx(0.0, abs=EPS)
+    # P3: when Γ is comfortably below threshold (here Γ=0), neither
+    # `Gamma <= threshold` nor `n_demote >= 0` is surfaced — they are
+    # degenerate critical values on a passing verdict.
+    assert not any(c.parameter == "n_demote" for c in fm6.critical_values)
+    assert not any(c.parameter == "Gamma" for c in fm6.critical_values)
 
 
 # ---------------------------------------------------------------------------
@@ -463,17 +471,22 @@ _CASE_STUDIES = [
 
 
 @pytest.mark.parametrize("name", _CASE_STUDIES)
-def test_case_study_critical_values_populated(name: str) -> None:
-    """Every case-study verdict carries critical_values now (or has a
-    well-justified reason to be empty: NOT_APPLICABLE)."""
+def test_case_study_actionable_verdicts_have_critical_values(name: str) -> None:
+    """Every actionable case-study verdict carries critical_values.
+
+    P3 contract: critical values are surfaced when actionable (FAIL,
+    INCONCLUSIVE, PASS_AS_INTENDED, or PASS verdicts close to the
+    binding edge). PASS verdicts with comfortable margin may have an
+    empty critical_values list — this is intentional (degenerate
+    values like ``n_demote ≥ 0`` are degenerate noise and have been
+    suppressed).
+    """
     from tests.conftest import report_for
 
     report = report_for(name)
     for v in report.verdicts:
-        if v.status == Status.NOT_APPLICABLE:
-            continue  # N/A verdicts legitimately have no thresholds
-        # PASS, FAIL, INCONCLUSIVE, PASS_AS_INTENDED all should report at
-        # least one critical value
+        if v.status in (Status.NOT_APPLICABLE, Status.PASS):
+            continue  # may legitimately have no thresholds after P3
         assert v.critical_values, (
             f"{name}: {v.failure_mode} on {v.subject} "
             f"({v.status.value}) has no critical_values"

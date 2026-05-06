@@ -20,6 +20,31 @@ class Status(str, Enum):
     NOT_APPLICABLE = "not_applicable"
 
 
+class RiskLevel(str, Enum):
+    """Numerical risk band complementary to Status (Simulator.pdf §4).
+
+    Status answers "is there *any* parameter assignment that violates the
+    condition?" (existential over the declared box). RiskLevel answers
+    "at the midpoint of the declared box, how bad is the violation?"
+    (point evaluation). The two surfaces are complementary:
+
+    - PASS + GREEN          → solid design, no concern
+    - PASS + AMBER          → safe but margin is tight at typical values
+    - FAIL + GREEN          → a corner of the box fails; midpoint is fine
+    - FAIL + RED_CRITICAL   → broadly broken at any typical configuration
+
+    Used by the verdict UI to colour-code each card and by the report's
+    overall risk score (per Simulator.pdf §6).
+    """
+
+    GREEN = "green"
+    GREEN_BORDERLINE = "green_borderline"
+    AMBER = "amber"
+    RED = "red"
+    RED_CRITICAL = "red_critical"
+    NOT_APPLICABLE = "not_applicable"
+
+
 class CriticalValue(BaseModel):
     """The boundary value of a parameter at which the FM verdict flips.
 
@@ -148,6 +173,10 @@ class Verdict(BaseModel):
     recommendation: NumericRecommendation | None = None
     swept_fields: list[str] = Field(default_factory=list)
     committed_fields: list[str] = Field(default_factory=list)
+    # Phase D — risk band evaluated at midpoint values (Simulator.pdf §4).
+    # Defaults to NOT_APPLICABLE for verdicts where the FM did not run
+    # (archetype skip, applicability gate). Populated by `verifier.risk`.
+    risk_level: RiskLevel = RiskLevel.NOT_APPLICABLE
 
 
 # ---------------------------------------------------------------------------

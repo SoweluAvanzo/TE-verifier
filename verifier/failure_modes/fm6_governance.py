@@ -60,6 +60,85 @@ class FM6GovernanceCapture(FailureMode):
         gov = te.governance
         rules = gov.rule_structure
         if not rules:
+            # Γ is not computable without rule_structure, but the Gini
+            # secondary signal may still be informative. Surface it
+            # rather than collapsing the whole verdict to INCONCLUSIVE.
+            if (
+                gov.token_balance_gini is not None
+                and gov.token_balance_gini.max > GINI_SECONDARY_THRESHOLD
+            ):
+                gini_signal = gov.token_balance_gini.max
+                return Verdict(
+                    failure_mode=self.name,
+                    subject="system",
+                    status=Status.FAIL,
+                    formal_condition=(
+                        f"Γ uncomputable (rule_structure empty), "
+                        f"but Gini > {GINI_SECONDARY_THRESHOLD}"
+                    ),
+                    explanation=(
+                        f"governance.rule_structure is empty so the "
+                        f"primary Γ centralization index cannot be "
+                        f"computed, but the token-balance Gini = "
+                        f"{gini_signal:.3f} exceeds the secondary-signal "
+                        f"threshold {GINI_SECONDARY_THRESHOLD}. Effective "
+                        f"single-actor control via concentrated holdings "
+                        f"is the binding concern (Curve Wars / Convex "
+                        f"pattern). Fill in rule_structure for a complete "
+                        f"FM6 verdict; the Gini concern is independently "
+                        f"actionable."
+                    ),
+                    counterexample=Counterexample(
+                        parameter_values={"token_gini": gini_signal},
+                        narrative=(
+                            f"Token-balance Gini {gini_signal:.3f} "
+                            f"exceeds the {GINI_SECONDARY_THRESHOLD} "
+                            f"threshold even before Γ can be computed."
+                        ),
+                    ),
+                    suggestions=[
+                        "Address token-balance concentration: introduce "
+                        "vote caps, quadratic voting, or distribution "
+                        "rules that flatten the ownership Gini.",
+                        "Fill in governance.rule_structure to also "
+                        "evaluate the primary Γ centralization index.",
+                    ],
+                    critical_values=[
+                        CriticalValue(
+                            parameter="token_gini",
+                            value=GINI_SECONDARY_THRESHOLD,
+                            direction="<=",
+                            formula=(
+                                f"G* = {GINI_SECONDARY_THRESHOLD}   "
+                                f"(secondary-signal threshold)"
+                            ),
+                            explanation=(
+                                "Maximum Gini accepted before flagging "
+                                "effective single-actor control via "
+                                "concentrated holdings."
+                            ),
+                            source="config",
+                        )
+                    ],
+                    recommendation=NumericRecommendation(
+                        parameter="token_gini",
+                        current_range=(
+                            gov.token_balance_gini.min,
+                            gov.token_balance_gini.max,
+                        ),
+                        safe_threshold=GINI_SECONDARY_THRESHOLD,
+                        direction="<=",
+                        narrative=(
+                            f"Reduce the token-balance Gini below "
+                            f"{GINI_SECONDARY_THRESHOLD}. Vote caps, "
+                            f"quadratic voting, or distribution rules "
+                            f"that flatten ownership all reduce "
+                            f"effective single-actor control."
+                        ),
+                    ),
+                    swept_fields=["governance.token_balance_gini"],
+                    committed_fields=[],
+                )
             return Verdict(
                 failure_mode=self.name,
                 subject="system",
@@ -67,7 +146,9 @@ class FM6GovernanceCapture(FailureMode):
                 formal_condition="Γ = |unilateral|/|total|   (rule_structure empty)",
                 explanation=(
                     "Cannot evaluate FM6 without governance.rule_structure. "
-                    "List each adjustable parameter and its controlling actor."
+                    "List each adjustable parameter and its controlling actor. "
+                    "(token_balance_gini, if provided, would also surface "
+                    "the secondary-signal channel.)"
                 ),
             )
 
@@ -103,38 +184,49 @@ class FM6GovernanceCapture(FailureMode):
         # The smallest non-negative integer satisfying this is
         # max(0, ceil(U − T · Γ_threshold)). See docs/proofs/fm6.md.
         n_demote = max(0, math.ceil(unilateral - total * GAMMA_CAPTURE_THRESHOLD))
-        critical_values: list[CriticalValue] = [
-            CriticalValue(
-                parameter="Gamma",
-                value=GAMMA_CAPTURE_THRESHOLD,
-                direction="<=",
-                formula=f"Γ* = {GAMMA_CAPTURE_THRESHOLD}   (configurable threshold)",
-                explanation=(
-                    "The maximum centralization fraction the verifier accepts "
-                    "as distributed governance. Above this, FM6 triggers."
-                ),
-                source="config",
-            ),
-            CriticalValue(
-                parameter="n_demote",
-                value=float(n_demote),
-                direction=">=",
-                formula=(
-                    f"n_demote* = max(0, ⌈U − T·Γ*⌉) "
-                    f"= max(0, ⌈{unilateral} − {total}·{GAMMA_CAPTURE_THRESHOLD}⌉) "
-                    f"= {n_demote}"
-                ),
-                explanation=(
-                    f"Minimum number of currently-unilateral decisions to "
-                    f"demote from single-entity / committee control to "
-                    f"token-vote or smart-contract control to bring Γ to or "
-                    f"below {GAMMA_CAPTURE_THRESHOLD}. With "
-                    f"{unilateral} unilateral of {total} total decisions, "
-                    f"demoting {n_demote} suffices."
-                ),
-                source="closed_form",
-            ),
-        ]
+        # P3 — only surface the Γ-channel critical values when Γ is
+        # actually a concern (verdict will FAIL on Γ, or Γ is within
+        # 20% of the threshold so the user benefits from seeing the
+        # margin). When the only failure is Gini, the Γ-side critical
+        # values are degenerate noise and we drop them.
+        gamma_relevant = gamma > 0.8 * GAMMA_CAPTURE_THRESHOLD
+        critical_values: list[CriticalValue] = []
+        if gamma_relevant:
+            critical_values.append(
+                CriticalValue(
+                    parameter="Gamma",
+                    value=GAMMA_CAPTURE_THRESHOLD,
+                    direction="<=",
+                    formula=f"Γ* = {GAMMA_CAPTURE_THRESHOLD}   (configurable threshold)",
+                    explanation=(
+                        "The maximum centralization fraction the verifier "
+                        "accepts as distributed governance. Above this, "
+                        "FM6 triggers."
+                    ),
+                    source="config",
+                )
+            )
+            critical_values.append(
+                CriticalValue(
+                    parameter="n_demote",
+                    value=float(n_demote),
+                    direction=">=",
+                    formula=(
+                        f"n_demote* = max(0, ⌈U − T·Γ*⌉) "
+                        f"= max(0, ⌈{unilateral} − {total}·{GAMMA_CAPTURE_THRESHOLD}⌉) "
+                        f"= {n_demote}"
+                    ),
+                    explanation=(
+                        f"Minimum number of currently-unilateral decisions to "
+                        f"demote from single-entity / committee control to "
+                        f"token-vote or smart-contract control to bring Γ to "
+                        f"or below {GAMMA_CAPTURE_THRESHOLD}. With "
+                        f"{unilateral} unilateral of {total} total decisions, "
+                        f"demoting {n_demote} suffices."
+                    ),
+                    source="closed_form",
+                )
+            )
         if gini_signal is not None:
             critical_values.append(
                 CriticalValue(

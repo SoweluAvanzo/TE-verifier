@@ -124,267 +124,342 @@
         </div>
       </section>
 
-      <!-- =================================================== Stage 2 — Token design -->
-      <section class="form-stage" id="stage-token">
+      <!-- =================================================== Stage 2 — Tokens (multi) -->
+      <section class="form-stage" id="stage-tokens">
         <header class="stage-header">
-          <h2><span class="stage-num">2</span> Token design <small>(Roadmap Group 1)</small></h2>
+          <h2><span class="stage-num">2</span> Tokens <small>(Roadmap Groups 1–3)</small></h2>
           <p class="stage-lead">
-            For now the form supports a single token. Multi-token
-            systems (DAI/MKR, AXS/SLP) can be specified via the
-            advanced YAML editor.
+            Add one or more tokens. Each token gets its own design
+            fields (Group 1), mint mechanisms (Group 2), and burn
+            mechanisms (Group 3). Mechanisms compose additively — see
+            <code>docs/proofs/composition.md</code>.
           </p>
         </header>
 
         <details class="why-we-ask">
           <summary>Why we ask</summary>
           <p>
-            These choices feed FM2 (velocity trap), FM4 (free-rider),
-            and FM5 (critical mass). The verifier derives γ
-            (monitoring capacity) from your <em>verification
-            mechanism</em> choice and τ (holding time floor) from
-            your <em>holding incentives</em>, so picking these
-            structurally is what unlocks accurate verdicts.
+            Multi-mechanism mint and burn are common in real systems
+            (initial allocation + ongoing rewards; demand-driven burn
+            + rule-driven burn). The verifier sums them per
+            <code>Simulator.pdf</code> §3.3 eq (7). For multi-token
+            systems, see also the next stage (Inter-token relationships).
           </p>
         </details>
 
-        <div class="field">
-          <label for="token-id">Token ID</label>
-          <input type="text" id="token-id" name="token-id"
-                 placeholder="T" required />
-        </div>
-
-        <div class="field">
-          <label>Token function (1.1) — multi-select</label>
-          <div class="multi">
-            {% for f in token_functions %}
-            <label class="checkbox">
-              <input type="checkbox" name="token-function" value="{{ f }}" />
-              <span>{{ f.replace('_', ' ') }}</span>
-            </label>
-            {% endfor %}
-          </div>
-          <p class="hint">
-            Pure <code>medium_of_exchange</code> with no
-            <code>governance_right</code> or <code>store_of_value</code>
-            is most vulnerable to FM2 (velocity trap).
-          </p>
-        </div>
-
-        <div class="field">
-          <label>Earning mechanisms (1.2) — multi-select</label>
-          <div class="multi">
-            {% for em in earning_mechanisms %}
-            <label class="checkbox">
-              <input type="checkbox" name="token-earning" value="{{ em }}" />
-              <span>{{ em.replace('_', ' ') }}</span>
-            </label>
-            {% endfor %}
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="token-anchor">Value anchor (1.3)</label>
-          <select id="token-anchor" name="token-anchor">
-            {% for v in value_anchors %}
-            <option value="{{ v }}">{{ v.replace('_', ' ') }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="field">
-          <label>Holding incentives (1.4) — multi-select</label>
-          <div class="multi">
-            {% for hi in holding_incentives %}
-            <label class="checkbox">
-              <input type="checkbox" name="token-holding" value="{{ hi }}" />
-              <span>{{ hi.replace('_', ' ') }}</span>
-            </label>
-            {% endfor %}
-          </div>
-          <p class="hint">
-            Each mechanism implies a τ floor (`none` ≈ 1 period;
-            `staking` / `governance_rights` / `time_locked_rewards`
-            ≈ 4 periods). The verifier takes the maximum across your
-            selections as the default τ when agent types don't pin
-            holding times directly.
-          </p>
-        </div>
-
-        <div class="field">
-          <label for="token-verification">Contribution verification (1.5)</label>
-          <select id="token-verification" name="token-verification">
-            <option value="">— not specified —</option>
-            {% for cv in verification_choices %}
-            <option value="{{ cv }}">{{ cv.replace('_', ' ') }}</option>
-            {% endfor %}
-          </select>
-          <p class="hint">
-            <strong>This is the elicitation handle for γ in FM4.</strong>
-            <code>physical_presence</code> implies γ ∈ [0.85, 0.95];
-            <code>self_reporting</code> implies γ ∈ [0.05, 0.20].
-          </p>
-        </div>
-
-        <div class="field">
-          <label for="token-redemption">Redemption mechanism (1.6)</label>
-          <select id="token-redemption" name="token-redemption">
-            <option value="">— not specified —</option>
-            {% for rm in redemption_choices %}
-            <option value="{{ rm }}">{{ rm.replace('_', ' ') }}</option>
-            {% endfor %}
-          </select>
-          <p class="hint">
-            Combined with verification, drives FM4's temptation gap
-            T − R. <code>peer_to_peer_transfer</code> + demand-driven
-            burn is structurally incoherent — the verifier will warn.
-          </p>
-        </div>
-
-        <div class="field range-field">
-          <label>Offer variety K (1.7) — number of distinct redemption opportunities</label>
-          <div class="range">
-            <input type="number" name="token-K-min" min="1" step="1" placeholder="min" />
-            <span>to</span>
-            <input type="number" name="token-K-max" min="1" step="1" placeholder="max" />
-          </div>
-          <p class="hint">
-            Drives FM4 (φ ≥ d/K) and FM5 (N ≥ 2Kd + 1). Use
-            min = max for a known value; a wide range tells the
-            verifier to sweep.
-          </p>
-        </div>
+        <div id="tokens-container"></div>
+        <button type="button" id="add-token-btn" class="ghost">+ Add token</button>
       </section>
 
-      <!-- =================================================== Stage 3 — Emission -->
-      <section class="form-stage" id="stage-emission">
+      <!-- =================================================== Stage 3 — Cross-token flows -->
+      <section class="form-stage" id="stage-xtflows">
         <header class="stage-header">
-          <h2><span class="stage-num">3</span> Emission <small>(Roadmap Group 2)</small></h2>
+          <h2><span class="stage-num">3</span> Inter-token relationships</h2>
           <p class="stage-lead">
-            One emission rule. For multiple emission rules or
-            piecewise schedules, use the advanced YAML editor.
+            Optional. Declare flows between tokens — e.g. "fees on
+            DAI drive proportional MKR burn" or "burning AXS mints
+            SLP". Independent flows have a fixed amount class;
+            proportional flows scale with the source token's own
+            emission.
           </p>
         </header>
 
         <details class="why-we-ask">
           <summary>Why we ask</summary>
           <p>
-            Emission rate E(t) feeds FM1 (oversupply) and FM3
-            (burn coverage). The verifier needs the
-            <strong>asymptotic class</strong> of the function — not
-            its exact formula — and reasons over the parameter
-            ranges you commit to.
+            Cross-token flows feed FM1 (oversupply) and FM3 (burn
+            coverage) on the target token. Proportional coupling
+            captures patterns like MakerDAO's MKR buyback-and-burn
+            (proof: <code>docs/proofs/coupled_flows.md</code>).
           </p>
         </details>
 
-        <div class="field">
-          <label for="emit-trigger">Emission basis (2.1)</label>
-          <select id="emit-trigger" name="emit-trigger">
-            {% for et in emission_triggers %}
-            <option value="{{ et }}">{{ et.replace('_', ' ') }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="emit-frequency">Event frequency family</label>
-          <select id="emit-frequency" name="emit-frequency">
-            <option value="constant">constant (same rate per period)</option>
-            <option value="linear">linear (grows with time / users)</option>
-            <option value="bounded_range">bounded_range (between min and max)</option>
-            <option value="unspecified">unspecified ("I don't know")</option>
-          </select>
-        </div>
-
-        <div class="field range-field">
-          <label>Frequency value range (per period)</label>
-          <div class="range">
-            <input type="number" name="emit-freq-min" step="any" placeholder="min" />
-            <span>to</span>
-            <input type="number" name="emit-freq-max" step="any" placeholder="max" />
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="emit-sign">Function sign (2.2 step 1)</label>
-          <select id="emit-sign" name="emit-sign">
-            {% for s in function_signs %}
-            <option value="{{ s }}" {% if s == 'always_positive' %}selected{% endif %}>
-              {{ s.replace('_', ' ') }}
-            </option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="emit-class">Function asymptotic class</label>
-          <select id="emit-class" name="emit-class">
-            <option value="constant">constant — Y = c</option>
-            <option value="linear">linear — Y = a·x + b</option>
-            <option value="bounded_range">bounded_range — between bounds</option>
-            <option value="unspecified">unspecified</option>
-          </select>
-        </div>
-
-        <div class="field range-field">
-          <label>Tokens emitted per trigger (range)</label>
-          <div class="range">
-            <input type="number" name="emit-fn-min" step="any" placeholder="min" />
-            <span>to</span>
-            <input type="number" name="emit-fn-max" step="any" placeholder="max" />
-          </div>
-        </div>
+        <div id="xtflows-container"></div>
+        <button type="button" id="add-xtflow-btn" class="ghost">+ Add cross-token flow</button>
       </section>
 
-      <!-- =================================================== Stage 4 — Burn -->
-      <section class="form-stage" id="stage-burn">
-        <header class="stage-header">
-          <h2><span class="stage-num">4</span> Burn <small>(Roadmap Group 3)</small></h2>
-          <p class="stage-lead">
-            Optional. Leave the trigger as <code>none</code> to declare
-            a no-burn design (FM3 will flag the structural risk).
-          </p>
-        </header>
+      <!-- =================================================== Templates (cloned by JS) -->
+      <template id="token-card-tpl">
+        <div class="token-card" data-tidx="__IDX__">
+          <header class="token-card-head">
+            <h3>Token <span class="tok-name-display">__IDX__</span></h3>
+            <button type="button" class="remove-token ghost-danger">remove</button>
+          </header>
 
-        <details class="why-we-ask">
-          <summary>Why we ask</summary>
-          <p>
-            FM3 distinguishes <em>demand-driven</em> burn (B(t)
-            tracks redemption volume — structurally sound) from
-            <em>rule-driven</em> burn (fixed schedule — drifts as
-            the system scales). No burn at all is the most-flagged
-            case.
-          </p>
-        </details>
+          <div class="field">
+            <label>Token ID</label>
+            <input type="text" name="tok-__IDX__-id" placeholder="T" required />
+          </div>
 
-        <div class="field">
-          <label for="burn-trigger">Burn trigger (3.2)</label>
-          <select id="burn-trigger" name="burn-trigger">
-            <option value="none">none (no burn — supply only grows)</option>
-            <option value="demand_driven">demand_driven (fires on redemption)</option>
-            <option value="rule_driven">rule_driven (fixed schedule)</option>
-            <option value="threshold_driven">threshold_driven (when supply &gt; target)</option>
-            <option value="expiry">expiry (tokens expire after N periods)</option>
-          </select>
+          <div class="field">
+            <label class="checkbox">
+              <input type="checkbox" name="tok-__IDX__-transferable" value="true" checked />
+              <span>Transferable (uncheck for vote-escrow / lock-only tokens like veCRV)</span>
+            </label>
+          </div>
+
+          <div class="field">
+            <label>Token function (1.1)</label>
+            <div class="multi">
+              {% for f in token_functions %}
+              <label class="checkbox">
+                <input type="checkbox" name="tok-__IDX__-function" value="{{ f }}" />
+                <span>{{ f.replace('_', ' ') }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Earning mechanisms (1.2)</label>
+            <div class="multi">
+              {% for em in earning_mechanisms %}
+              <label class="checkbox">
+                <input type="checkbox" name="tok-__IDX__-earning" value="{{ em }}" />
+                <span>{{ em.replace('_', ' ') }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Value anchor (1.3)</label>
+            <select name="tok-__IDX__-anchor">
+              {% for v in value_anchors %}
+              <option value="{{ v }}">{{ v.replace('_', ' ') }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Holding incentives (1.4)</label>
+            <div class="multi">
+              {% for hi in holding_incentives %}
+              <label class="checkbox">
+                <input type="checkbox" name="tok-__IDX__-holding" value="{{ hi }}" />
+                <span>{{ hi.replace('_', ' ') }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Contribution verification (1.5)</label>
+            <select name="tok-__IDX__-verification">
+              <option value="">— not specified —</option>
+              {% for cv in verification_choices %}
+              <option value="{{ cv }}">{{ cv.replace('_', ' ') }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Redemption mechanism (1.6)</label>
+            <select name="tok-__IDX__-redemption">
+              <option value="">— not specified —</option>
+              {% for rm in redemption_choices %}
+              <option value="{{ rm }}">{{ rm.replace('_', ' ') }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field range-field">
+            <label>Offer variety K (1.7)</label>
+            <div class="range">
+              <input type="number" name="tok-__IDX__-K-min" min="1" step="1" placeholder="min" />
+              <span>to</span>
+              <input type="number" name="tok-__IDX__-K-max" min="1" step="1" placeholder="max" />
+            </div>
+          </div>
+
+          <fieldset class="rules-block">
+            <legend>Mint mechanisms (Group 2)</legend>
+            <div class="mint-rules"></div>
+            <button type="button" class="add-mint-rule ghost">+ Add mint mechanism</button>
+            <p class="composition-preview" data-side="mint"></p>
+          </fieldset>
+
+          <fieldset class="rules-block">
+            <legend>Burn mechanisms (Group 3)</legend>
+            <div class="burn-rules"></div>
+            <button type="button" class="add-burn-rule ghost">+ Add burn mechanism</button>
+            <p class="composition-preview" data-side="burn"></p>
+          </fieldset>
         </div>
+      </template>
 
-        <div class="field range-field">
-          <label>Burn frequency value range (when trigger ≠ none)</label>
-          <div class="range">
-            <input type="number" name="burn-freq-min" step="any" placeholder="min" />
-            <span>to</span>
-            <input type="number" name="burn-freq-max" step="any" placeholder="max" />
+      <template id="mint-rule-tpl">
+        <div class="rule-row mint-rule" data-ridx="__RIDX__">
+          <div class="rule-row-head">
+            <h5>Mint mechanism #__RIDX__</h5>
+            <button type="button" class="remove-rule ghost-danger">remove</button>
+          </div>
+          <div class="rule-grid">
+            <div class="field">
+              <label>Trigger</label>
+              <select class="rule-trigger">
+                {% for et in emission_triggers %}
+                <option value="{{ et }}">{{ et.replace('_', ' ') }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label>Sign</label>
+              <select class="rule-sign">
+                {% for s in function_signs %}
+                <option value="{{ s }}" {% if s == 'always_positive' %}selected{% endif %}>{{ s.replace('_', ' ') }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label>Frequency family</label>
+              <select class="rule-freq-family">
+                <option value="constant">constant</option>
+                <option value="linear">linear</option>
+                <option value="bounded_range">bounded_range</option>
+                <option value="unspecified">unspecified</option>
+              </select>
+            </div>
+            <div class="field range-field">
+              <label>Frequency range</label>
+              <div class="range">
+                <input type="number" class="rule-freq-min" step="any" placeholder="min" />
+                <span>to</span>
+                <input type="number" class="rule-freq-max" step="any" placeholder="max" />
+              </div>
+            </div>
+            <div class="field">
+              <label>Function class</label>
+              <select class="rule-fn-family">
+                <option value="constant">constant</option>
+                <option value="linear">linear</option>
+                <option value="bounded_range">bounded_range</option>
+                <option value="unspecified">unspecified</option>
+              </select>
+            </div>
+            <div class="field range-field">
+              <label>Tokens per trigger</label>
+              <div class="range">
+                <input type="number" class="rule-fn-min" step="any" placeholder="min" />
+                <span>to</span>
+                <input type="number" class="rule-fn-max" step="any" placeholder="max" />
+              </div>
+            </div>
           </div>
         </div>
+      </template>
 
-        <div class="field range-field">
-          <label>Tokens burned per trigger (range)</label>
-          <div class="range">
-            <input type="number" name="burn-fn-min" step="any" placeholder="min" />
-            <span>to</span>
-            <input type="number" name="burn-fn-max" step="any" placeholder="max" />
+      <template id="burn-rule-tpl">
+        <div class="rule-row burn-rule" data-ridx="__RIDX__">
+          <div class="rule-row-head">
+            <h5>Burn mechanism #__RIDX__</h5>
+            <button type="button" class="remove-rule ghost-danger">remove</button>
+          </div>
+          <div class="rule-grid">
+            <div class="field">
+              <label>Trigger</label>
+              <select class="rule-trigger">
+                {% for bt in burn_triggers %}
+                <option value="{{ bt }}">{{ bt.replace('_', ' ') }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label>Frequency family</label>
+              <select class="rule-freq-family">
+                <option value="constant">constant</option>
+                <option value="linear">linear</option>
+                <option value="bounded_range">bounded_range</option>
+                <option value="unspecified">unspecified</option>
+              </select>
+            </div>
+            <div class="field range-field">
+              <label>Frequency range</label>
+              <div class="range">
+                <input type="number" class="rule-freq-min" step="any" placeholder="min" />
+                <span>to</span>
+                <input type="number" class="rule-freq-max" step="any" placeholder="max" />
+              </div>
+            </div>
+            <div class="field">
+              <label>Function class</label>
+              <select class="rule-fn-family">
+                <option value="constant">constant</option>
+                <option value="linear">linear</option>
+                <option value="bounded_range">bounded_range</option>
+                <option value="unspecified">unspecified</option>
+              </select>
+            </div>
+            <div class="field range-field">
+              <label>Tokens per trigger</label>
+              <div class="range">
+                <input type="number" class="rule-fn-min" step="any" placeholder="min" />
+                <span>to</span>
+                <input type="number" class="rule-fn-max" step="any" placeholder="max" />
+              </div>
+            </div>
           </div>
         </div>
-      </section>
+      </template>
+
+      <template id="xtflow-card-tpl">
+        <div class="xtflow-card" data-fidx="__FIDX__">
+          <header class="xtflow-card-head">
+            <h4>Cross-token flow #__FIDX__</h4>
+            <button type="button" class="remove-xtflow ghost-danger">remove</button>
+          </header>
+          <div class="xtflow-grid">
+            <div class="field">
+              <label>Source token ID</label>
+              <input type="text" class="xt-source" placeholder="A" />
+            </div>
+            <div class="field">
+              <label>Source event (description)</label>
+              <input type="text" class="xt-event" placeholder="e.g. fee_collection" />
+            </div>
+            <div class="field">
+              <label>Target token ID</label>
+              <input type="text" class="xt-target" placeholder="B" />
+            </div>
+            <div class="field">
+              <label>Target action</label>
+              <select class="xt-action">
+                <option value="mint">mint (adds to target's E)</option>
+                <option value="burn">burn (adds to target's B)</option>
+                <option value="transfer">transfer (no supply change)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Coupling</label>
+              <select class="xt-coupling">
+                <option value="independent">independent (own amount class)</option>
+                <option value="proportional_to_source">proportional_to_source (× source's own E)</option>
+              </select>
+            </div>
+            <div class="field range-field xt-ratio-field" hidden>
+              <label>Coupling ratio</label>
+              <div class="range">
+                <input type="number" class="xt-ratio-min" step="any" placeholder="min" />
+                <span>to</span>
+                <input type="number" class="xt-ratio-max" step="any" placeholder="max" />
+              </div>
+            </div>
+            <div class="field xt-amount-block">
+              <label>Amount class (independent flows)</label>
+              <select class="xt-amount-family">
+                <option value="constant">constant</option>
+                <option value="linear">linear</option>
+                <option value="bounded_range">bounded_range</option>
+              </select>
+              <div class="range">
+                <input type="number" class="xt-amount-min" step="any" placeholder="min" />
+                <span>to</span>
+                <input type="number" class="xt-amount-max" step="any" placeholder="max" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
 
       <!-- =================================================== Stage 5 — Governance -->
       <section class="form-stage" id="stage-gov">

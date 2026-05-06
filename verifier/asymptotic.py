@@ -147,6 +147,68 @@ def representative_midpoint(rng: NumberRange) -> float:
     return rng.midpoint
 
 
+def own_emission_rate_per_period(
+    solver: z3.Solver,
+    name_prefix: str,
+    token,  # schema.Token, untyped to avoid circular imports
+    *,
+    periods_horizon: float = 52.0,
+) -> z3.ArithRef:
+    """Per-period rate from a token's *own* emission_rules only.
+
+    Excludes cross-token contributions. This is the quantity used as
+    the multiplicand in the proportional-coupling encoding (Phase B1):
+    a flow with `coupling = proportional_to_source` contributes
+    `coupling_ratio × own_emission_rate_per_period(source_token)` to
+    the target token's E or B (per `target_action`).
+
+    Excluding cross-token contributions guarantees there are no cycles
+    in the dependency graph: every flow's rate depends only on the
+    sources' own rule rates, which are pure functions of the IR.
+    """
+    terms = [
+        rule_rate_per_period(
+            solver, f"{name_prefix}_emit_{i}", rule, periods_horizon=periods_horizon
+        )
+        for i, rule in enumerate(token.emission_rules)
+    ]
+    if not terms:
+        return z3.RealVal(0)
+    return sum(terms[1:], terms[0])
+
+
+def cross_token_flow_rate(
+    solver: z3.Solver,
+    name_prefix: str,
+    flow,  # schema.CrossTokenFlow
+    source_own_E: z3.ArithRef,
+    *,
+    periods_horizon: float = 52.0,
+) -> z3.ArithRef:
+    """Per-period rate contributed by a single cross-token flow.
+
+    For `coupling = INDEPENDENT` this delegates to
+    `average_rate_per_period(flow.amount)` — same as Phase A behaviour.
+
+    For `coupling = PROPORTIONAL_TO_SOURCE` this returns
+    `r × source_own_E`, where `r` is a Z3 real bounded to
+    `flow.coupling_ratio`. The caller is responsible for supplying
+    `source_own_E` from `own_emission_rate_per_period(source_token)`.
+    """
+    # Local import to avoid an import cycle at module load.
+    from schema import FlowCoupling
+
+    if flow.coupling == FlowCoupling.PROPORTIONAL_TO_SOURCE:
+        ratio_lo = flow.coupling_ratio.min
+        ratio_hi = flow.coupling_ratio.max
+        ratio = z3.Real(f"{name_prefix}__ratio")
+        solver.add(ratio >= ratio_lo, ratio <= ratio_hi)
+        return ratio * source_own_E
+    return average_rate_per_period(
+        solver, name_prefix, flow.amount, periods_horizon=periods_horizon
+    )
+
+
 def rule_rate_per_period(
     solver: z3.Solver,
     name_prefix: str,

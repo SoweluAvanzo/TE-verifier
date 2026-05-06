@@ -36,7 +36,14 @@ from schema import (
     TokenEconomy,
     TokenFunction,
 )
-from verifier.asymptotic import average_rate_per_period, rule_rate_per_period
+from verifier.asymptotic import (
+    average_rate_per_period,
+    cross_token_flow_rate,
+    own_emission_rate_per_period,
+    rule_rate_per_period,
+)
+from verifier.conditions import rule_contributes
+from verifier.failure_modes.fm1_oversupply import _declared_emission_upper_bound
 from verifier.config import VerifierConfig
 from verifier.constants import RHO_BURN_COVERAGE_FLOOR
 from verifier.failure_modes.base import (
@@ -116,8 +123,14 @@ class FM3BurnEmission(FailureMode):
                 committed_fields=[f"tokens[{token.id}].emission_rules (empty)"],
             )
 
-        # Case A: no burn at all. Structural fail.
-        if not token.burn_rules:
+        # Case A: no burn at all (no own burn_rules AND no cross-token
+        # BURN flow targeting this token). Structural fail.
+        has_xt_burn = any(
+            flow.target_token == token.id
+            and flow.target_action == CrossTokenAction.BURN
+            for flow in te.cross_token_flows
+        )
+        if not token.burn_rules and not has_xt_burn:
             return self._verdict_no_burn(token)
 
         # Case B: rule-driven (time-based) burn — flagged as structurally weak.
@@ -132,34 +145,55 @@ class FM3BurnEmission(FailureMode):
         # Quantitative ρ check
         solver = self.make_solver()
 
+        # Phase B1 — precompute each token's own E (no cross-token
+        # contributions) so proportional flows can multiply against it.
+        source_own_E: dict[str, z3.ArithRef] = {}
+        for src in te.tokens:
+            source_own_E[src.id] = own_emission_rate_per_period(
+                solver, f"{src.id}_ownE_for_fm3_{token.id}", src
+            )
+
+        # Phase B2 — emission rules contribute if EVER active (over-conservative).
         E_terms = [
             rule_rate_per_period(solver, f"{token.id}_emit_{i}", rule)
             for i, rule in enumerate(token.emission_rules)
+            if rule_contributes(rule, te, side="emission")
         ]
         # Cross-token flows targeting this token with action=mint contribute
-        # to E. Phase 5b: see docs/proofs/cross_token.md.
+        # to E. Phase 5b + B1: see docs/proofs/cross_token.md and coupled_flows.md.
         for i, flow in enumerate(te.cross_token_flows):
             if flow.target_token == token.id and flow.target_action == CrossTokenAction.MINT:
                 E_terms.append(
-                    average_rate_per_period(
-                        solver, f"{token.id}_xtmint_{i}", flow.amount
+                    cross_token_flow_rate(
+                        solver,
+                        f"{token.id}_xtmint_{i}",
+                        flow,
+                        source_own_E.get(flow.source_token, z3.RealVal(0)),
                     )
                 )
-        E_total = sum(E_terms[1:], E_terms[0])
+        # Phase B2 — guard against the empty case (every emission rule
+        # statically NEVER and no cross-token MINTs targeting this token).
+        E_total = sum(E_terms[1:], E_terms[0]) if E_terms else z3.RealVal(0)
 
+        # Phase B2 — burn rules contribute only if ALWAYS active (under-conservative).
         B_terms = [
             rule_rate_per_period(solver, f"{token.id}_burn_{i}", rule)
             for i, rule in enumerate(token.burn_rules)
+            if rule_contributes(rule, te, side="burn")
         ]
         # Cross-token flows targeting this token with action=burn contribute to B.
         for i, flow in enumerate(te.cross_token_flows):
             if flow.target_token == token.id and flow.target_action == CrossTokenAction.BURN:
                 B_terms.append(
-                    average_rate_per_period(
-                        solver, f"{token.id}_xtburn_{i}", flow.amount
+                    cross_token_flow_rate(
+                        solver,
+                        f"{token.id}_xtburn_{i}",
+                        flow,
+                        source_own_E.get(flow.source_token, z3.RealVal(0)),
                     )
                 )
-        B_total = sum(B_terms[1:], B_terms[0])
+        # Phase B2 — guard against the empty case.
+        B_total = sum(B_terms[1:], B_terms[0]) if B_terms else z3.RealVal(0)
 
         # Phase 5d: NFR1 (resilience) tightens the ρ floor.
         nfr1_mult = float(
@@ -211,25 +245,78 @@ class FM3BurnEmission(FailureMode):
             # from the counterexample directly.
             E_val = ce.parameter_values.get("E_per_period", 0.0)
             B_val = ce.parameter_values.get("B_per_period", 0.0)
+            # P2 — when the user's declared emission upper bound is far
+            # above any plausible Q ceiling (3× Q_hi as in FM1), the
+            # "raise burn to E_val" recommendation cites a worst-case
+            # corner from a too-wide spec. Lead with "narrow the
+            # declared emission range" instead.
+            Q_hi = te.participants.expected_Q.max
+            E_declared_ub = _declared_emission_upper_bound(token)
+            wide_declaration = Q_hi > 0 and E_declared_ub > 3.0 * Q_hi
+            # Fix F — Z3 finds the smallest violating witness. When
+            # E_val is much smaller than the declared upper bound
+            # (< 10% of E_ub), the user almost certainly has a
+            # too-loose lower bound (e.g. emission rule with c.min = 0)
+            # and Z3 picked the near-zero corner. The verdict is real
+            # (the corner is in the box) but the recommendation should
+            # tell the user to tighten the lower bound rather than
+            # quote a meaninglessly small burn floor.
+            degenerate_corner = (
+                E_declared_ub > 0
+                and E_val < 0.1 * E_declared_ub
+                and not wide_declaration
+            )
+            if wide_declaration:
+                narrative = (
+                    f"Your declared emission range for {token.id} permits "
+                    f"up to ≈{E_declared_ub:g} tokens/period — more than "
+                    f"3× the upper Q bound ({Q_hi:g}/period). Z3 picked "
+                    f"E ≈ {E_val:g} as the worst-case witness, which is "
+                    f"why the implied burn floor "
+                    f"({E_val * RHO_BURN_COVERAGE_FLOOR:.2f}) is so high. "
+                    f"The first-order fix is to **narrow your declared "
+                    f"emission range** so its upper bound reflects the "
+                    f"realistic maximum. Once narrowed, the implied burn "
+                    f"floor will drop accordingly."
+                )
+            elif degenerate_corner:
+                narrative = (
+                    f"Z3 found a near-zero corner of your declared "
+                    f"emission range as the violating witness "
+                    f"(E ≈ {E_val:g}, while your declared upper bound "
+                    f"reaches ≈{E_declared_ub:g}). This is a fragile "
+                    f"counterexample — it indicates your emission rule "
+                    f"includes 0 (or near-zero) values that the verifier "
+                    f"can use to satisfy `B/E < 1` even when burn is "
+                    f"reasonable. The first-order fix is to **raise the "
+                    f"lower bound** of your declared emission range so "
+                    f"it reflects the realistic minimum (typically the "
+                    f"average steady-state mint rate). If your minimum "
+                    f"emission is genuinely zero, this verdict is not "
+                    f"actionable — it is the trivial case ρ = 0/0."
+                )
+            else:
+                tail = (
+                    "Demand-driven burn (tied to redemption events) is "
+                    "the structurally correct fix; rule-driven schedules "
+                    "drift out of balance as the system scales."
+                    if not is_demand_driven
+                    else "The current burn is demand-driven; tightening "
+                    "its parameter ranges (or coupling burn to a higher "
+                    "fraction of redemption events) closes the gap."
+                )
+                narrative = (
+                    f"Raise per-period burn for {token.id} to at least "
+                    f"{E_val * RHO_BURN_COVERAGE_FLOOR:.2f} tokens — the "
+                    f"emission rate at the worst-case Z3 assignment. "
+                    + tail
+                )
             recommendation = NumericRecommendation(
                 parameter="B_per_period",
                 current_range=(B_val, B_val),
                 safe_threshold=E_val * RHO_BURN_COVERAGE_FLOOR,
                 direction=">=",
-                narrative=(
-                    f"Raise per-period burn for {token.id} to at least "
-                    f"{E_val * RHO_BURN_COVERAGE_FLOOR:.2f} tokens — the "
-                    f"emission rate at the worst-case Z3 assignment. "
-                    + (
-                        "Demand-driven burn (tied to redemption events) is "
-                        "the structurally correct fix; rule-driven schedules "
-                        "drift out of balance as the system scales."
-                        if not is_demand_driven
-                        else "The current burn is demand-driven; tightening "
-                        "its parameter ranges (or coupling burn to a higher "
-                        "fraction of redemption events) closes the gap."
-                    )
-                ),
+                narrative=narrative,
             )
             return Verdict(
                 failure_mode=self.name,

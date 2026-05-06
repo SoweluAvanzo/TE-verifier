@@ -448,3 +448,125 @@ button.ghost:hover {
 .layout-verdict .cv-list li {
   font-size: 0.9em;
 }
+
+/* =================================================== Phase C — Multi-token / multi-mechanism */
+
+.token-card {
+  border: 1px solid #cfd6e2;
+  border-radius: 8px;
+  background: #fbfcfe;
+  padding: 1rem 1.2rem;
+  margin-bottom: 1rem;
+}
+
+.token-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px dashed #cfd6e2;
+}
+
+.token-card-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #1d3a5e;
+}
+
+.rules-block {
+  border: 1px solid #d8dfe8;
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  margin: 0.8rem 0;
+  background: #fff;
+}
+
+.rules-block legend {
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: #2c3e50;
+  padding: 0 0.4rem;
+}
+
+.rule-row {
+  border: 1px solid #e7eaf0;
+  border-radius: 5px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.4rem 0;
+  background: #fafbfd;
+}
+
+.rule-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+
+.rule-row-head h5 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #4a5d75;
+}
+
+.rule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 0.9rem;
+}
+
+.rule-grid .field {
+  margin-bottom: 0;
+}
+
+.composition-preview {
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: #f1f4f8;
+  border-left: 3px solid #6986a8;
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 0.82rem;
+  color: #2c3e50;
+  border-radius: 3px;
+}
+
+.xtflow-card {
+  border: 1px solid #cfd6e2;
+  border-radius: 6px;
+  padding: 0.8rem 1rem;
+  margin-bottom: 0.8rem;
+  background: #fff;
+}
+
+.xtflow-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.xtflow-card-head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.xtflow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 0.9rem;
+}
+
+.ghost-danger {
+  background: transparent;
+  border: 1px solid #d99;
+  color: #a33;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.ghost-danger:hover {
+  background: #fee;
+}

@@ -76,22 +76,30 @@ class FM5CriticalMass(FailureMode):
         if d_hi > 0 and N_lo >= 1:
             k_star = max(0.0, (N_lo - 1) / (2 * d_hi))
 
-        critical_values: list[CriticalValue] = [
-            CriticalValue(
-                parameter="N",
-                value=n_star,
-                direction=">=",
-                formula="N* = 2·K·d + 1   (worst-case over declared K, d ranges)",
-                explanation=(
-                    f"Minimum participant count for which the well-mixed "
-                    f"critical-mass condition holds across all declared "
-                    f"K and d. With K up to {K_hi:g} and d up to {d_hi:g}, "
-                    f"the system needs at least {n_star:.0f} participants."
-                ),
-                source="closed_form",
+        # P3 — only surface critical values that are within sight of
+        # the binding edge of the user's declared box. When N_lo is
+        # already well above N* (≥ 2× margin), or K_hi is well below
+        # K* (≤ 0.5× ratio), the values are degenerate and clutter the
+        # PASS verdict.
+        critical_values: list[CriticalValue] = []
+        n_relevant = N_lo < 2.0 * n_star  # within 2× of the threshold
+        if n_relevant:
+            critical_values.append(
+                CriticalValue(
+                    parameter="N",
+                    value=n_star,
+                    direction=">=",
+                    formula="N* = 2·K·d + 1   (worst-case over declared K, d ranges)",
+                    explanation=(
+                        f"Minimum participant count for which the well-mixed "
+                        f"critical-mass condition holds across all declared "
+                        f"K and d. With K up to {K_hi:g} and d up to {d_hi:g}, "
+                        f"the system needs at least {n_star:.0f} participants."
+                    ),
+                    source="closed_form",
+                )
             )
-        ]
-        if k_star is not None:
+        if k_star is not None and K_hi > 0.5 * k_star:
             critical_values.append(
                 CriticalValue(
                     parameter="K",
@@ -278,6 +286,30 @@ class FM5CriticalMass(FailureMode):
         otherwise recommend K* (lower offer variety).
         """
         if n_star is not None and N_range.min < n_star:
+            # P2 — when N* is more than 10× the user's declared N_lo,
+            # the binding pressure usually comes from a too-wide K
+            # range (K_hi inflates 2·K·d). Lead with "narrow K" so the
+            # user fixes the input that's actually driving the threshold.
+            if N_range.min > 0 and n_star > 10.0 * N_range.min:
+                k_lo_str = f"{K_range.min:.0f}"
+                k_hi_str = f"{K_range.max:.0f}"
+                return NumericRecommendation(
+                    parameter="N",
+                    current_range=(N_range.min, N_range.max),
+                    safe_threshold=n_star,
+                    direction=">=",
+                    narrative=(
+                        f"Critical-mass threshold N* = {n_star:.0f} is more "
+                        f"than 10× your declared N_lo = {N_range.min:.0f}. "
+                        f"This is driven by your K range "
+                        f"[{k_lo_str}, {k_hi_str}] — N* = 2·K_hi·d_hi+1 "
+                        f"scales linearly with the upper K bound. The "
+                        f"first-order fix is to **narrow your K range** "
+                        f"to reflect the realistic offer variety. With a "
+                        f"tighter K, N* drops accordingly and the "
+                        f"declared participant base may already suffice."
+                    ),
+                )
             return NumericRecommendation(
                 parameter="N",
                 current_range=(N_range.min, N_range.max),

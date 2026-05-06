@@ -8,6 +8,32 @@
 //   #verdict-cards       — one card per failure mode
 
 (function () {
+  // Fix C — glossary cache. Fetched once on first renderReport and
+  // memoized; subsequent renders reuse the same data without
+  // re-hitting the server.
+  let _conditionsCache = null;
+  let _conditionsPromise = null;
+
+  function fetchConditions() {
+    if (_conditionsCache) return Promise.resolve(_conditionsCache);
+    if (_conditionsPromise) return _conditionsPromise;
+    _conditionsPromise = fetch("/api/conditions")
+      .then((r) => r.json())
+      .then((data) => {
+        _conditionsCache = data;
+        return data;
+      })
+      .catch(() => {
+        _conditionsCache = {};
+        return {};
+      });
+    return _conditionsPromise;
+  }
+
+  function fmIdOf(verdict) {
+    return verdict.failure_mode.split(":")[0].trim();
+  }
+
   function renderReport(report) {
     const reportSummary = document.getElementById("report-summary");
     const coherenceContainer = document.getElementById("coherence-issues");
@@ -16,18 +42,41 @@
 
     // ---- Summary ----
     reportSummary.innerHTML = "";
-    const sevPill = document.createElement("span");
-    sevPill.className = `severity-pill severity-${report.severity}`;
-    sevPill.textContent = `Severity: ${report.severity.toUpperCase()}`;
-    reportSummary.appendChild(sevPill);
+
+    // Headline: counts + a numeric percentage.
+    // Per user feedback, we deliberately drop the "low / moderate /
+    // high / critical" band label and the prose ("broadly sound",
+    // "redesign required") — those over-claim relative to what the
+    // weighted score can actually distinguish. The verdict cards plus
+    // the pass/fail counts below are the honest summary.
+    if (report.overall_risk) {
+      const o = report.overall_risk;
+      const overall = document.createElement("div");
+      overall.className = "overall-risk";
+      overall.dataset.band = o.band;
+      overall.innerHTML =
+        `<div class="overall-risk-headline">` +
+        `<span class="overall-risk-dot" data-band="${o.band}"></span>` +
+        `<span class="pct">Risk score: ${o.normalized_pct.toFixed(1)}%</span>` +
+        `</div>`;
+      reportSummary.appendChild(overall);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "report-meta";
+    const severityDot = document.createElement("span");
+    severityDot.className = "severity-dot";
+    severityDot.dataset.severity = report.severity;
+    severityDot.title = `Severity: ${report.severity}`;
+    meta.appendChild(severityDot);
     const counts = document.createElement("span");
-    counts.style.fontFamily = "var(--font-mono)";
-    counts.style.color = "var(--color-muted)";
+    counts.className = "summary-counts";
     counts.textContent = Object.entries(report.summary || {})
       .filter(([_, v]) => v > 0)
-      .map(([k, v]) => `${k}=${v}`)
+      .map(([k, v]) => `${k.replace("_", " ")} ${v}`)
       .join(" · ");
-    reportSummary.appendChild(counts);
+    meta.appendChild(counts);
+    reportSummary.appendChild(meta);
 
     // ---- Coherence issues ----
     if (coherenceContainer) {
@@ -52,25 +101,64 @@
     // ---- Verdict cards ----
     verdictCards.innerHTML = "";
     (report.verdicts || []).forEach((v) => verdictCards.appendChild(renderVerdict(v)));
+
+    // Fix C — once the cards are in the DOM, fetch the glossary and
+    // hydrate the "Variables in this check" section on each card.
+    fetchConditions().then((conditions) => {
+      verdictCards.querySelectorAll("[data-fm-id]").forEach((card) => {
+        const fmId = card.dataset.fmId;
+        const cond = conditions[fmId];
+        if (!cond || !cond.variables || cond.variables.length === 0) return;
+        const slot = card.querySelector(".variable-glossary");
+        if (!slot || slot.dataset.hydrated === "true") return;
+        slot.innerHTML = renderGlossary(cond);
+        slot.dataset.hydrated = "true";
+      });
+    });
+  }
+
+  function renderGlossary(cond) {
+    const items = cond.variables
+      .map(
+        (v) =>
+          `<dt><code>${escapeHtml(v.symbol)}</code> · <em>${escapeHtml(
+            v.name
+          )}</em>${v.units ? ` <span class="unit">[${escapeHtml(v.units)}]</span>` : ""}</dt>` +
+          `<dd>${escapeHtml(v.description)}</dd>`
+      )
+      .join("");
+    return (
+      `<details class="glossary"><summary>Variables in this check</summary>` +
+      `<dl>${items}</dl></details>`
+    );
   }
 
   function renderVerdict(v) {
     const card = document.createElement("article");
-    card.className = `verdict-card status-${v.status}`;
+    // Card surface itself is colour-coded; data attributes drive the
+    // CSS palette (status × risk_level). No textual "pass / fail /
+    // amber / red_critical" pills — the colour is the signal.
+    card.className = "verdict-card";
+    card.dataset.status = v.status;
+    card.dataset.risk = v.risk_level || "not_applicable";
+    card.dataset.fmId = fmIdOf(v);
 
     const header = document.createElement("header");
-    const pill = document.createElement("span");
-    pill.className = `status-pill ${v.status}`;
-    pill.textContent = v.status.replace("_", " ");
     const title = document.createElement("h3");
     title.textContent = v.failure_mode;
-    const subject = document.createElement("span");
-    subject.className = "subject-tag";
-    subject.textContent = v.subject;
-    header.appendChild(pill);
     header.appendChild(title);
-    header.appendChild(subject);
+    if (v.subject && v.subject !== "system") {
+      const subject = document.createElement("span");
+      subject.className = "subject-tag";
+      subject.textContent = v.subject;
+      header.appendChild(subject);
+    }
     card.appendChild(header);
+
+    // Fix C — glossary slot. Hydrated asynchronously after fetchConditions.
+    const glossarySlot = document.createElement("div");
+    glossarySlot.className = "variable-glossary";
+    card.appendChild(glossarySlot);
 
     const cond = document.createElement("div");
     cond.className = "formal-condition";

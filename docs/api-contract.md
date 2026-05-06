@@ -29,7 +29,19 @@ critical value, and every coherence issue is here.
       "message": "...",
       "suggestion": "..."
     }
-  ]
+  ],
+  "overall_risk": {                  // Phase D — Simulator.pdf §6
+    "weighted": 12.5,                // raw weighted score
+    "normalized_pct": 37.9,          // weighted / Smax * 100
+    "band": "moderate",              // low | moderate | high | critical
+    "message": "Several conditions require attention before deployment.",
+    "per_fm_max": {                  // worst risk band per FM (across tokens)
+      "FM1": "amber",
+      "FM3": "red_critical",
+      "FM6": "green"
+    },
+    "contradiction_penalty": 1.0     // sum of coherence-issue penalties
+  }
 }
 ```
 
@@ -59,9 +71,18 @@ material a UI needs to render a per-FM card.
   ],
   "committed_fields": [                      // IR fields the user gave point values for
     "tokens[T].offer_variety_K"
-  ]
+  ],
+  "risk_level": "amber"                      // Phase D — green | green_borderline | amber | red | red_critical | not_applicable
 }
 ```
+
+### `risk_level` — Simulator.pdf §4
+
+Complementary to `status`. The SMT-derived `status` answers "does
+*any* parameter assignment in the declared box violate the condition?";
+`risk_level` answers "at the **midpoint** of the box, how bad is it?".
+Both are useful and they are reported side-by-side. Bands per
+Simulator.pdf §4 (FM1 ros, FM2 τ̄ in days, FM3 ρ, FM5 rcm, FM6 Γ).
 
 ### `Counterexample`
 

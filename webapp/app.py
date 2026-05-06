@@ -235,6 +235,19 @@ def conditions() -> dict:
             "design_knobs": [list(t) for t in cond.design_knobs],
             "elicitation_questions": list(cond.elicitation_questions),
             "nfr_reweightings": [list(t) for t in cond.nfr_reweightings],
+            # Fix C — variable glossary fed to the verdict card so every
+            # symbol used in the formal condition has an inline plain-
+            # English gloss.
+            "variables": [
+                {
+                    "symbol": v.symbol,
+                    "name": v.name,
+                    "description": v.description,
+                    "units": v.units,
+                    "domain": v.domain,
+                }
+                for v in cond.variables
+            ],
             "critical_values": [
                 {
                     "parameter": cv.parameter,

@@ -1,11 +1,11 @@
-// Form-driven UI orchestration.
+// Form-driven UI orchestration (Phase C).
 //
 // Strategy:
-// - Read the form, build a JS object mirroring the Pydantic IR shape.
-// - POST as JSON to /api/build-and-verify.
-// - On response, render the verdict in the right pane (verdict.js).
-// - "Load example" buttons hit /api/yaml-to-ir to fetch a hydrated dict
-//   and populate the form fields from it.
+// - Token cards, rule rows, and cross-token flow cards are cloned from
+//   <template> elements and managed in JS — supporting multi-token
+//   systems with multi-mechanism mint/burn and inter-token flows.
+// - buildIR() walks the DOM and emits the Pydantic IR shape.
+// - hydrateForm() rebuilds the dynamic structures from a server-validated IR.
 
 const ENUMS = JSON.parse(document.getElementById("enums-data").textContent);
 
@@ -21,12 +21,308 @@ const verdictContent = document.getElementById("verdict-content");
 const agentContainer = document.getElementById("agent-types-container");
 const addAgentBtn = document.getElementById("add-agent-btn");
 const topologyDegree = document.getElementById("topology-degree");
+const tokensContainer = document.getElementById("tokens-container");
+const addTokenBtn = document.getElementById("add-token-btn");
+const xtflowsContainer = document.getElementById("xtflows-container");
+const addXtflowBtn = document.getElementById("add-xtflow-btn");
 
-// Track the most recent verified YAML for download.
+const TOKEN_TPL = document.getElementById("token-card-tpl");
+const MINT_TPL = document.getElementById("mint-rule-tpl");
+const BURN_TPL = document.getElementById("burn-rule-tpl");
+const XTFLOW_TPL = document.getElementById("xtflow-card-tpl");
+
 let lastVerifiedYaml = "";
 
 // =====================================================================
-// Agent-type rows (variable count)
+// Cloning helpers
+// =====================================================================
+
+function cloneTemplate(tpl, replacements) {
+  // Substitute __IDX__/__RIDX__/__FIDX__ in attribute names and text.
+  // Templates use these placeholders so we get unique form-field names.
+  let html = tpl.innerHTML;
+  for (const [key, val] of Object.entries(replacements)) {
+    html = html.split(key).join(val);
+  }
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = html.trim();
+  return wrapper.firstElementChild;
+}
+
+// =====================================================================
+// Token cards (multi-token, multi-mechanism)
+// =====================================================================
+
+let tokenCounter = 0;
+
+function addTokenCard(prefill = {}) {
+  tokenCounter++;
+  const tidx = tokenCounter;
+  const card = cloneTemplate(TOKEN_TPL, { __IDX__: String(tidx) });
+  card.dataset.tidx = String(tidx);
+
+  const removeBtn = card.querySelector(".remove-token");
+  removeBtn.addEventListener("click", () => {
+    if (tokensContainer.querySelectorAll(".token-card").length === 1) {
+      verifyStatus.textContent = "At least one token is required.";
+      return;
+    }
+    card.remove();
+  });
+
+  const addMintBtn = card.querySelector(".add-mint-rule");
+  const addBurnBtn = card.querySelector(".add-burn-rule");
+  const mintList = card.querySelector(".mint-rules");
+  const burnList = card.querySelector(".burn-rules");
+  addMintBtn.addEventListener("click", () => addRuleRow(mintList, "mint"));
+  addBurnBtn.addEventListener("click", () => addRuleRow(burnList, "burn"));
+
+  // Live composition preview — updates on any input change inside the card.
+  const updatePreviews = () => updateCompositionPreviews(card);
+  card.addEventListener("input", updatePreviews);
+  card.addEventListener("change", updatePreviews);
+
+  // Token-id input lifts the card title.
+  const idInput = card.querySelector(`[name="tok-${tidx}-id"]`);
+  const display = card.querySelector(".tok-name-display");
+  idInput.addEventListener("input", () => {
+    display.textContent = idInput.value || `#${tidx}`;
+  });
+
+  tokensContainer.appendChild(card);
+
+  // Apply prefill or seed defaults
+  if (prefill.id) idInput.value = prefill.id;
+  display.textContent = prefill.id || `#${tidx}`;
+  // transferable: explicit false unchecks the box; missing = default true.
+  const transferableInput = card.querySelector(`[name="tok-${tidx}-transferable"]`);
+  if (transferableInput) {
+    transferableInput.checked = prefill.transferable !== false;
+  }
+  setMultiCheckIn(card, `tok-${tidx}-function`, prefill.function);
+  setMultiCheckIn(card, `tok-${tidx}-earning`, prefill.earning_mechanisms);
+  setValIn(card, `tok-${tidx}-anchor`, prefill.value_anchor);
+  setMultiCheckIn(card, `tok-${tidx}-holding`, prefill.holding_incentives);
+  setValIn(card, `tok-${tidx}-verification`, prefill.contribution_verification ?? "");
+  setValIn(card, `tok-${tidx}-redemption`, prefill.redemption_mechanism ?? "");
+  setRangeIn(card, `tok-${tidx}-K-min`, `tok-${tidx}-K-max`, prefill.offer_variety_K);
+
+  const mintRules = prefill.emission_rules || [];
+  const burnRules = prefill.burn_rules || [];
+  if (mintRules.length === 0) {
+    addRuleRow(mintList, "mint");
+  } else {
+    for (const r of mintRules) addRuleRow(mintList, "mint", r);
+  }
+  if (burnRules.length === 0) {
+    // Empty burn list is valid — token may have no burn mechanism.
+  } else {
+    for (const r of burnRules) addRuleRow(burnList, "burn", r);
+  }
+
+  updateCompositionPreviews(card);
+  return card;
+}
+
+addTokenBtn.addEventListener("click", () => addTokenCard());
+
+// =====================================================================
+// Rule rows
+// =====================================================================
+
+let ruleCounter = 0;
+
+function addRuleRow(container, side, prefill) {
+  ruleCounter++;
+  const ridx = ruleCounter;
+  const tpl = side === "mint" ? MINT_TPL : BURN_TPL;
+  const row = cloneTemplate(tpl, { __RIDX__: String(ridx) });
+  row.dataset.side = side;
+
+  row.querySelector(".remove-rule").addEventListener("click", () => row.remove());
+  container.appendChild(row);
+
+  if (prefill) {
+    const triggerKind = prefill.trigger?.kind;
+    if (triggerKind) row.querySelector(".rule-trigger").value = triggerKind;
+    if (side === "mint") {
+      const sign = prefill.function?.sign;
+      if (sign) row.querySelector(".rule-sign").value = sign;
+    }
+    const ef = prefill.trigger?.event_frequency;
+    if (ef) {
+      row.querySelector(".rule-freq-family").value = ef.family;
+      const r = ef.bounds || ef.parameter_ranges?.c || ef.parameter_ranges?.a || ef.parameter_ranges?.value;
+      if (r) {
+        row.querySelector(".rule-freq-min").value = r.min ?? "";
+        row.querySelector(".rule-freq-max").value = r.max ?? "";
+      }
+    }
+    const ac = prefill.function?.asymptotic_class;
+    if (ac) {
+      row.querySelector(".rule-fn-family").value = ac.family;
+      const r = ac.bounds || ac.parameter_ranges?.c || ac.parameter_ranges?.a || ac.parameter_ranges?.value;
+      if (r) {
+        row.querySelector(".rule-fn-min").value = r.min ?? "";
+        row.querySelector(".rule-fn-max").value = r.max ?? "";
+      }
+    }
+  }
+
+  return row;
+}
+
+function readRuleRow(row, side) {
+  const family = row.querySelector(".rule-fn-family").value || "constant";
+  const fnMin = parseFloat(row.querySelector(".rule-fn-min").value);
+  const fnMax = parseFloat(row.querySelector(".rule-fn-max").value);
+  const ac = makeAsymptoticClass(family, fnMin, fnMax);
+  const trigger = { kind: row.querySelector(".rule-trigger").value };
+
+  const freqFamily = row.querySelector(".rule-freq-family").value || "constant";
+  const freqMin = parseFloat(row.querySelector(".rule-freq-min").value);
+  const freqMax = parseFloat(row.querySelector(".rule-freq-max").value);
+  if (!Number.isNaN(freqMin) || freqFamily === "unspecified") {
+    const freqClass = makeAsymptoticClass(freqFamily, freqMin, freqMax);
+    if (freqClass) trigger.event_frequency = freqClass;
+  }
+
+  const sign = side === "mint"
+    ? row.querySelector(".rule-sign").value || "always_positive"
+    : "always_negative";
+
+  return {
+    trigger,
+    function: {
+      sign,
+      asymptotic_class: ac || { family: "constant", parameter_ranges: { c: { min: 0, max: 0 } } },
+    },
+  };
+}
+
+function makeAsymptoticClass(family, min, max) {
+  if (family === "unspecified") {
+    const lo = Number.isNaN(min) ? 0 : min;
+    const hi = Number.isNaN(max) ? 1e9 : max;
+    return { family: "unspecified", parameter_ranges: { value: { min: lo, max: hi } } };
+  }
+  if (Number.isNaN(min) || Number.isNaN(max)) return null;
+  if (family === "bounded_range") {
+    return { family, bounds: { min, max } };
+  }
+  const paramKey = family === "linear" ? "a" : "c";
+  return { family, parameter_ranges: { [paramKey]: { min, max } } };
+}
+
+// =====================================================================
+// Cross-token flow cards
+// =====================================================================
+
+let xtflowCounter = 0;
+
+function addXtflowCard(prefill = {}) {
+  xtflowCounter++;
+  const fidx = xtflowCounter;
+  const card = cloneTemplate(XTFLOW_TPL, { __FIDX__: String(fidx) });
+
+  card.querySelector(".remove-xtflow").addEventListener("click", () => card.remove());
+
+  // Coupling toggle: show/hide ratio vs amount block.
+  const couplingSel = card.querySelector(".xt-coupling");
+  const ratioField = card.querySelector(".xt-ratio-field");
+  const amountBlock = card.querySelector(".xt-amount-block");
+  const updateCouplingUI = () => {
+    const proportional = couplingSel.value === "proportional_to_source";
+    ratioField.hidden = !proportional;
+    amountBlock.hidden = proportional;
+  };
+  couplingSel.addEventListener("change", updateCouplingUI);
+
+  xtflowsContainer.appendChild(card);
+
+  if (prefill.source_token) card.querySelector(".xt-source").value = prefill.source_token;
+  if (prefill.source_event) card.querySelector(".xt-event").value = prefill.source_event;
+  if (prefill.target_token) card.querySelector(".xt-target").value = prefill.target_token;
+  if (prefill.target_action) card.querySelector(".xt-action").value = prefill.target_action;
+  if (prefill.coupling) couplingSel.value = prefill.coupling;
+  if (prefill.coupling_ratio) {
+    card.querySelector(".xt-ratio-min").value = prefill.coupling_ratio.min ?? "";
+    card.querySelector(".xt-ratio-max").value = prefill.coupling_ratio.max ?? "";
+  }
+  if (prefill.amount) {
+    card.querySelector(".xt-amount-family").value = prefill.amount.family || "constant";
+    const r = prefill.amount.bounds || prefill.amount.parameter_ranges?.c || prefill.amount.parameter_ranges?.a;
+    if (r) {
+      card.querySelector(".xt-amount-min").value = r.min ?? "";
+      card.querySelector(".xt-amount-max").value = r.max ?? "";
+    }
+  }
+  updateCouplingUI();
+
+  return card;
+}
+
+addXtflowBtn.addEventListener("click", () => addXtflowCard());
+
+function readXtflowCard(card) {
+  const source_token = card.querySelector(".xt-source").value.trim();
+  const target_token = card.querySelector(".xt-target").value.trim();
+  if (!source_token || !target_token) return null;
+  const flow = {
+    source_token,
+    source_event: card.querySelector(".xt-event").value.trim() || "event",
+    target_token,
+    target_action: card.querySelector(".xt-action").value,
+    coupling: card.querySelector(".xt-coupling").value,
+  };
+  if (flow.coupling === "proportional_to_source") {
+    const min = parseFloat(card.querySelector(".xt-ratio-min").value);
+    const max = parseFloat(card.querySelector(".xt-ratio-max").value);
+    if (Number.isNaN(min) || Number.isNaN(max)) return null;
+    flow.coupling_ratio = { min, max };
+    // Pydantic still requires `amount`; supply a placeholder constant 0.
+    flow.amount = { family: "constant", parameter_ranges: { c: { min: 0, max: 0 } } };
+  } else {
+    const family = card.querySelector(".xt-amount-family").value || "constant";
+    const min = parseFloat(card.querySelector(".xt-amount-min").value);
+    const max = parseFloat(card.querySelector(".xt-amount-max").value);
+    const ac = makeAsymptoticClass(family, min, max);
+    if (!ac) return null;
+    flow.amount = ac;
+  }
+  return flow;
+}
+
+// =====================================================================
+// Live composition preview
+// =====================================================================
+
+function updateCompositionPreviews(card) {
+  for (const side of ["mint", "burn"]) {
+    const pre = card.querySelector(`.composition-preview[data-side="${side}"]`);
+    const rules = card.querySelectorAll(`.${side}-rule`);
+    if (rules.length === 0) {
+      pre.textContent = side === "mint" ? "No mint mechanisms yet." : "No burn mechanisms (FM3 will flag).";
+      continue;
+    }
+    const parts = [];
+    rules.forEach((row, i) => {
+      const family = row.querySelector(".rule-fn-family").value || "constant";
+      const min = row.querySelector(".rule-fn-min").value;
+      const max = row.querySelector(".rule-fn-max").value;
+      const freqFamily = row.querySelector(".rule-freq-family").value || "constant";
+      const freqMin = row.querySelector(".rule-freq-min").value;
+      const freqMax = row.querySelector(".rule-freq-max").value;
+      const fnDesc = `${family}[${min || "?"}..${max || "?"}]`;
+      const freqDesc = freqMin || freqMax ? ` × ${freqFamily}[${freqMin || "?"}..${freqMax || "?"}]` : "";
+      parts.push(`${fnDesc}${freqDesc}`);
+    });
+    pre.textContent = `${side === "mint" ? "E(t)" : "B(t)"} ≈ ${parts.join("  +  ")}`;
+  }
+}
+
+// =====================================================================
+// Agent rows (unchanged from Phase B)
 // =====================================================================
 
 let agentCounter = 0;
@@ -40,7 +336,7 @@ function addAgentRow(prefill = {}) {
   div.innerHTML = `
     <div class="agent-row-head">
       <h4>Agent type #${idx}</h4>
-      <button type="button" class="remove-agent">remove</button>
+      <button type="button" class="remove-agent ghost-danger">remove</button>
     </div>
     <div class="agent-grid">
       <div class="field">
@@ -84,25 +380,29 @@ function addAgentRow(prefill = {}) {
 }
 
 addAgentBtn.addEventListener("click", () => addAgentRow());
-
-// Seed with one row
 addAgentRow({ id: "user", fraction: 1.0, expected_holding_time: { expected_periods: { min: 5, max: 5 } } });
 
-// Show topology_degree fields when topology = network
+// Topology degree visibility toggle
 const topologySelect = document.getElementById("part-topology");
 topologySelect.addEventListener("change", () => {
   topologyDegree.hidden = topologySelect.value !== "network";
 });
 
+// Seed one default token card so the form isn't empty.
+addTokenCard({
+  id: "T",
+  function: ["medium_of_exchange"],
+});
+
 // =====================================================================
-// Form → IR object
+// Form → IR
 // =====================================================================
 
 function buildIR() {
   const fd = new FormData(form);
-  const ir = { meta: {}, tokens: [{}], participants: {}, governance: {} };
+  const ir = { meta: {}, tokens: [], participants: {}, governance: {}, cross_token_flows: [] };
 
-  // ---------- Meta ----------
+  // Meta
   ir.meta.name = fd.get("meta-name") || "Untitled";
   const desc = fd.get("meta-description");
   if (desc) ir.meta.description = desc;
@@ -117,64 +417,53 @@ function buildIR() {
     governance_maturity: fd.get("nfr-maturity") || "medium_term",
   };
 
-  // ---------- Token (single) ----------
-  const tok = ir.tokens[0];
-  tok.id = fd.get("token-id") || "T";
-  tok.function = fd.getAll("token-function");
-  if (tok.function.length === 0) tok.function = ["medium_of_exchange"];
-  const earning = fd.getAll("token-earning");
-  if (earning.length) tok.earning_mechanisms = earning;
-  tok.value_anchor = fd.get("token-anchor") || "none";
-  const holding = fd.getAll("token-holding");
-  if (holding.length) {
-    tok.holding_incentives = holding;
-    tok.holding_incentive_present = holding.some((h) => h !== "none");
-  }
-  const cv = fd.get("token-verification");
-  if (cv) tok.contribution_verification = cv;
-  const rm = fd.get("token-redemption");
-  if (rm) tok.redemption_mechanism = rm;
+  // Tokens
+  tokensContainer.querySelectorAll(".token-card").forEach((card) => {
+    const tidx = card.dataset.tidx;
+    const tok = {};
+    tok.id = fd.get(`tok-${tidx}-id`) || `T${tidx}`;
+    // Transferable: schema default is true; emit explicit false when
+    // the user unchecks the box (HTML checkboxes only POST when checked).
+    tok.transferable = fd.get(`tok-${tidx}-transferable`) === "true";
+    tok.function = fd.getAll(`tok-${tidx}-function`);
+    if (tok.function.length === 0) tok.function = ["medium_of_exchange"];
+    const earning = fd.getAll(`tok-${tidx}-earning`);
+    if (earning.length) tok.earning_mechanisms = earning;
+    tok.value_anchor = fd.get(`tok-${tidx}-anchor`) || "none";
+    const holding = fd.getAll(`tok-${tidx}-holding`);
+    if (holding.length) {
+      tok.holding_incentives = holding;
+      tok.holding_incentive_present = holding.some((h) => h !== "none");
+    }
+    const cv = fd.get(`tok-${tidx}-verification`);
+    if (cv) tok.contribution_verification = cv;
+    const rm = fd.get(`tok-${tidx}-redemption`);
+    if (rm) tok.redemption_mechanism = rm;
+    const kRange = readRange(fd, `tok-${tidx}-K-min`, `tok-${tidx}-K-max`);
+    if (kRange) tok.offer_variety_K = kRange;
 
-  const kRange = readRange(fd, "token-K-min", "token-K-max");
-  if (kRange) tok.offer_variety_K = kRange;
-
-  // Emission rule
-  const emitTrigger = fd.get("emit-trigger");
-  if (emitTrigger && emitTrigger !== "none") {
-    const freq = readAsymptoticFromForm(fd, "emit-frequency", "emit-freq-min", "emit-freq-max");
-    const fnClass = readAsymptoticFromForm(fd, "emit-class", "emit-fn-min", "emit-fn-max");
-    tok.emission_rules = [
-      {
-        trigger: { kind: emitTrigger, ...(freq && { event_frequency: freq }) },
-        function: {
-          sign: fd.get("emit-sign") || "always_positive",
-          asymptotic_class: fnClass || { family: "constant", parameter_ranges: { c: { min: 1, max: 1 } } },
-        },
-      },
-    ];
-  } else {
+    // Mint rules
     tok.emission_rules = [];
-  }
+    card.querySelectorAll(".mint-rule").forEach((row) => {
+      tok.emission_rules.push(readRuleRow(row, "mint"));
+    });
 
-  // Burn rule
-  const burnTrigger = fd.get("burn-trigger");
-  if (burnTrigger && burnTrigger !== "none") {
-    const freq = readAsymptoticFromForm(fd, null, "burn-freq-min", "burn-freq-max");
-    const fnClass = readAsymptoticFromForm(fd, null, "burn-fn-min", "burn-fn-max");
-    tok.burn_rules = [
-      {
-        trigger: { kind: burnTrigger, ...(freq && { event_frequency: freq }) },
-        function: {
-          sign: "always_negative",
-          asymptotic_class: fnClass || { family: "constant", parameter_ranges: { c: { min: 1, max: 1 } } },
-        },
-      },
-    ];
-  } else {
+    // Burn rules
     tok.burn_rules = [];
-  }
+    card.querySelectorAll(".burn-rule").forEach((row) => {
+      tok.burn_rules.push(readRuleRow(row, "burn"));
+    });
 
-  // ---------- Participants ----------
+    ir.tokens.push(tok);
+  });
+
+  // Cross-token flows
+  xtflowsContainer.querySelectorAll(".xtflow-card").forEach((card) => {
+    const flow = readXtflowCard(card);
+    if (flow) ir.cross_token_flows.push(flow);
+  });
+
+  // Participants
   ir.participants.count_N = readRange(fd, "part-N-min", "part-N-max") || { min: 1, max: 1 };
   ir.participants.expected_Q = readRange(fd, "part-Q-min", "part-Q-max") || { min: 0, max: 0 };
   ir.participants.average_demand_d = readRange(fd, "part-d-min", "part-d-max") || { min: 0, max: 0 };
@@ -190,7 +479,7 @@ function buildIR() {
     if (deg) ir.participants.topology_params = { average_degree: deg };
   }
 
-  // Agent types
+  // Agents
   const agents = [];
   agentContainer.querySelectorAll(".agent-row").forEach((row) => {
     const idx = row.dataset.idx;
@@ -202,10 +491,7 @@ function buildIR() {
       id,
       fraction,
       expected_holding_time: {
-        expected_periods: readRange(fd, `agent-${idx}-tau-min`, `agent-${idx}-tau-max`) || {
-          min: 1,
-          max: 1,
-        },
+        expected_periods: readRange(fd, `agent-${idx}-tau-min`, `agent-${idx}-tau-max`) || { min: 1, max: 1 },
       },
     };
     const role = fd.get(`agent-${idx}-role`);
@@ -216,10 +502,10 @@ function buildIR() {
   });
   if (agents.length) ir.participants.agent_types = agents;
 
-  // ---------- Governance ----------
+  // Governance
   ir.governance.type = fd.get("gov-type") || "dao";
   const ruleStruct = {};
-  const decisions = [
+  for (const d of [
     "emission_rate_adjustment",
     "burn_rate_adjustment",
     "participant_eligibility",
@@ -227,8 +513,7 @@ function buildIR() {
     "exchange_ratios",
     "reward_structure_modification",
     "system_rule_modification",
-  ];
-  for (const d of decisions) {
+  ]) {
     const val = fd.get(`gov-rule-${d}`);
     if (val) ruleStruct[d] = val;
   }
@@ -236,13 +521,11 @@ function buildIR() {
 
   const gammaRange = readRange(fd, "gov-gamma-min", "gov-gamma-max");
   if (gammaRange) ir.governance.monitoring_capacity_gamma = gammaRange;
-
   const sanctionKind = fd.get("gov-sanction-kind") || "warning";
   const sanctionStruct = { kind: sanctionKind };
   const sRange = readRange(fd, "gov-S-min", "gov-S-max");
   if (sRange) sanctionStruct.S_normalized = sRange;
   ir.governance.sanction_structure = sanctionStruct;
-
   const giniRange = readRange(fd, "gov-gini-min", "gov-gini-max");
   if (giniRange) ir.governance.token_balance_gini = giniRange;
 
@@ -260,27 +543,12 @@ function readRange(fd, minKey, maxKey) {
   return { min, max };
 }
 
-function readAsymptoticFromForm(fd, familyKey, minKey, maxKey) {
-  const family = familyKey ? fd.get(familyKey) || "constant" : "constant";
-  const range = readRange(fd, minKey, maxKey);
-  if (!range && family === "unspecified") {
-    return { family: "unspecified", parameter_ranges: { value: { min: 0, max: 1e9 } } };
-  }
-  if (!range) return null;
-  if (family === "bounded_range") {
-    return { family, bounds: { min: range.min, max: range.max } };
-  }
-  // For constant / linear / unspecified — use parameter range under "c" or "value"
-  const paramKey = family === "linear" ? "a" : family === "unspecified" ? "value" : "c";
-  return { family, parameter_ranges: { [paramKey]: range } };
-}
-
 // =====================================================================
-// Form ← IR object (hydrate from a loaded example)
+// IR → Form (hydrate)
 // =====================================================================
 
 function hydrateForm(ir) {
-  // Reset multi-select checkboxes first
+  // Reset top-level checkboxes
   form.querySelectorAll('input[type="checkbox"]').forEach((cb) => (cb.checked = false));
 
   // Meta
@@ -295,65 +563,21 @@ function hydrateForm(ir) {
   setVal("nfr-circulation", ir.meta?.nfrs?.circulation_speed);
   setVal("nfr-maturity", ir.meta?.nfrs?.governance_maturity);
 
-  // Token (just the first one — multi-token requires advanced YAML)
-  const tok = (ir.tokens || [])[0] || {};
-  setVal("token-id", tok.id);
-  setMultiCheck("token-function", tok.function);
-  setMultiCheck("token-earning", tok.earning_mechanisms);
-  setVal("token-anchor", tok.value_anchor);
-  setMultiCheck("token-holding", tok.holding_incentives);
-  setVal("token-verification", tok.contribution_verification ?? "");
-  setVal("token-redemption", tok.redemption_mechanism ?? "");
-  setRange("token-K-min", "token-K-max", tok.offer_variety_K);
-
-  // Emission rule
-  const emit = (tok.emission_rules || [])[0];
-  if (emit) {
-    setVal("emit-trigger", emit.trigger?.kind || "behavioral_event");
-    const ef = emit.trigger?.event_frequency;
-    if (ef) {
-      setVal("emit-frequency", ef.family);
-      setRange(
-        "emit-freq-min",
-        "emit-freq-max",
-        ef.bounds || ef.parameter_ranges?.c || ef.parameter_ranges?.a || ef.parameter_ranges?.value
-      );
-    }
-    setVal("emit-sign", emit.function?.sign);
-    const ac = emit.function?.asymptotic_class;
-    if (ac) {
-      setVal("emit-class", ac.family);
-      setRange(
-        "emit-fn-min",
-        "emit-fn-max",
-        ac.bounds || ac.parameter_ranges?.c || ac.parameter_ranges?.a || ac.parameter_ranges?.value
-      );
-    }
+  // Tokens — clear and rebuild
+  tokensContainer.innerHTML = "";
+  tokenCounter = 0;
+  ruleCounter = 0;
+  const tokens = ir.tokens || [];
+  if (tokens.length === 0) {
+    addTokenCard({ id: "T", function: ["medium_of_exchange"] });
   } else {
-    setVal("emit-trigger", "none");
+    for (const t of tokens) addTokenCard(t);
   }
 
-  // Burn rule
-  const burn = (tok.burn_rules || [])[0];
-  if (burn) {
-    setVal("burn-trigger", burn.trigger?.kind || "demand_driven");
-    const bf = burn.trigger?.event_frequency;
-    if (bf)
-      setRange(
-        "burn-freq-min",
-        "burn-freq-max",
-        bf.bounds || bf.parameter_ranges?.c || bf.parameter_ranges?.a || bf.parameter_ranges?.value
-      );
-    const ac = burn.function?.asymptotic_class;
-    if (ac)
-      setRange(
-        "burn-fn-min",
-        "burn-fn-max",
-        ac.bounds || ac.parameter_ranges?.c || ac.parameter_ranges?.a || ac.parameter_ranges?.value
-      );
-  } else {
-    setVal("burn-trigger", "none");
-  }
+  // Cross-token flows — clear and rebuild
+  xtflowsContainer.innerHTML = "";
+  xtflowCounter = 0;
+  for (const f of ir.cross_token_flows || []) addXtflowCard(f);
 
   // Participants
   setRange("part-N-min", "part-N-max", ir.participants?.count_N);
@@ -370,12 +594,10 @@ function hydrateForm(ir) {
     setRange("part-degree-min", "part-degree-max", ir.participants?.topology_params?.average_degree);
   }
 
-  // Agents — clear existing rows and rebuild
+  // Agents — clear and rebuild
   agentContainer.innerHTML = "";
   agentCounter = 0;
-  for (const ag of ir.participants?.agent_types || []) {
-    addAgentRow(ag);
-  }
+  for (const ag of ir.participants?.agent_types || []) addAgentRow(ag);
 
   // Governance
   setVal("gov-type", ir.governance?.type);
@@ -408,10 +630,16 @@ function setVal(name, value, kind) {
   el.value = value;
 }
 
-function setMultiCheck(name, values) {
+function setValIn(scope, name, value) {
+  if (value == null) return;
+  const el = scope.querySelector(`[name="${name}"]`);
+  if (el) el.value = value;
+}
+
+function setMultiCheckIn(scope, name, values) {
   if (!values) return;
   const set = new Set(values);
-  form.querySelectorAll(`input[name="${name}"]`).forEach((cb) => {
+  scope.querySelectorAll(`input[name="${name}"]`).forEach((cb) => {
     cb.checked = set.has(cb.value);
   });
 }
@@ -420,6 +648,14 @@ function setRange(minName, maxName, range) {
   if (!range) return;
   const minEl = form.querySelector(`[name="${minName}"]`);
   const maxEl = form.querySelector(`[name="${maxName}"]`);
+  if (minEl && range.min != null) minEl.value = range.min;
+  if (maxEl && range.max != null) maxEl.value = range.max;
+}
+
+function setRangeIn(scope, minName, maxName, range) {
+  if (!range) return;
+  const minEl = scope.querySelector(`[name="${minName}"]`);
+  const maxEl = scope.querySelector(`[name="${maxName}"]`);
   if (minEl && range.min != null) minEl.value = range.min;
   if (maxEl && range.max != null) maxEl.value = range.max;
 }
@@ -458,7 +694,7 @@ verifyBtn.addEventListener("click", async () => {
     lastVerifiedYaml = data.yaml || "";
     verdictEmpty.hidden = true;
     verdictContent.hidden = false;
-    renderReport(data.report); // from verdict.js
+    renderReport(data.report);
     verifyStatus.textContent = `Done — severity: ${data.report.severity}`;
   } catch (e) {
     verifyStatus.classList.add("error");
@@ -487,7 +723,6 @@ document.querySelectorAll(".example-btn").forEach((btn) => {
       if (data2.error) throw new Error(data2.error);
       hydrateForm(data2.ir);
       verifyStatus.textContent = `Loaded "${name}". Click Verify.`;
-      // Auto-verify so user immediately sees a worked example
       verifyBtn.click();
     } catch (e) {
       verifyStatus.classList.add("error");
@@ -545,6 +780,12 @@ uploadInput.addEventListener("change", async () => {
 resetBtn.addEventListener("click", () => {
   if (!confirm("Reset all form fields to defaults?")) return;
   form.reset();
+  tokensContainer.innerHTML = "";
+  tokenCounter = 0;
+  ruleCounter = 0;
+  addTokenCard({ id: "T", function: ["medium_of_exchange"] });
+  xtflowsContainer.innerHTML = "";
+  xtflowCounter = 0;
   agentContainer.innerHTML = "";
   agentCounter = 0;
   addAgentRow({ id: "user", fraction: 1.0, expected_holding_time: { expected_periods: { min: 5, max: 5 } } });

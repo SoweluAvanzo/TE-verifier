@@ -198,24 +198,55 @@ class FM4FreeRider(FailureMode):
             )
         # φ* = d / K, worst-case = max(d) / min(K)
         phi_star: float | None = None
+        phi_star_infeasible = False
         if K_lo > 0:
             phi_star = d_hi / K_lo
-            critical_values.append(
-                CriticalValue(
-                    parameter="phi",
-                    value=phi_star,
-                    direction=">=",
-                    formula=f"φ* = d / K = {d_hi:g} / {K_lo:g}",
-                    explanation=(
-                        f"The minimum contributor fraction needed to "
-                        f"satisfy demand at the worst-case d and K. If "
-                        f"declared agent-type fractions place φ below "
-                        f"{phi_star:.3f}, the system structurally lacks "
-                        f"contributors."
-                    ),
-                    source="closed_form",
+            # P5 — φ is structurally a fraction in [0, 1]. When
+            # d_hi / K_lo > 1, no realistic agent-role assignment can
+            # satisfy φ ≥ d/K — the constraint is **infeasible**, not
+            # just stringent. Surface this explicitly so the verdict
+            # screen can route the recommendation to K (or d) instead
+            # of presenting an unsatisfiable φ threshold.
+            phi_star_infeasible = phi_star > 1.0
+            if phi_star_infeasible:
+                critical_values.append(
+                    CriticalValue(
+                        parameter="phi",
+                        value=phi_star,
+                        direction=">=",
+                        formula=(
+                            f"φ* = d / K = {d_hi:g} / {K_lo:g} = "
+                            f"{phi_star:.3g}   (INFEASIBLE — φ ∈ [0, 1])"
+                        ),
+                        explanation=(
+                            f"The contribution clause φ ≥ d/K demands a "
+                            f"contributor fraction of {phi_star:.3f}, but "
+                            f"φ is bounded above by 1. The clause cannot "
+                            f"be satisfied at any agent-role allocation "
+                            f"while d_hi = {d_hi:g} and K_lo = {K_lo:g}. "
+                            f"Lower d, raise K_lo, or both — see the "
+                            f"K* recommendation."
+                        ),
+                        source="closed_form",
+                    )
                 )
-            )
+            else:
+                critical_values.append(
+                    CriticalValue(
+                        parameter="phi",
+                        value=phi_star,
+                        direction=">=",
+                        formula=f"φ* = d / K = {d_hi:g} / {K_lo:g}",
+                        explanation=(
+                            f"The minimum contributor fraction needed to "
+                            f"satisfy demand at the worst-case d and K. If "
+                            f"declared agent-type fractions place φ below "
+                            f"{phi_star:.3f}, the system structurally lacks "
+                            f"contributors."
+                        ),
+                        source="closed_form",
+                    )
+                )
 
         # Swept/committed marking
         swept_fields, committed_fields = self._mark_fields(te)
@@ -233,6 +264,9 @@ class FM4FreeRider(FailureMode):
                 phi_star=phi_star,
                 gamma_range=(gamma_lo, gamma_hi),
                 K_range=(K_lo, K_hi),
+                phi_min=phi_min,
+                d_range=(d_lo, d_hi),
+                phi_star_infeasible=phi_star_infeasible,
             )
             return Verdict(
                 failure_mode=self.name,
@@ -311,14 +345,19 @@ class FM4FreeRider(FailureMode):
         phi_star: float | None,
         gamma_range: tuple[float, float],
         K_range: tuple[float, float],
+        phi_min: float = 0.0,
+        d_range: tuple[float, float] = (0.0, 0.0),
+        phi_star_infeasible: bool = False,
     ) -> NumericRecommendation | None:
         """Pick the recommendation from the binding constraint.
 
-        If the monitoring clause is binding, recommend γ* (typically
-        achieved via stronger contribution_verification — Phase 2 fills
-        in the mechanism mappings). If Ostrom is binding, recommend K*
-        (raising offer variety is usually easier than reweighting the
-        agent-type composition).
+        If the monitoring clause is binding, recommend γ*. If Ostrom is
+        binding and K* is computable, recommend K*. P4: if φ_min == 0
+        (no agent_types declared with role=contributor), the K* path is
+        unavailable; route the recommendation to the agent-role lever
+        instead — telling the user to raise γ in this state would be
+        misleading because the actual binding constraint is the lack of
+        any contributor declaration.
         """
         binding = ce.binding_constraint
         if "monitoring" in binding and gamma_star is not None:
@@ -336,17 +375,65 @@ class FM4FreeRider(FailureMode):
                     gamma_star
                 ),
             )
-        if "contribution" in binding and k_star is not None:
-            return NumericRecommendation(
-                parameter="K",
-                current_range=K_range,
-                safe_threshold=k_star,
-                direction=">=",
-                narrative=(
-                    f"Increase offer variety K to at least {k_star:.2f} so "
-                    f"that φ ≥ d/K holds across the declared d range."
-                ),
-            )
+        if "contribution" in binding:
+            # P5 — when φ* > 1 (structurally infeasible), the binding
+            # lever is K (or d), not φ. Route the recommendation
+            # accordingly with a sharper narrative.
+            if phi_star_infeasible:
+                d_hi = d_range[1]
+                K_lo_current = K_range[0]
+                # K_lo must reach at least d_hi for the constraint to
+                # be satisfiable at any φ ∈ [0, 1].
+                k_target = max(d_hi, k_star) if k_star is not None else d_hi
+                return NumericRecommendation(
+                    parameter="K",
+                    current_range=K_range,
+                    safe_threshold=k_target,
+                    direction=">=",
+                    narrative=(
+                        f"The contribution clause φ ≥ d/K is "
+                        f"**structurally infeasible** at the declared "
+                        f"K_lo = {K_lo_current:g}: φ would have to exceed "
+                        f"1 to satisfy d_hi = {d_hi:g}. Raise K_lo to at "
+                        f"least {k_target:.0f} (so K_lo ≥ d_hi). "
+                        f"Alternatively, lower the declared d range."
+                    ),
+                )
+            if k_star is not None:
+                return NumericRecommendation(
+                    parameter="K",
+                    current_range=K_range,
+                    safe_threshold=k_star,
+                    direction=">=",
+                    narrative=(
+                        f"Increase offer variety K to at least {k_star:.2f} "
+                        f"so that φ ≥ d/K holds across the declared d range."
+                    ),
+                )
+            # P4 — k_star is None when phi_min == 0 (no agent declared
+            # with role=contributor). In that case the binding lever is
+            # the agent_types declaration itself, not γ or K.
+            if phi_min <= 0.0:
+                d_hi = d_range[1]
+                K_lo = K_range[0]
+                phi_needed = d_hi / K_lo if K_lo > 0 else 0.0
+                return NumericRecommendation(
+                    parameter="agent_types[].role",
+                    current_range=None,
+                    safe_threshold=phi_needed,
+                    direction=">=",
+                    narrative=(
+                        f"No agent_type is declared with "
+                        f"`role=contributor`, so the verifier sees "
+                        f"φ_min = 0. The free-rider condition φ ≥ d/K "
+                        f"cannot be satisfied at any γ or K while φ = 0. "
+                        f"**Declare at least one agent_type with "
+                        f"role=contributor**, with combined fraction "
+                        f"≥ {phi_needed:.3f} to satisfy the contribution "
+                        f"clause at d_hi/K_lo. Without that, raising γ "
+                        f"or K cannot rescue this verdict."
+                    ),
+                )
         # Fallback: prefer γ recommendation if available
         if gamma_star is not None:
             return NumericRecommendation(

@@ -41,6 +41,9 @@ from schema import (
     BurnTriggerKind,
     CirculationSpeed,
     ContributionVerification,
+    ControllingActor,
+    GovernanceMaturity,
+    GovernanceType,
     HoldingIncentiveMechanism,
     NumberRange,
     RedemptionMechanism,
@@ -287,11 +290,22 @@ def holding_mechanisms_above(
     return out
 
 
-def coherence_violations(te: TokenEconomy) -> list[CoherenceIssue]:
+def coherence_violations(
+    te: TokenEconomy, verdicts: list | None = None
+) -> list[CoherenceIssue]:
     """Detect cross-field inconsistencies in the user's IR.
 
-    The list of rules below is the Phase 2 set; each rule has a one-line
-    justification in `docs/proofs/derivations.md`.
+    The list of rules below combines:
+
+    - The Phase 2 set (rules 1–3): structural incoherences detectable
+      from the IR alone.
+    - The Simulator.pdf §5 set (C2–C7): cross-NFR contradictions.
+      C7 is verdict-aware (uses risk-band data); when `verdicts` is
+      None the C7 check is skipped (back-compat).
+
+    Each rule has a one-line justification in `docs/proofs/derivations.md`.
+    Severity = ``"error"`` is treated as a *critical* contradiction by
+    the overall risk score (Simulator.pdf §6); ``"warn"`` is standard.
     """
     issues: list[CoherenceIssue] = []
     for token in te.tokens:
@@ -374,6 +388,211 @@ def coherence_violations(te: TokenEconomy) -> list[CoherenceIssue]:
                         "for higher accessibility, or lower NFR3 to "
                         "≤ 3 if smart-contract verification is the "
                         "design intent."
+                    ),
+                )
+            )
+
+    # =================================================================
+    # Simulator.pdf §5 — C2..C7
+    # =================================================================
+    nfrs = te.meta.nfrs
+
+    # C2 — NFR5 ≥ 4 + verification = self_reporting (CRITICAL).
+    # Self-reporting cannot guarantee proportional rewards (φ → free
+    # collapse); strongest free-rider risk.
+    for token in te.tokens:
+        if (
+            nfrs.proportionality >= 4
+            and token.contribution_verification
+            == ContributionVerification.SELF_REPORTING
+        ):
+            issues.append(
+                CoherenceIssue(
+                    severity="error",
+                    location=(
+                        f"tokens[{token.id}].contribution_verification + "
+                        f"meta.nfrs.proportionality"
+                    ),
+                    message=(
+                        "High proportionality NFR (≥ 4) with self-reporting "
+                        "verification: self-reports cannot guarantee "
+                        "proportional rewards because free-riders are "
+                        "structurally undetectable. This is the strongest "
+                        "free-rider collapse precondition (Simulator.pdf "
+                        "§5 C2)."
+                    ),
+                    suggestion=(
+                        "Adopt a stronger contribution_verification "
+                        "mechanism (peer_attestation, third_party_audit, "
+                        "smart_contract_automation, or physical_presence) "
+                        "or relax NFR5 to ≤ 3."
+                    ),
+                )
+            )
+
+    # C3 — NFR1 ≥ 4 + no burn mechanism on any non-reputation token
+    # (CRITICAL). No burn is the most common structural vulnerability
+    # in community token economies; a high resilience requirement
+    # cannot coexist with it.
+    if nfrs.resilience >= 4:
+        # Find tokens with emission_rules but no burn (own or via cross-token).
+        for token in te.tokens:
+            if not token.emission_rules:
+                continue  # no emission → no burn-coverage concern
+            has_xt_burn = any(
+                f.target_token == token.id
+                and getattr(f.target_action, "value", str(f.target_action)) == "burn"
+                for f in te.cross_token_flows
+            )
+            if not token.burn_rules and not has_xt_burn:
+                issues.append(
+                    CoherenceIssue(
+                        severity="error",
+                        location=(
+                            f"tokens[{token.id}].burn_rules + meta.nfrs.resilience"
+                        ),
+                        message=(
+                            f"High resilience NFR (≥ 4) but token "
+                            f"{token.id} has no burn mechanism (own or "
+                            f"cross-token). Supply grows monotonically; "
+                            f"the system cannot self-correct supply "
+                            f"imbalances (Simulator.pdf §5 C3)."
+                        ),
+                        suggestion=(
+                            f"Add a demand-driven burn mechanism to "
+                            f"{token.id} (or a cross-token BURN flow "
+                            f"targeting it), or relax NFR1 to ≤ 3."
+                        ),
+                    )
+                )
+
+    # C4 — NFR7 = immediate (decentralization timeline) + Γ = 1.0
+    # (fully unilateral). The user has declared they need
+    # decentralization immediately, but the rule structure is fully
+    # centralized.
+    if (
+        nfrs.governance_maturity == GovernanceMaturity.IMMEDIATE
+        and te.governance.rule_structure
+    ):
+        unilateral = sum(
+            1
+            for actor in te.governance.rule_structure.values()
+            if actor in {ControllingActor.SINGLE_ENTITY, ControllingActor.COMMITTEE}
+        )
+        total = len(te.governance.rule_structure)
+        if total > 0 and unilateral / total >= 1.0:
+            issues.append(
+                CoherenceIssue(
+                    severity="warn",
+                    location="governance.rule_structure + meta.nfrs.governance_maturity",
+                    message=(
+                        "NFR7 = immediate (decentralize at launch) but Γ = "
+                        "1.0 (every governance decision is unilateral). "
+                        "The maturity intent is inconsistent with the "
+                        "rule structure (Simulator.pdf §5 C4)."
+                    ),
+                    suggestion=(
+                        "Either move some governance.rule_structure entries "
+                        "to token_holder_vote / smart_contract / "
+                        "stakeholder_consensus, or relax NFR7 to "
+                        "short_term / medium_term / long_term."
+                    ),
+                )
+            )
+
+    # C5 — NFR3 ≥ 4 (high accessibility) + governance_type = DAO.
+    # Token-weighted voting raises a barrier for non-technical users.
+    if (
+        nfrs.accessibility >= 4
+        and te.governance.type == GovernanceType.DAO
+    ):
+        issues.append(
+            CoherenceIssue(
+                severity="warn",
+                location="governance.type + meta.nfrs.accessibility",
+                message=(
+                    "High accessibility NFR (≥ 4) with DAO governance: "
+                    "token-weighted voting may exclude non-technical "
+                    "participants (Simulator.pdf §5 C5)."
+                ),
+                suggestion=(
+                    "Consider hybrid or council governance for higher "
+                    "accessibility, or relax NFR3 to ≤ 3."
+                ),
+            )
+        )
+
+    # C6 — NFR6 = retain_value + burn = expiry. Token expiry penalizes
+    # holders directly, contradicting "retain value" intent.
+    if nfrs.circulation_speed == CirculationSpeed.RETAIN_VALUE:
+        for token in te.tokens:
+            for rule in token.burn_rules:
+                if rule.trigger.kind == BurnTriggerKind.EXPIRY:
+                    issues.append(
+                        CoherenceIssue(
+                            severity="warn",
+                            location=(
+                                f"tokens[{token.id}].burn_rules + "
+                                f"meta.nfrs.circulation_speed"
+                            ),
+                            message=(
+                                "NFR6 = retain_value but a burn rule uses "
+                                "expiry: token expiry directly penalizes "
+                                "holders, contradicting the retain-value "
+                                "intent (Simulator.pdf §5 C6)."
+                            ),
+                            suggestion=(
+                                "Use a different burn trigger "
+                                "(demand_driven / threshold_driven / "
+                                "rule_driven) or relax NFR6 to balanced / "
+                                "circulate_fast."
+                            ),
+                        )
+                    )
+                    break
+
+    # C7 — Reinforcing supply-side triad (CRITICAL). Verdict-aware:
+    # FM1 risk in {red, red_critical} (oversupply) AND FM3
+    # risk_level == red_critical (no burn) AND Γ ≈ 1.0 (governance
+    # offers no corrective lever).
+    if verdicts is not None and te.governance.rule_structure:
+        unilateral = sum(
+            1
+            for actor in te.governance.rule_structure.values()
+            if actor in {ControllingActor.SINGLE_ENTITY, ControllingActor.COMMITTEE}
+        )
+        total = len(te.governance.rule_structure)
+        gamma = unilateral / total if total > 0 else 0.0
+        fm1_red = any(
+            v.failure_mode.startswith("FM1")
+            and getattr(v.risk_level, "value", "") in ("red", "red_critical")
+            for v in verdicts
+        )
+        fm3_critical = any(
+            v.failure_mode.startswith("FM3")
+            and getattr(v.risk_level, "value", "") == "red_critical"
+            for v in verdicts
+        )
+        if fm1_red and fm3_critical and gamma >= 0.95:
+            issues.append(
+                CoherenceIssue(
+                    severity="error",
+                    location="FM1 + FM3 + governance.rule_structure",
+                    message=(
+                        "Reinforcing supply-side triad: oversupply (FM1 "
+                        "red), no burn mechanism (FM3 red_critical), and "
+                        f"fully centralized governance (Γ = {gamma:.2f}). "
+                        "The system has three simultaneous supply-side "
+                        "vulnerabilities and no governance lever to "
+                        "correct them. Highest-risk configuration "
+                        "(Simulator.pdf §5 C7)."
+                    ),
+                    suggestion=(
+                        "Address at least one of: (a) introduce a "
+                        "demand-driven burn mechanism; (b) lower "
+                        "emission rate or grow Q; (c) decentralize "
+                        "governance (move emission_rate_adjustment and "
+                        "burn_rate_adjustment to token_holder_vote)."
                     ),
                 )
             )

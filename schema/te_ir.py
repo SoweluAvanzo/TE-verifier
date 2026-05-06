@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal, Union
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -200,12 +200,86 @@ class FunctionSign(str, Enum):
     DECREASING_POSITIVE = "decreasing_positive"
 
 
+class ThresholdOp(str, Enum):
+    GT = ">"
+    GTE = ">="
+    LT = "<"
+    LTE = "<="
+    EQ = "=="
+
+
+class ThresholdVar(str, Enum):
+    """Named scalars a `ThresholdCondition` can compare against.
+
+    Each maps to a value (or range) the verifier reads from the IR;
+    see `verifier.conditions._var_bounds`. Unrecognized names cause
+    the condition to be treated conservatively (EVER-satisfied).
+    """
+
+    T = "t"  # elapsed periods within the verification horizon (default 52)
+    M = "M"  # circulating supply at horizon (currently treated unbounded)
+    Q = "Q"  # transaction volume per period
+    N = "N"  # participant count
+    K = "K"  # offer variety (aggregated across tokens)
+    D = "d"  # average demand per participant
+
+
+class ThresholdCondition(_Frozen):
+    """A scalar threshold predicate over a named system variable.
+
+    Example: ``ThresholdCondition(var=ThresholdVar.T, op=ThresholdOp.LTE, value=30.0)``
+    encodes "this rule applies for the first 30 periods only".
+    """
+
+    type: Literal["threshold"] = "threshold"
+    var: ThresholdVar
+    op: ThresholdOp
+    value: float
+
+
+class TimeWindow(_Frozen):
+    """A rule is active only during ``[start_period, end_period]``.
+
+    ``end_period = None`` means open-ended (rule active from
+    `start_period` to the horizon).
+    """
+
+    type: Literal["time_window"] = "time_window"
+    start_period: float = 0.0
+    end_period: float | None = None
+
+
+class EventOccurrence(_Frozen):
+    """A rule is active iff a specific source event exists in the IR.
+
+    The verifier looks up `source_token` in `te.tokens` and checks
+    that any of its emission_rules has a matching `source_event`
+    (matched against the rule's free-text trigger.event_predicate or
+    `RuleTrigger.kind.value`). When `source_token` is missing, the
+    condition is NEVER-satisfied.
+    """
+
+    type: Literal["event_occurrence"] = "event_occurrence"
+    source_token: str
+    source_event: str
+
+
+Condition = Annotated[
+    Union[ThresholdCondition, TimeWindow, EventOccurrence],
+    Field(discriminator="type"),
+]
+
+
 class RuleTrigger(_Frozen):
     """When a Rule fires."""
 
     kind: EmissionTriggerKind | BurnTriggerKind
     event_predicate: str | None = None
     event_frequency: AsymptoticClass | None = None
+    # Phase B2 — structured conditions. The rule contributes its rate
+    # only when all conditions hold (AND). Static 3-valued evaluation
+    # in `verifier.conditions`. Empty list = always active (default).
+    conditions: list[Condition] = Field(default_factory=list)
 
 
 class FunctionShape(_Frozen):
@@ -309,12 +383,44 @@ class CrossTokenAction(str, Enum):
     TRANSFER = "transfer"
 
 
+class FlowCoupling(str, Enum):
+    """How a cross-token flow's per-period rate is determined.
+
+    - INDEPENDENT (default, back-compat): the flow's `amount` is an
+      independent AsymptoticClass; its per-period rate is computed in
+      isolation via `verifier.asymptotic.average_rate_per_period`.
+    - PROPORTIONAL_TO_SOURCE: the flow's per-period rate is
+      `coupling_ratio × E_own(source_token)`, where E_own is the source
+      token's per-period rate from its own emission_rules (no
+      transitive cross-token contributions, so cycles are impossible).
+      This captures patterns like MakerDAO's "stability fees on DAI
+      drive proportional MKR buyback-and-burn".
+    """
+
+    INDEPENDENT = "independent"
+    PROPORTIONAL_TO_SOURCE = "proportional_to_source"
+
+
 class CrossTokenFlow(_Frozen):
     source_token: str
     source_event: str
     target_token: str
     target_action: CrossTokenAction
     amount: AsymptoticClass
+    coupling: FlowCoupling = FlowCoupling.INDEPENDENT
+    # Required when coupling = PROPORTIONAL_TO_SOURCE. Range of the
+    # multiplier `r` such that flow_rate = r × E_own(source). Otherwise
+    # ignored (kept None).
+    coupling_ratio: NumberRange | None = None
+
+    @model_validator(mode="after")
+    def _validate_coupling(self) -> "CrossTokenFlow":
+        if self.coupling == FlowCoupling.PROPORTIONAL_TO_SOURCE:
+            if self.coupling_ratio is None:
+                raise ValueError(
+                    "coupling=proportional_to_source requires coupling_ratio"
+                )
+        return self
 
 
 # ---------------------------------------------------------------------------

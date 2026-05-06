@@ -10,9 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from schema import TokenEconomy
 from verifier.config import VerifierConfig
+from verifier.counterexample import prettify_verdicts
 from verifier.elicitation import CoherenceIssue, coherence_violations
 from verifier.failure_modes import ALL_FAILURE_MODES
 from verifier.failure_modes.base import FailureMode, Status, Verdict
+from verifier.risk import OverallRiskScore, attach_risk_levels, compute_overall_score
+from verifier.token_role import apply_role_applicability
 
 
 class Severity(str, Enum):
@@ -31,6 +34,7 @@ class Report(BaseModel):
     severity: Severity
     summary: dict[str, int] = Field(default_factory=dict)
     coherence_issues: list[CoherenceIssue] = Field(default_factory=list)
+    overall_risk: OverallRiskScore | None = None
 
     def failures(self) -> list[Verdict]:
         return [v for v in self.verdicts if v.status == Status.FAIL]
@@ -169,19 +173,32 @@ def verify(
             # Back-compat for FMs that haven't migrated to config-aware check()
             verdicts.extend(fm.check(te))
 
+    # Phase D4 — role-based applicability override BEFORE summarising.
+    # A token's role (governance / reputation / resource / utility)
+    # may make some per-token FM verdicts structurally inapplicable.
+    apply_role_applicability(te, verdicts)
+    # P1 — rewrite Z3 internal variable names in counterexamples to
+    # IR-path-style names users can decode. Drops the precompute
+    # duplicates from the proportional-coupling helper.
+    prettify_verdicts(verdicts)
     summary = _summarize(verdicts)
-    issues = coherence_violations(te)
+    # Phase D — attach risk_level to each verdict (midpoint evaluation)
+    # *before* coherence so the verdict-aware C7 check has data.
+    attach_risk_levels(te, verdicts)
+    issues = coherence_violations(te, verdicts=verdicts)
     # Coherence errors escalate the report to FAIL severity even if
     # every FM individually passed — the IR is internally inconsistent.
     severity = _severity_of(summary)
     if any(i.severity == "error" for i in issues) and severity == Severity.OK:
         severity = Severity.WARN
+    overall = compute_overall_score(verdicts, issues)
     return Report(
         te_name=te.meta.name,
         verdicts=verdicts,
         severity=severity,
         summary=summary,
         coherence_issues=issues,
+        overall_risk=overall,
     )
 
 

@@ -9,7 +9,10 @@ two complementary modes:
   numeric ranges) and a "why we ask" expander pulling explanatory
   copy from `verifier/paper.py`. The verdict pane stays visible on
   the right after the first Verify, so the user can iteratively
-  tweak a field and re-verify without losing context.
+  tweak a field and re-verify without losing context. **Multi-token
+  systems with multiple mint/burn mechanisms per token and inter-token
+  flows** are supported directly in the form; switch to the YAML
+  editor only for regime switches and rare asymptotic families.
 - **`/yaml` Advanced YAML editor.** For users who want full IR
   control — multi-token systems, regime switches, rare asymptotic
   families. Loads the same explanatory FM cards above the editor.
@@ -92,14 +95,12 @@ webapp/
 
 ## What this prototype does not yet do
 
-- **Multi-token form support.** The form covers a single token; for
-  MakerDAO (DAI/MKR), Curve (CRV/veCRV), or Axie (AXS/SLP),
-  the user loads the example (which uses the multi-token YAML) but
-  the form only edits the first token. The advanced YAML editor
-  handles this.
 - **Live coherence validation.** Coherence issues currently surface
   on submit. A future iteration would run them client-side as the
   user types.
+- **Conditional rule UI.** Structured predicates
+  (`ThresholdCondition` / `TimeWindow` / `EventOccurrence`) are not
+  yet exposed in the form. See `docs/redesign-plan.md` Phase B2/B3.
 - **Config override loading.** The CLI `--config` flag is not yet
   exposed in the webapp.
 - **Authentication / multi-user state.** Single-session, in-memory,
