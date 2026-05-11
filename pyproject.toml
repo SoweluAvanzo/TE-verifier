@@ -19,6 +19,7 @@ webapp = ["flask>=3.0"]
 
 [project.scripts]
 te-verify = "verifier.cli:main"
+te-simulate = "verifier.abm.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["schema*", "verifier*"]

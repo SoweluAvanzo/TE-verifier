@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Economy Verifier — ABM Simulator</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='form.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='simulate.css') }}" />
+</head>
+<body>
+  <header class="page-header compact">
+    <div class="header-row">
+      <h1>Token Economy Verifier — ABM Simulator</h1>
+      <nav>
+        <a href="/" class="nav-link">← Questionnaire</a>
+        <a href="/yaml" class="nav-link">YAML editor</a>
+      </nav>
+    </div>
+    <p class="subtitle">
+      Run a Monte Carlo simulation against the failure-mode safety
+      predicates. The verifier tells you whether each cliff is
+      reachable; this page tells you how often you walk off it.
+    </p>
+    <details class="explainer">
+      <summary>How this complements the verifier</summary>
+      <ul>
+        <li>
+          <strong>SOUND</strong> failure modes are skipped — the
+          verifier already proved they cannot trigger.
+        </li>
+        <li>
+          <strong>BROKEN</strong> failure modes are skipped with a
+          notice — no parameter assignment in the declared box can
+          satisfy them, so likelihood is uninformative.
+        </li>
+        <li>
+          <strong>FRAGILE / INCONCLUSIVE</strong> failure modes are
+          simulated. For each, the page reports
+          <em>P(deployment-time violation)</em> vs
+          <em>P(dynamic violation)</em> — a configuration problem
+          vs a drift problem — plus the distribution of time-to-
+          violation.
+        </li>
+        <li>
+          The <strong>Export cadCAD config</strong> button emits the
+          full simulation contract as JSON: initial state, PSUBs per
+          simulable FM (with safety predicates verbatim), and the
+          sweepable-parameter grid. Drop it into your own cadCAD
+          pipeline.
+        </li>
+      </ul>
+    </details>
+  </header>
+
+  <main class="simulate-layout">
+    <section class="sim-controls">
+      <h2>Spec</h2>
+      <div class="quick-actions">
+        <span class="qa-label">Load example:</span>
+        {% for ex in examples %}
+        <button type="button" class="example-btn" data-example="{{ ex }}">{{ ex }}</button>
+        {% endfor %}
+      </div>
+      <label class="block-label" for="spec-yaml">YAML spec</label>
+      <textarea id="spec-yaml" class="spec-textarea" rows="14" placeholder="Paste TE-IR YAML or load an example..."></textarea>
+      <p class="hint">
+        Any spec that loads via <code>te-verify</code> works here.
+        The page first calls the verifier to get reachability
+        verdicts, then runs the ABM only on simulable FMs.
+      </p>
+
+      <h2>Simulation config</h2>
+      <div class="config-grid">
+        <label>Replicates
+          <input type="number" id="cfg-runs" min="1" max="5000" step="50" value="300" />
+        </label>
+        <label>Horizon (periods)
+          <input type="number" id="cfg-horizon" min="1" max="5000" step="10" value="260" />
+        </label>
+        <label>Seed (optional)
+          <input type="number" id="cfg-seed" placeholder="leave blank for fresh" />
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="cfg-skip" checked />
+          Skip SOUND / BROKEN FMs
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="cfg-trajectories" />
+          Record predicate trajectories
+        </label>
+      </div>
+      <p class="hint">
+        Trajectory recording shows, per safety predicate, the median
+        and inter-quartile envelope of the predicate's variable over
+        time, with a reference line at the threshold. Useful for
+        diagnosing whether a violation is at deployment vs from drift.
+        Adds ~2× to the simulation cost.
+      </p>
+
+      <div class="action-row">
+        <button id="run-btn" class="primary-btn" type="button">▶ Run simulation</button>
+        <button id="export-btn" class="secondary-btn" type="button" disabled>⬇ Export cadCAD config</button>
+      </div>
+      <p id="status" class="status-line"></p>
+    </section>
+
+    <section class="sim-results" id="results-pane">
+      <h2>Results</h2>
+      <p class="empty-msg" id="empty-msg">
+        Load a spec and click <strong>Run simulation</strong> to
+        produce the per-FM likelihood report.
+      </p>
+
+      <div id="summary" class="hidden">
+        <h3>Summary</h3>
+        <div id="summary-table-wrapper"></div>
+        <h3>Headline</h3>
+        <ul id="headline-list" class="headline-list"></ul>
+      </div>
+
+      <div id="per-fm-cards" class="hidden"></div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='simulate.js') }}"></script>
+</body>
+</html>

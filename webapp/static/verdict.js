@@ -117,6 +117,116 @@
     });
   }
 
+  // ===================================================================
+  // Sprint 1+3 — refined diagnosis (trajectory + sensitivity)
+  // ===================================================================
+
+  function renderRefinedDiagnosis(rd) {
+    const div = document.createElement("div");
+    div.className = "refined-diagnosis";
+
+    const heading = document.createElement("h4");
+    heading.textContent = "Refined diagnosis (dynamic)";
+    div.appendChild(heading);
+
+    if (rd.headline) {
+      const p = document.createElement("p");
+      p.className = "refined-headline";
+      p.textContent = rd.headline;
+      div.appendChild(p);
+    }
+
+    // Inline sparkline — only when M actually changes meaningfully.
+    if (rd.trajectory && rd.trajectory.samples && rd.trajectory.samples.length > 1) {
+      const samples = rd.trajectory.samples;
+      const M_values = samples.map((s) => s.M);
+      const M_min = Math.min.apply(null, M_values);
+      const M_max = Math.max.apply(null, M_values);
+      const range = M_max - M_min;
+      const meaningful = M_max > 0 && range / Math.max(M_max, 1) > 0.01;
+      if (meaningful) {
+        div.appendChild(renderSparkline(samples, rd.trajectory.metrics));
+      }
+    }
+
+    // Notes from the trajectory (un-modeled regime hints, etc.).
+    if (rd.trajectory && rd.trajectory.metrics && rd.trajectory.metrics.notes) {
+      rd.trajectory.metrics.notes.forEach((n) => {
+        const note = document.createElement("p");
+        note.className = "refined-note";
+        note.textContent = n;
+        div.appendChild(note);
+      });
+    }
+
+    // Binding inputs — only the ones that flip the verdict.
+    const flippers = (rd.binding_inputs || []).filter((b) => b.flips_verdict);
+    if (flippers.length > 0) {
+      const label = document.createElement("h5");
+      label.className = "refined-section-label";
+      label.textContent = "Binding inputs (flip the verdict at extreme)";
+      div.appendChild(label);
+      const ul = document.createElement("ul");
+      ul.className = "binding-inputs";
+      flippers.forEach((b) => {
+        const li = document.createElement("li");
+        const arrow =
+          b.verdict_at_min === b.verdict_at_max
+            ? `${b.verdict_at_min}`
+            : `${b.verdict_at_min} ↔ ${b.verdict_at_max}`;
+        li.innerHTML =
+          `<code>${escapeHtml(b.field)}</code> ` +
+          `<span class="bi-range">[${formatNum(b.current_min)} … ${formatNum(b.current_max)}]</span> ` +
+          `<span class="bi-arrow">${escapeHtml(arrow)}</span>`;
+        ul.appendChild(li);
+      });
+      div.appendChild(ul);
+    }
+
+    return div;
+  }
+
+  function renderSparkline(samples, metrics) {
+    const w = 220;
+    const h = 56;
+    const pad = 6;
+    const M_values = samples.map((s) => s.M);
+    const M_min = Math.min.apply(null, M_values);
+    const M_max = Math.max.apply(null, M_values);
+    const tMax = Math.max.apply(
+      null,
+      samples.map((s) => s.t)
+    );
+    const xScale = (t) => pad + (w - 2 * pad) * (tMax === 0 ? 0 : t / tMax);
+    const yScale = (m) => {
+      if (M_max - M_min === 0) return h - pad - (h - 2 * pad) * 0.5;
+      return h - pad - (h - 2 * pad) * ((m - M_min) / (M_max - M_min));
+    };
+    const points = samples
+      .map((s) => `${xScale(s.t).toFixed(1)},${yScale(s.M).toFixed(1)}`)
+      .join(" ");
+
+    // Mark the saturation point (if any) with a small vertical tick.
+    let satTick = "";
+    if (metrics && metrics.saturates_at != null) {
+      const x = xScale(metrics.saturates_at).toFixed(1);
+      satTick = `<line x1="${x}" y1="${pad}" x2="${x}" y2="${h - pad}" stroke="#5fa173" stroke-width="0.8" stroke-dasharray="2,2" />`;
+    }
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "sparkline-wrapper";
+    wrapper.innerHTML =
+      `<svg class="sparkline" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="M(t) trajectory">` +
+      `<polyline points="${points}" fill="none" stroke="#5b8bb5" stroke-width="1.5" />` +
+      satTick +
+      `</svg>` +
+      `<div class="sparkline-caption">` +
+      `<span>M(t): ${formatNum(M_min)} → ${formatNum(M_max)}</span>` +
+      `<span class="sparkline-range">over ${tMax} periods</span>` +
+      `</div>`;
+    return wrapper;
+  }
+
   function renderGlossary(cond) {
     const items = cond.variables
       .map(
@@ -169,6 +279,11 @@
     expl.className = "verdict-explanation";
     expl.textContent = v.explanation;
     card.appendChild(expl);
+
+    // Sprint 1+3 — refined diagnosis (trajectory + sensitivity).
+    if (v.refined_diagnosis) {
+      card.appendChild(renderRefinedDiagnosis(v.refined_diagnosis));
+    }
 
     if (v.critical_values && v.critical_values.length > 0) {
       const cvLabel = document.createElement("h4");

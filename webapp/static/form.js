@@ -142,12 +142,26 @@ function addRuleRow(container, side, prefill) {
   row.querySelector(".remove-rule").addEventListener("click", () => row.remove());
   container.appendChild(row);
 
+  // Schedule modifiers (mint-side only — the form template has them
+  // on mint-rule-tpl; burn rules ignore them).
+  wireScheduleToggles(row);
+  // Distribution envelope (both mint and burn) — opts the rule into
+  // per-period sampling during ABM simulation.
+  wireDistributionToggle(row);
+
   if (prefill) {
     const triggerKind = prefill.trigger?.kind;
     if (triggerKind) row.querySelector(".rule-trigger").value = triggerKind;
     if (side === "mint") {
       const sign = prefill.function?.sign;
       if (sign) row.querySelector(".rule-sign").value = sign;
+      // Schedule prefill (only meaningful for mint rules at the moment).
+      if (prefill.schedule) {
+        applySchedulePrefill(row, prefill.schedule);
+      }
+    }
+    if (prefill.function?.distribution) {
+      applyDistributionPrefill(row, prefill.function.distribution);
     }
     const ef = prefill.trigger?.event_frequency;
     if (ef) {
@@ -191,13 +205,167 @@ function readRuleRow(row, side) {
     ? row.querySelector(".rule-sign").value || "always_positive"
     : "always_negative";
 
-  return {
+  const rule = {
     trigger,
     function: {
       sign,
       asymptotic_class: ac || { family: "constant", parameter_ranges: { c: { min: 0, max: 0 } } },
     },
   };
+  if (side === "mint") {
+    const schedule = readScheduleFromRow(row);
+    if (schedule) rule.schedule = schedule;
+  }
+  const distribution = readDistributionFromRow(row);
+  if (distribution) rule.function.distribution = distribution;
+  return rule;
+}
+
+// =====================================================================
+// DistributionSpec on rules — per-period noise envelope for ABM.
+// =====================================================================
+//
+// The verifier still sees only the support of the distribution
+// (μ±3σ for Normal, [low, high] for Uniform). The ABM resamples per
+// period from the declared family. Two numeric inputs cover every
+// supported family:
+//   uniform:    low, high
+//   normal:     mu, sigma
+//   lognormal:  mu, sigma
+//   bernoulli:  p          (second input ignored)
+//   poisson:    lambda     (second input ignored)
+//   beta:       alpha, beta
+
+const DIST_PARAMS = {
+  uniform:   ["low", "high"],
+  normal:    ["mu", "sigma"],
+  lognormal: ["mu", "sigma"],
+  bernoulli: ["p"],
+  poisson:   ["lambda"],
+  beta:      ["alpha", "beta"],
+};
+
+function wireDistributionToggle(row) {
+  const toggle = row.querySelector(".dist-toggle");
+  const grid = row.querySelector(".dist-grid");
+  if (!toggle || !grid) return;
+  const sync = () => (grid.hidden = !toggle.checked);
+  toggle.addEventListener("change", sync);
+  sync();
+}
+
+function readDistributionFromRow(row) {
+  const toggle = row.querySelector(".dist-toggle");
+  if (!toggle || !toggle.checked) return null;
+  const kind = row.querySelector(".dist-kind")?.value || "uniform";
+  const p1 = parseFloat(row.querySelector(".dist-p1")?.value);
+  const p2 = parseFloat(row.querySelector(".dist-p2")?.value);
+  const names = DIST_PARAMS[kind] || [];
+  const parameters = {};
+  if (names.length >= 1 && !Number.isNaN(p1)) parameters[names[0]] = p1;
+  if (names.length >= 2 && !Number.isNaN(p2)) parameters[names[1]] = p2;
+  if (Object.keys(parameters).length !== names.length) {
+    // Incomplete — don't emit a partial DistributionSpec that Pydantic
+    // will reject. Surface as a quiet no-op rather than a hard error;
+    // the user can fix it after they see the verdict ignore the spec.
+    return null;
+  }
+  return { kind, parameters };
+}
+
+function applyDistributionPrefill(row, distribution) {
+  if (!distribution) return;
+  const toggle = row.querySelector(".dist-toggle");
+  if (!toggle) return;
+  toggle.checked = true;
+  const grid = row.querySelector(".dist-grid");
+  if (grid) grid.hidden = false;
+  const kindSel = row.querySelector(".dist-kind");
+  if (kindSel) kindSel.value = distribution.kind;
+  const names = DIST_PARAMS[distribution.kind] || [];
+  if (names.length >= 1) {
+    row.querySelector(".dist-p1").value = distribution.parameters?.[names[0]] ?? "";
+  }
+  if (names.length >= 2) {
+    row.querySelector(".dist-p2").value = distribution.parameters?.[names[1]] ?? "";
+  }
+  const details = row.querySelector("details.rule-distribution");
+  if (details) details.open = true;
+}
+
+// =====================================================================
+// Schedule modifiers (cap / halving / vesting)
+// =====================================================================
+
+function wireScheduleToggles(row) {
+  // Each "Advanced" disclosure has 3 toggles; show their numeric
+  // inputs only when the toggle is checked.
+  const pairs = [
+    [".schedule-cap-toggle", ".schedule-cap-value"],
+    [".schedule-halving-toggle", ".halving-grid"],
+    [".schedule-vesting-toggle", ".schedule-vesting-periods"],
+  ];
+  for (const [toggleSel, fieldSel] of pairs) {
+    const toggle = row.querySelector(toggleSel);
+    const field = row.querySelector(fieldSel);
+    if (!toggle || !field) continue;
+    const sync = () => (field.hidden = !toggle.checked);
+    toggle.addEventListener("change", sync);
+    sync();
+  }
+}
+
+function applySchedulePrefill(row, schedule) {
+  const details = row.querySelector("details.rule-schedule");
+  let opened = false;
+  if (schedule.supply_cap != null) {
+    row.querySelector(".schedule-cap-toggle").checked = true;
+    row.querySelector(".schedule-cap-value").value = schedule.supply_cap;
+    opened = true;
+  }
+  if (schedule.halving_period != null) {
+    row.querySelector(".schedule-halving-toggle").checked = true;
+    row.querySelector(".schedule-halving-period").value = schedule.halving_period;
+    if (schedule.halving_factor != null) {
+      row.querySelector(".schedule-halving-factor").value = schedule.halving_factor;
+    }
+    opened = true;
+  }
+  if (schedule.vesting_periods != null) {
+    row.querySelector(".schedule-vesting-toggle").checked = true;
+    row.querySelector(".schedule-vesting-periods").value = schedule.vesting_periods;
+    opened = true;
+  }
+  if (opened && details) details.open = true;
+  // Re-trigger the visibility sync now that checkboxes are set.
+  wireScheduleToggles(row);
+}
+
+function readScheduleFromRow(row) {
+  const out = {};
+  const capOn = row.querySelector(".schedule-cap-toggle")?.checked;
+  const capVal = parseFloat(row.querySelector(".schedule-cap-value")?.value);
+  if (capOn && !Number.isNaN(capVal) && capVal > 0) out.supply_cap = capVal;
+
+  const halvOn = row.querySelector(".schedule-halving-toggle")?.checked;
+  const period = parseInt(row.querySelector(".schedule-halving-period")?.value, 10);
+  const factor = parseFloat(row.querySelector(".schedule-halving-factor")?.value);
+  if (halvOn && !Number.isNaN(period) && period >= 1) {
+    out.halving_period = period;
+    if (!Number.isNaN(factor) && factor > 0 && factor < 1) {
+      out.halving_factor = factor;
+    }
+  }
+
+  const vestOn = row.querySelector(".schedule-vesting-toggle")?.checked;
+  const vestPeriods = parseInt(
+    row.querySelector(".schedule-vesting-periods")?.value,
+    10
+  );
+  if (vestOn && !Number.isNaN(vestPeriods) && vestPeriods >= 1) {
+    out.vesting_periods = vestPeriods;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function makeAsymptoticClass(family, min, max) {
@@ -529,6 +697,29 @@ function buildIR() {
   const giniRange = readRange(fd, "gov-gini-min", "gov-gini-max");
   if (giniRange) ir.governance.token_balance_gini = giniRange;
 
+  // FM6 vote_weighting — defaults to LINEAR. The conditional
+  // vote_weighting_params block writes the relevant NumberRange
+  // (cap_fraction / avg_lock_fraction / delegate_concentration_gini
+  // / reputation_gini). Non-LINEAR weightings with no matching param
+  // fall back to LINEAR semantics at FM6 evaluation time.
+  const voteWeighting = fd.get("gov-vote-weighting") || "linear";
+  if (voteWeighting && voteWeighting !== "linear") {
+    ir.governance.vote_weighting = voteWeighting;
+    const VW_PARAM_BY_KIND = {
+      capped: "cap_fraction",
+      time_locked: "avg_lock_fraction",
+      delegated: "delegate_concentration_gini",
+      reputation_weighted: "reputation_gini",
+    };
+    const key = VW_PARAM_BY_KIND[voteWeighting];
+    if (key) {
+      const r = readRange(fd, `vw-${key}-min`, `vw-${key}-max`);
+      if (r) ir.governance.vote_weighting_params = { [key]: r };
+    }
+  }
+  // Note: 'linear' is the schema default; omitting the field is
+  // equivalent. We omit it to keep the YAML clean.
+
   return ir;
 }
 
@@ -616,7 +807,44 @@ function hydrateForm(ir) {
   setVal("gov-sanction-kind", ir.governance?.sanction_structure?.kind);
   setRange("gov-S-min", "gov-S-max", ir.governance?.sanction_structure?.S_normalized);
   setRange("gov-gini-min", "gov-gini-max", ir.governance?.token_balance_gini);
+
+  // FM6 vote_weighting + params
+  const vw = ir.governance?.vote_weighting || "linear";
+  setVal("gov-vote-weighting", vw);
+  const params = ir.governance?.vote_weighting_params || {};
+  if (params.cap_fraction)               setRange("vw-cap_fraction-min", "vw-cap_fraction-max", params.cap_fraction);
+  if (params.avg_lock_fraction)          setRange("vw-avg_lock_fraction-min", "vw-avg_lock_fraction-max", params.avg_lock_fraction);
+  if (params.delegate_concentration_gini) setRange("vw-delegate_concentration_gini-min", "vw-delegate_concentration_gini-max", params.delegate_concentration_gini);
+  if (params.reputation_gini)            setRange("vw-reputation_gini-min", "vw-reputation_gini-max", params.reputation_gini);
+  syncVoteWeightingParamVisibility();
 }
+
+// Toggle which vote_weighting_params block is visible based on the
+// selected weighting kind. The user only sees the input the chosen
+// kind needs; others stay hidden to keep the form clean.
+function syncVoteWeightingParamVisibility() {
+  const sel = document.getElementById("gov-vote-weighting");
+  if (!sel) return;
+  const kind = sel.value;
+  const KIND_TO_BLOCK = {
+    capped: "vw-cap_fraction",
+    time_locked: "vw-avg_lock_fraction",
+    delegated: "vw-delegate_concentration_gini",
+    reputation_weighted: "vw-reputation_gini",
+  };
+  const visible = KIND_TO_BLOCK[kind] || null;
+  document.querySelectorAll(".vw-param").forEach((el) => {
+    el.hidden = el.id !== visible;
+  });
+}
+// Wire the change handler at module init (after DOM is ready).
+document.addEventListener("DOMContentLoaded", () => {
+  const sel = document.getElementById("gov-vote-weighting");
+  if (sel) {
+    sel.addEventListener("change", syncVoteWeightingParamVisibility);
+    syncVoteWeightingParamVisibility();
+  }
+});
 
 function setVal(name, value, kind) {
   if (value == null) return;
@@ -695,11 +923,130 @@ verifyBtn.addEventListener("click", async () => {
     verdictEmpty.hidden = true;
     verdictContent.hidden = false;
     renderReport(data.report);
+    // Reset to Rich view on every fresh Verify; the minimal view is
+    // fetched lazily on click so the cost of a verify roundtrip is
+    // unchanged.
+    showRichView();
+    invalidateMinimalCache();
     verifyStatus.textContent = `Done — severity: ${data.report.severity}`;
   } catch (e) {
     verifyStatus.classList.add("error");
     verifyStatus.textContent = `Error: ${e.message || e}`;
   }
+});
+
+// =====================================================================
+// Verdict view toggle (rich ↔ minimal/reachability)
+// =====================================================================
+//
+// The Rich view is the default — it shows the existing per-FM cards
+// with NFR reframings, recommendations, etc. The Minimal view fetches
+// the reachability-only output from /api/minimal-verdicts and renders
+// a compact table. Same JSON shape the ABM and cadCAD export consume.
+
+const richView = document.getElementById("rich-view");
+const minimalView = document.getElementById("minimal-view");
+const minimalTable = document.getElementById("minimal-table");
+const viewToggleBtns = document.querySelectorAll(".view-toggle-btn");
+
+let minimalCache = null;  // cached minimal verdicts for the most recent verify
+
+function invalidateMinimalCache() { minimalCache = null; }
+
+function showRichView() {
+  richView.hidden = false;
+  if (minimalView) minimalView.hidden = true;
+  viewToggleBtns.forEach((b) => b.classList.toggle("active", b.dataset.view === "rich"));
+}
+
+async function showMinimalView() {
+  if (richView) richView.hidden = true;
+  if (minimalView) minimalView.hidden = false;
+  viewToggleBtns.forEach((b) => b.classList.toggle("active", b.dataset.view === "minimal"));
+
+  if (minimalCache) {
+    renderMinimalTable(minimalCache);
+    return;
+  }
+  if (!lastVerifiedYaml) {
+    minimalTable.innerHTML = '<p class="hint">Run Verify first.</p>';
+    return;
+  }
+  minimalTable.innerHTML = '<p class="hint">Loading minimal reachability…</p>';
+  try {
+    const r = await fetch("/api/minimal-verdicts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ yaml: lastVerifiedYaml }),
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    minimalCache = data.verdicts || [];
+    renderMinimalTable(minimalCache);
+  } catch (e) {
+    minimalTable.innerHTML = `<p class="hint error">Failed: ${e.message}</p>`;
+  }
+}
+
+function renderMinimalTable(verdicts) {
+  if (!verdicts || !verdicts.length) {
+    minimalTable.innerHTML = '<p class="hint">No verdicts.</p>';
+    return;
+  }
+  const rows = verdicts.map((v) => {
+    const status = v.structural_status;
+    const thr = v.minimum_param_shift
+      ? Object.entries(v.minimum_param_shift).map(([k, val]) => `${k}=${formatThreshold(val)}`).join(", ")
+      : "—";
+    const preds = (v.safety_predicates || []).map((p) =>
+      `<code>${escapeHTML(p.variable)} ${p.operator} ${formatThreshold(p.threshold)}</code>`
+    ).join(" · ") || "—";
+    return `
+      <tr>
+        <td>${v.failure_mode}</td>
+        <td>${escapeHTML(v.subject)}</td>
+        <td><span class="status-pill status-${status}">${status}</span></td>
+        <td>${triCell(v.violation_reachable)}</td>
+        <td>${triCell(v.satisfaction_reachable)}</td>
+        <td>${thr}</td>
+        <td>${preds}</td>
+      </tr>
+    `;
+  }).join("");
+  minimalTable.innerHTML = `
+    <table class="minimal-table">
+      <thead><tr>
+        <th>FM</th><th>Subject</th><th>Status</th>
+        <th>V</th><th>S</th><th>Threshold</th><th>Safety predicates</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function triCell(value) {
+  if (value === "true") return '<span class="tri-yes">yes</span>';
+  if (value === "false") return '<span class="tri-no">no</span>';
+  return '<span class="tri-unk">?</span>';
+}
+
+function formatThreshold(n) {
+  if (n == null || isNaN(n)) return "—";
+  if (Math.abs(n) >= 1e6 || (n !== 0 && Math.abs(n) < 0.001)) return n.toExponential(2);
+  return Number.isInteger(n) ? String(n) : n.toFixed(3);
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+viewToggleBtns.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.view === "minimal") showMinimalView();
+    else showRichView();
+  });
 });
 
 // =====================================================================

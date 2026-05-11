@@ -131,6 +131,58 @@ class FM3BurnEmission(FailureMode):
             for flow in te.cross_token_flows
         )
         if not token.burn_rules and not has_xt_burn:
+            # Schema-aware refinement: a capped-supply design (every
+            # emission rule has a supply_cap) is sustainable without
+            # burn — Bitcoin pattern. Reclassify as PASS_AS_INTENDED
+            # rather than FAIL.
+            if (
+                token.emission_rules
+                and all(
+                    r.schedule is not None and r.schedule.supply_cap is not None
+                    for r in token.emission_rules
+                )
+            ):
+                total_cap = sum(
+                    r.schedule.supply_cap for r in token.emission_rules
+                )
+                return Verdict(
+                    failure_mode=self.name,
+                    subject=token.id,
+                    status=Status.PASS_AS_INTENDED,
+                    formal_condition=(
+                        f"Capped supply ≤ {total_cap:g} (no burn required)"
+                    ),
+                    explanation=(
+                        f"Token {token.id} has no burn mechanism, but every "
+                        f"emission rule declares a supply_cap (total cap "
+                        f"= {total_cap:g} tokens). Once the cap is reached "
+                        f"emission stops — supply stability is achieved "
+                        f"by termination, not by burn. Sustainability is "
+                        f"now an FM1 question: does Q grow to absorb the "
+                        f"bounded supply? See the FM1 verdict and the "
+                        f"trajectory under Refined diagnosis."
+                    ),
+                    critical_values=[
+                        CriticalValue(
+                            parameter="supply_cap",
+                            value=total_cap,
+                            direction="<=",
+                            formula=(
+                                f"M_∞ ≤ {total_cap:g}   "
+                                f"(declared via Rule.schedule.supply_cap)"
+                            ),
+                            explanation=(
+                                "Terminal supply is bounded by the declared "
+                                "cap; FM3's burn-coverage condition does "
+                                "not apply to capped-supply tokens."
+                            ),
+                            source="closed_form",
+                        )
+                    ],
+                    committed_fields=[
+                        f"tokens[{token.id}].emission_rules[*].schedule.supply_cap"
+                    ],
+                )
             return self._verdict_no_burn(token)
 
         # Case B: rule-driven (time-based) burn — flagged as structurally weak.
@@ -468,3 +520,149 @@ class FM3BurnEmission(FailureMode):
             "exceeds a target M*."
         )
         return s
+
+    # ------------------------------------------------------------------
+    # Phase-C: dual encoding + structured safety predicate
+    # ------------------------------------------------------------------
+
+    def is_satisfaction_reachable_when_failing(
+        self, te: TokenEconomy, config, subject: str
+    ) -> str:
+        """Dual: any (E, B) corner where B ≥ E · ρ_floor?
+
+        Returns 'true' if the safety predicate is satisfiable in the
+        declared box, 'false' if the box is structurally insufficient
+        (e.g. burn_rules empty so B ≡ 0 < E), 'unknown' otherwise.
+        """
+        token = next((t for t in te.tokens if t.id == subject), None)
+        if token is None:
+            return "unknown"
+        if (
+            len(token.function) == 1
+            and TokenFunction.REPUTATION_MARKER in token.function
+        ):
+            return "unknown"  # FM3 N/A
+        if not token.emission_rules:
+            return "true"  # no emission → ρ undefined / vacuously safe
+        # Structural fail: no burn at all (and no cross-token burn flow)
+        has_xt_burn = any(
+            f.target_token == token.id
+            and f.target_action == CrossTokenAction.BURN
+            for f in te.cross_token_flows
+        )
+        if not token.burn_rules and not has_xt_burn:
+            # Schema-aware: capped supply means burn isn't required.
+            if (
+                token.emission_rules
+                and all(
+                    r.schedule is not None and r.schedule.supply_cap is not None
+                    for r in token.emission_rules
+                )
+            ):
+                return "true"
+            return "false"
+
+        cfg = config or VerifierConfig.paper_defaults()
+        solver = self.make_solver()
+        source_own_E: dict[str, z3.ArithRef] = {}
+        for src in te.tokens:
+            source_own_E[src.id] = own_emission_rate_per_period(
+                solver, f"{src.id}_ownE_for_fm3sat_{token.id}", src
+            )
+        E_terms = []
+        for i, rule in enumerate(token.emission_rules):
+            if not rule_contributes(rule, te, side="emission"):
+                continue
+            E_terms.append(
+                rule_rate_per_period(solver, f"{token.id}_emit_sat_{i}", rule)
+            )
+        for i, flow in enumerate(te.cross_token_flows):
+            if (
+                flow.target_token == token.id
+                and flow.target_action == CrossTokenAction.MINT
+            ):
+                E_terms.append(
+                    cross_token_flow_rate(
+                        solver,
+                        f"{token.id}_xtmint_sat_{i}",
+                        flow,
+                        source_own_E.get(flow.source_token, z3.RealVal(0)),
+                    )
+                )
+        E_total = sum(E_terms[1:], E_terms[0]) if E_terms else z3.RealVal(0)
+
+        B_terms = []
+        for i, rule in enumerate(token.burn_rules):
+            if not rule_contributes(rule, te, side="burn"):
+                continue
+            B_terms.append(
+                rule_rate_per_period(solver, f"{token.id}_burn_sat_{i}", rule)
+            )
+        for i, flow in enumerate(te.cross_token_flows):
+            if (
+                flow.target_token == token.id
+                and flow.target_action == CrossTokenAction.BURN
+            ):
+                B_terms.append(
+                    cross_token_flow_rate(
+                        solver,
+                        f"{token.id}_xtburn_sat_{i}",
+                        flow,
+                        source_own_E.get(flow.source_token, z3.RealVal(0)),
+                    )
+                )
+        B_total = sum(B_terms[1:], B_terms[0]) if B_terms else z3.RealVal(0)
+
+        nfr1_mult = float(
+            cfg.nfr1_rho_multiplier_table.get(
+                str(te.meta.nfrs.resilience), 1.0
+            )
+        )
+        rho_floor_effective = cfg.rho_floor * nfr1_mult
+        solver.add(E_total > 0)
+        solver.add(B_total >= E_total * rho_floor_effective)  # safety
+        result = solver.check()
+        if result == z3.sat:
+            return "true"
+        if result == z3.unsat:
+            return "false"
+        return "unknown"
+
+    def safety_predicates(self, te: TokenEconomy, config, subject: str) -> list:
+        from verifier.safety_predicate import SafetyPredicate
+
+        token = next((t for t in te.tokens if t.id == subject), None)
+        if token is None or not token.emission_rules:
+            return []
+        # Capped-supply tokens (Bitcoin, Curve CRV) are sustained by
+        # termination, not by burn. The verifier reports
+        # ``pass_as_intended`` for FM3 in this case. Emitting a ρ
+        # predicate here would force the ABM to evaluate ρ = 0/E for
+        # every run and falsely report "100% deployment violation".
+        # Suppress the predicate so the ABM defers to the verifier's
+        # verdict instead of contradicting it.
+        if all(
+            r.schedule is not None and r.schedule.supply_cap is not None
+            for r in token.emission_rules
+        ):
+            return []
+        cfg = config or VerifierConfig.paper_defaults()
+        nfr1_mult = float(
+            cfg.nfr1_rho_multiplier_table.get(
+                str(te.meta.nfrs.resilience), 1.0
+            )
+        )
+        return [
+            SafetyPredicate(
+                failure_mode="FM3",
+                variable=f"rho[{subject}]",
+                operator=">=",
+                threshold=RHO_BURN_COVERAGE_FLOOR * nfr1_mult,
+                formula="ρ = B_per_period / E_per_period (burn-coverage ratio)",
+                inputs=[
+                    "B_per_period (sum of own burn + xt-BURN inflows)",
+                    "E_per_period (sum of own emission + xt-MINT inflows)",
+                ],
+                paper_section="§3.3 eq. (14)",
+            )
+        ]

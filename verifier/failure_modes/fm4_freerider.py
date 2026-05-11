@@ -24,10 +24,12 @@ from __future__ import annotations
 import z3
 
 from schema import (
+    ContributionVerification,
     EmissionTriggerKind,
     SanctionKind,
     TokenEconomy,
     TokenFunction,
+    ValueAnchor,
 )
 from verifier import elicitation
 from verifier.config import VerifierConfig
@@ -131,8 +133,15 @@ class FM4FreeRider(FailureMode):
         solver.add(S >= s_lo, S <= s_hi, S >= 0, S <= 1)
         # Phase 2 — φ derived from explicit agent role declarations,
         # falling back to the legacy keyword heuristic when role unset.
+        # Audit fix #3: φ_min depends on contribution_verification
+        # strength. We use the strongest verification declared on any
+        # token — rationale: if at least one channel has on-chain
+        # proof, contributors via that channel are provably present.
+        strongest_verification = self._strongest_contribution_verification(te, config)
         phi_min, phi_max = elicitation.contributor_fraction_from(
-            te.participants.agent_types
+            te.participants.agent_types,
+            contribution_verification=strongest_verification,
+            config=config,
         )
         solver.add(phi >= phi_min, phi <= phi_max)
 
@@ -483,6 +492,39 @@ class FM4FreeRider(FailureMode):
         return g.min, g.max, "user-supplied governance.monitoring_capacity_gamma"
 
     @staticmethod
+    def _strongest_contribution_verification(
+        te: TokenEconomy,
+        config: VerifierConfig | None,
+    ) -> ContributionVerification | None:
+        """Pick the contribution_verification kind with the highest
+        phi_min multiplier across all tokens.
+
+        Rationale: phi captures "fraction of population that contributes
+        to ANY channel." If at least one channel has strong verification
+        (e.g. on-chain proof), contributors via that channel are
+        provably present, giving phi_min ≥ multiplier × declared share.
+        Taking the strongest (max multiplier) gives the highest
+        defensible lower bound. Conservative-by-design users can still
+        override the table.
+        """
+        from schema import ContributionVerification as CV
+
+        cfg = config or VerifierConfig.paper_defaults()
+        table = cfg.phi_verification_floor_multiplier_table
+
+        best: CV | None = None
+        best_mult = -1.0
+        for token in te.tokens:
+            cv = token.contribution_verification
+            if cv is None or cv == CV.UNSPECIFIED:
+                continue
+            mult = table.get(cv.value, 0.0)
+            if mult > best_mult:
+                best_mult = mult
+                best = cv
+        return best
+
+    @staticmethod
     def _derive_temptation_gap(te: TokenEconomy) -> tuple[float, str]:
         """Derive (T − R) from (verification, redemption) when both set.
 
@@ -503,6 +545,13 @@ class FM4FreeRider(FailureMode):
     @staticmethod
     def _is_applicable(te: TokenEconomy) -> bool:
         for token in te.tokens:
+            # Pegged stablecoins have collateral-backed mints (vault open,
+            # CDR-driven smart-contract issuance) that *look* behavioral
+            # but are not contribution-reward. A scholar-style "earn by
+            # contributing" loop does not exist for them, so FM4 is not
+            # applicable. Skip such tokens for the applicability check.
+            if token.value_anchor == ValueAnchor.PEGGED:
+                continue
             for rule in token.emission_rules:
                 if rule.trigger.kind in CONTRIBUTION_TRIGGER_KINDS:
                     # Also require at least one token whose function set
@@ -592,4 +641,107 @@ class FM4FreeRider(FailureMode):
             "φ above d/K.",
             "Raise monitoring capacity γ (more transparency, on-chain proofs) "
             "or sanction magnitude S (graduated penalties, exclusion).",
+        ]
+
+    # ------------------------------------------------------------------
+    # Phase-C: dual encoding + structured safety predicate
+    # ------------------------------------------------------------------
+
+    def is_satisfaction_reachable_when_failing(
+        self, te: TokenEconomy, config, subject: str
+    ) -> str:
+        """Dual: any assignment of (K, d, γ, S, φ) in the box satisfying
+        BOTH safety clauses?
+
+          φ · K ≥ d · nfr5_mult       AND      γ · S > T − R
+        """
+        if not self._is_applicable(te):
+            return "unknown"
+        cfg = config or VerifierConfig.paper_defaults()
+
+        K_lo, K_hi = self._aggregate_offer_variety(te)
+        if K_lo is None:
+            return "unknown"
+        d_lo, d_hi = (
+            te.participants.average_demand_d.min,
+            te.participants.average_demand_d.max,
+        )
+        gamma_lo, gamma_hi, _ = self._derive_gamma_range(te)
+        s_range = elicitation.s_normalized_from(te.governance.sanction_structure)
+        s_lo, s_hi = s_range.min, s_range.max
+        T_minus_R, _ = self._derive_temptation_gap(te)
+        strongest = self._strongest_contribution_verification(te, config)
+        phi_min, phi_max = elicitation.contributor_fraction_from(
+            te.participants.agent_types,
+            contribution_verification=strongest,
+            config=cfg,
+        )
+        nfr5_mult = float(
+            cfg.nfr5_phi_multiplier_table.get(
+                str(te.meta.nfrs.proportionality), 1.0
+            )
+        )
+
+        solver = self.make_solver()
+        K = z3.Real("K")
+        d = z3.Real("d")
+        gamma = z3.Real("gamma")
+        S = z3.Real("S")
+        phi = z3.Real("phi")
+        solver.add(K >= K_lo, K <= K_hi, K > 0)
+        solver.add(d >= d_lo, d <= d_hi, d >= 0)
+        solver.add(gamma >= gamma_lo, gamma <= gamma_hi, gamma >= 0, gamma <= 1)
+        solver.add(S >= s_lo, S <= s_hi, S >= 0, S <= 1)
+        solver.add(phi >= phi_min, phi <= phi_max)
+        # Safety: BOTH clauses hold simultaneously.
+        solver.add(phi * K >= d * nfr5_mult)
+        solver.add(gamma * S > T_minus_R)
+        result = solver.check()
+        if result == z3.sat:
+            return "true"
+        if result == z3.unsat:
+            return "false"
+        return "unknown"
+
+    def safety_predicates(self, te: TokenEconomy, config, subject: str) -> list:
+        from verifier.safety_predicate import SafetyPredicate
+
+        if not self._is_applicable(te):
+            return []
+        cfg = config or VerifierConfig.paper_defaults()
+        K_lo, K_hi = self._aggregate_offer_variety(te)
+        if K_lo is None:
+            return []
+        d_hi = te.participants.average_demand_d.max
+        T_minus_R, _ = self._derive_temptation_gap(te)
+        nfr5_mult = float(
+            cfg.nfr5_phi_multiplier_table.get(
+                str(te.meta.nfrs.proportionality), 1.0
+            )
+        )
+        return [
+            SafetyPredicate(
+                failure_mode="FM4",
+                variable="phi_times_K",
+                operator=">=",
+                threshold=d_hi * nfr5_mult,
+                formula="φ · K (contributor fraction × offer variety)",
+                inputs=[
+                    "phi (contributor fraction)",
+                    "offer_variety_K",
+                ],
+                paper_section="§3.4 eq. (17) — Ostrom proportionality",
+            ),
+            SafetyPredicate(
+                failure_mode="FM4",
+                variable="gamma_times_S",
+                operator=">",
+                threshold=T_minus_R,
+                formula="γ · S (monitoring × sanction)",
+                inputs=[
+                    "monitoring_capacity_gamma",
+                    "sanction_structure.S_normalized",
+                ],
+                paper_section="§3.4 eq. (18) — monitoring/sanction",
+            ),
         ]

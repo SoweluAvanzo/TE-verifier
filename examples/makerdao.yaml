@@ -1,8 +1,21 @@
 # MakerDAO (DAI + MKR) — collateral-backed stablecoin + governance pair.
-# Encoded against TE-IR v0.1. Tier-1 model: cross-token flows and external
-# signals (oracle delays) are NOT modeled — that is Tier-2 work and is
-# documented in docs/case-studies.md as the gap that prevents the verifier
-# from reproducing Black Thursday at this tier.
+# Encoded against TE-IR v0.1. Public parameters as of 2024 (pre Sky/USDS rebrand).
+#
+# Calibration notes:
+# - DAI circulating ~5B at peak; modeled here at ~5B initial.
+# - MKR cap ~1.005M (genesis 1M + post-Black-Thursday emergency mints,
+#   most subsequently bought back). Initial supply set to 1M.
+# - Stability fee revenue at ~5%/yr on $5B = $250M/yr ≈ $4.8M/week.
+#   At ~$1500/MKR ≈ 3000 MKR/week of theoretical buy-and-burn capacity;
+#   actual auctions are bursty, lumpy, and only occur when surplus
+#   exceeds the debt-auction threshold.
+# - Schema gap: the DAI→MKR cross-flow tracks stability fees on
+#   *outstanding DAI stock*, not on DAI emission rate. Schema's
+#   PROPORTIONAL_TO_SOURCE multiplies E_own(source), so we keep
+#   the flow INDEPENDENT and bound the magnitude empirically.
+# - Tier-2 gap (already documented in docs/case-studies.md §3): no
+#   ExternalSignal IR construct, so the Black-Thursday oracle-delay
+#   counterexample cannot be expressed at this tier.
 meta:
   name: MakerDAO
   description: >-
@@ -23,34 +36,40 @@ tokens:
     function: [medium_of_exchange, unit_of_account]
     value_anchor: pegged
     transferable: true
-    holding_incentive_present: false
+    holding_incentive_present: true
+    holding_incentives:
+      - staking            # DSR (Dai Savings Rate) is a staking-like yield on held DAI
+    earning_mechanisms:
+      - exchange_purchase     # DAI is minted by locking collateral, not earned via behavior
+    contribution_verification: smart_contract_automation
+    redemption_mechanism: open_market_exchange
     offer_variety_K:
-      min: 1000
-      max: 100000
+      # K = distinct redemption opportunities for DAI: DEX pools, lending
+      # markets, payment merchants. Realistic count is hundreds to a few
+      # thousand, not 100k.
+      min: 100
+      max: 10000
     emission_rules:
       - trigger:
+          # Vault collateral locking is the trigger event; FM4 is not
+          # applicable because DAI is `value_anchor: pegged` (FM4
+          # exempts pegged tokens — see verifier/failure_modes/fm4_freerider.py).
           kind: behavioral_event
           event_predicate: vault_collateral_locked
-          event_frequency:
-            family: linear
-            parameter_ranges:
-              a:
-                min: 0
-                max: 100
-              b:
-                min: 100000
-                max: 5000000      # DAI minted per week
         function:
           sign: always_positive
           asymptotic_class:
+            # Total DAI minted per week. ~$50-200M/week gross during the
+            # 2021-2024 window; both ends of the range are weekly totals,
+            # not per-event amounts (no event_frequency multiplier).
             family: linear
             parameter_ranges:
               a:
                 min: 0
-                max: 50
+                max: 100000
               b:
-                min: 50000
-                max: 2000000
+                min: 50000000
+                max: 200000000
     burn_rules:
       - trigger:
           kind: demand_driven
@@ -58,53 +77,46 @@ tokens:
         function:
           sign: always_negative
           asymptotic_class:
+            # Closely tracks DAI minting in steady state — debt repayment
+            # is the structural burn mechanism. Same magnitude as emission.
             family: linear
             parameter_ranges:
               a:
                 min: 0
-                max: 50
+                max: 100000
               b:
-                min: 50000
-                max: 2000000      # closely tracks DAI minting in steady state
+                min: 50000000
+                max: 200000000
     initial_distribution:
-      kind: none
+      kind: pre_minted_reserve
+      amount:
+        min: 5000000000           # ~5B DAI circulating at peak
+        max: 5000000000
   - id: MKR
     function: [governance_right]
     value_anchor: none
     transferable: true
     holding_incentive_present: true
-    emission_rules: []  # no scheduled emission; emergency mints not modeled at Tier-1
-    burn_rules:
-      - trigger:
-          kind: demand_driven
-          event_predicate: surplus_auction_completed
-          event_frequency:
-            family: linear
-            parameter_ranges:
-              a:
-                min: 0
-                max: 5
-              b:
-                min: 0
-                max: 50           # auctions per week
-        function:
-          sign: always_negative
-          asymptotic_class:
-            family: linear
-            parameter_ranges:
-              a:
-                min: 0
-                max: 1
-              b:
-                min: 0
-                max: 200          # MKR burned per week from surplus
+    holding_incentives:
+      - governance_rights
+    earning_mechanisms:
+      - exchange_purchase
+    redemption_mechanism: open_market_exchange
+    emission_rules: []  # no scheduled emission; emergency mints (Black Thursday) cannot be expressed at Tier-1
+    # MKR burn is driven by stability-fee surplus and is modeled in this IR
+    # by the cross_token_flow DAI → MKR (burn) below. Removing the
+    # standalone burn_rule avoids double-counting.
+    burn_rules: []
     initial_distribution:
       kind: pre_minted_reserve
       amount:
         min: 1000000
-        max: 1000000
+        max: 1005000             # post-Black-Thursday emergency mint at upper bound
 
 cross_token_flows:
+  # Stability-fee-driven MKR buyback-and-burn. Magnitude reflects the
+  # average of ~600–3000 MKR/week of revenue actually translated into
+  # buybacks (lumpy across surplus auctions).
   - source_token: DAI
     source_event: stability_fees_accrued > debt_auction_threshold
     target_token: MKR
@@ -114,18 +126,23 @@ cross_token_flows:
       parameter_ranges:
         a:
           min: 0
-          max: 1
+          max: 5
         b:
-          min: 0
-          max: 100
+          min: 600
+          max: 3000
 
 participants:
   count_N:
-    min: 10000
-    max: 200000
+    # Vault owners ~10-30k, DAI holders ~500k+, MKR governors ~1-5k.
+    # Lower bound at 200k reflects reasonable holder count even in
+    # bear-market conditions.
+    min: 200000
+    max: 3000000
   expected_Q:
-    min: 100000
-    max: 5000000
+    # Token-volume terms: ~$3-10B DAI moves on-chain per week (DEX swaps,
+    # transfers, CEX flows). At DAI=$1 this maps directly to DAI/week.
+    min: 3000000000
+    max: 10000000000
   average_demand_d:
     min: 0.5
     max: 5.0
@@ -179,6 +196,20 @@ governance:
     S_normalized:
       min: 0.7
       max: 0.9
+  # MKR is concentrated: a16z, Paradigm, and other early investors plus
+  # the founder hold large blocks. On-chain MKR Gini is ~0.7–0.85.
   token_balance_gini:
-    min: 0.55
-    max: 0.75
+    min: 0.7
+    max: 0.85
+  # MKR governance uses delegation extensively (the MakerDAO "delegate
+  # platform" — a16z, Paradigm, BlockTower, GFX Labs, etc. are active
+  # named delegates). Effective voting power concentrates over a
+  # smaller set of delegates than the underlying MKR distribution.
+  # Top ~10 delegates routinely control >70% of voting weight in
+  # executive votes. The delegate concentration Gini is therefore
+  # higher than the underlying token Gini, not lower.
+  vote_weighting: delegated
+  vote_weighting_params:
+    delegate_concentration_gini:
+      min: 0.78
+      max: 0.88

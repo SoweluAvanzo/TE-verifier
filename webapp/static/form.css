@@ -570,3 +570,160 @@ button.ghost:hover {
 .ghost-danger:hover {
   background: #fee;
 }
+
+/* =================================================== Schedule modifiers (cap / halving / vesting) */
+
+.rule-schedule {
+  margin-top: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  background: #fafbfd;
+  border: 1px dashed #d8dde5;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.rule-schedule summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: #4a5d75;
+  padding: 0.15rem 0;
+}
+
+.rule-schedule .hint {
+  margin: 0.3rem 0 0.5rem 0;
+  font-size: 0.78rem;
+  color: var(--color-muted);
+}
+
+.rule-schedule .schedule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.7rem;
+  margin-bottom: 0.5rem;
+}
+
+.rule-schedule .schedule-row > input[type="number"] {
+  flex: 1;
+  min-width: 8rem;
+  font-size: 0.85rem;
+}
+
+.rule-schedule .halving-grid {
+  display: flex;
+  gap: 0.4rem;
+  flex: 1;
+}
+
+.rule-schedule .halving-grid input {
+  flex: 1;
+  min-width: 6rem;
+  font-size: 0.85rem;
+}
+
+/* =====================================================================
+ * Verdict view toggle (Rich ↔ Minimal/reachability)
+ * Plus the minimal-table layout, vote_weighting param visibility, and
+ * the distribution-envelope grid on rule rows.
+ * ===================================================================== */
+
+.verdict-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.view-toggle {
+  display: inline-flex;
+  background: #f0f0f3;
+  border: 1px solid #d0d0d4;
+  border-radius: 0.4rem;
+  overflow: hidden;
+}
+
+.view-toggle-btn {
+  border: 0;
+  background: transparent;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: #444;
+}
+
+.view-toggle-btn.active {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+.minimal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-top: 0.6rem;
+}
+
+.minimal-table th,
+.minimal-table td {
+  border-bottom: 1px solid #e2e2e6;
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.minimal-table th {
+  background: #f0f0f3;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.minimal-table code {
+  background: #f0f0f3;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.2rem;
+  font-size: 0.75rem;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.08rem 0.4rem;
+  border-radius: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.status-pill.status-sound       { background: #dcfce7; color: #166534; }
+.status-pill.status-fragile     { background: #fef3c7; color: #92400e; }
+.status-pill.status-broken      { background: #fee2e2; color: #991b1b; }
+.status-pill.status-inconclusive{ background: #e0e7ff; color: #3730a3; }
+.status-pill.status-not_applicable { background: #f3f4f6; color: #555; }
+
+.tri-yes { color: #b91c1c; font-weight: 600; }
+.tri-no  { color: #166534; font-weight: 600; }
+.tri-unk { color: #888; }
+
+/* Distribution-envelope grid inside a rule row. */
+.dist-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  align-items: center;
+}
+
+.dist-grid select,
+.dist-grid input {
+  padding: 0.3rem 0.4rem;
+  border: 1px solid #c4c4c8;
+  border-radius: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.dist-param-hint {
+  grid-column: 1 / -1;
+  color: #666;
+  font-size: 0.74rem;
+  margin-top: 0.2rem;
+}

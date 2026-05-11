@@ -81,13 +81,19 @@ class FM2VelocityTrap(FailureMode):
                     token.holding_incentives
                 )
                 ceiling = TAU_BAR_VELOCITY_TRAP_CEILING
+                # Same per-token gating as below: NFR6=circulate_fast only
+                # reframes FM2 when the token is actually a medium of exchange.
+                _moe = TokenFunction.MEDIUM_OF_EXCHANGE in token.function
                 pass_or_fail = (
                     Status.PASS
                     if tau_floor > ceiling
                     else (
                         Status.PASS_AS_INTENDED
-                        if te.meta.nfrs.circulation_speed
-                        == CirculationSpeed.CIRCULATE_FAST
+                        if (
+                            te.meta.nfrs.circulation_speed
+                            == CirculationSpeed.CIRCULATE_FAST
+                            and _moe
+                        )
                         else Status.FAIL
                     )
                 )
@@ -139,8 +145,14 @@ class FM2VelocityTrap(FailureMode):
             )
 
         ceiling = TAU_BAR_VELOCITY_TRAP_CEILING
+        # NFR6 = circulate_fast is a *system-level* declaration, but it
+        # only meaningfully reframes FM2 for tokens whose function set
+        # actually has high velocity as a goal — i.e. tokens that act as
+        # a medium of exchange. A pure store-of-value or governance token
+        # in the same TE shouldn't get the velocity-trap pass.
         is_intended = (
             te.meta.nfrs.circulation_speed == CirculationSpeed.CIRCULATE_FAST
+            and TokenFunction.MEDIUM_OF_EXCHANGE in token.function
         )
 
         solver = self.make_solver()
@@ -342,3 +354,66 @@ class FM2VelocityTrap(FailureMode):
             f"{TAU_BAR_VELOCITY_TRAP_CEILING})."
         )
         return Counterexample(parameter_values=params, narrative=narrative)
+
+    # ------------------------------------------------------------------
+    # Phase-C: dual encoding + structured safety predicate
+    # ------------------------------------------------------------------
+
+    def is_satisfaction_reachable_when_failing(
+        self, te: TokenEconomy, config, subject: str
+    ) -> str:
+        """Dual: any assignment of per-agent holding times such that
+        τ̄ > ceiling?"""
+        token = next((t for t in te.tokens if t.id == subject), None)
+        if (
+            token is None
+            or not token.transferable
+            or not te.participants.agent_types
+        ):
+            return "unknown"
+        ceiling = TAU_BAR_VELOCITY_TRAP_CEILING
+        solver = self.make_solver()
+        tau_terms: list[z3.ArithRef] = []
+        for ag in te.participants.agent_types:
+            w = ag.balance_share if ag.balance_share is not None else ag.fraction
+            tau = z3.Real(f"tau_{token.id}_{ag.id}")
+            solver.add(
+                tau >= ag.expected_holding_time.expected_periods.min,
+                tau <= ag.expected_holding_time.expected_periods.max,
+            )
+            tau_terms.append(z3.RealVal(w) * tau)
+        if not tau_terms:
+            return "unknown"
+        tau_bar = sum(tau_terms[1:], tau_terms[0])
+        solver.add(tau_bar > ceiling)  # safety
+        result = solver.check()
+        if result == z3.sat:
+            return "true"
+        if result == z3.unsat:
+            return "false"
+        return "unknown"
+
+    def safety_predicates(self, te: TokenEconomy, config, subject: str) -> list:
+        from verifier.safety_predicate import SafetyPredicate
+
+        token = next((t for t in te.tokens if t.id == subject), None)
+        if token is None or not token.transferable:
+            return []
+        return [
+            SafetyPredicate(
+                failure_mode="FM2",
+                variable=f"tau_bar[{subject}]",
+                operator=">",
+                threshold=TAU_BAR_VELOCITY_TRAP_CEILING,
+                formula=(
+                    "Σ_i (balance_share_i or fraction_i) × "
+                    "expected_holding_time_i (in periods)"
+                ),
+                inputs=[
+                    "agent_types[*].balance_share",
+                    "agent_types[*].fraction",
+                    "agent_types[*].expected_holding_time",
+                ],
+                paper_section="§3.2 eq. (12)",
+            )
+        ]

@@ -189,14 +189,47 @@ def s_normalized_from(
 # ---------------------------------------------------------------------------
 
 
-def contributor_fraction_from(agent_types: list[AgentType]) -> tuple[float, float]:
+def contributor_fraction_from(
+    agent_types: list[AgentType],
+    contribution_verification: ContributionVerification | None = None,
+    config: VerifierConfig | None = None,
+) -> tuple[float, float]:
     """Compute (lo, hi) for the contributor fraction φ from agent_types.
 
     Phase 2 uses the explicit `role` enum when set; falls back to the
-    legacy keyword-matching heuristic when role is None (back-compat).
+    legacy keyword-matching heuristic when role is None.
+
+    Phi lower-bound depends on contribution_verification strength
+    (audit fix #3). Setting ``phi_min = 0`` unconditionally — the
+    pre-fix behavior — let Z3 satisfy ``φ·K < d`` at φ=0 even for
+    systems with strong on-chain verification, producing FM4 fails
+    that the design's own evidence contradicts. The multiplier table
+    in ``VerifierConfig.phi_verification_floor_multiplier`` scales
+    the declared contributor share to give φ_min credit proportional
+    to verification confidence:
+
+    * SMART_CONTRACT_AUTOMATION → 0.9 × declared (on-chain proof)
+    * THIRD_PARTY_CERTIFICATION → 0.7 × declared
+    * PHYSICAL_PRESENCE       → 0.6 × declared
+    * PEER_VERIFICATION       → 0.5 × declared
+    * SELF_REPORTING          → 0.0 (status quo — Sybil/cheating possible)
+    * UNSPECIFIED or None     → 0.0 (worst case)
+
+    The keyword fallback path (no role declared) keeps φ_min = 0
+    because the verification field is not reliably interpretable
+    when the role assignment itself is a heuristic.
     """
     if not agent_types:
         return (0.0, 1.0)
+
+    cfg = config or VerifierConfig.paper_defaults()
+    multiplier_table = cfg.phi_verification_floor_multiplier_table
+    verification_key = (
+        contribution_verification.value
+        if contribution_verification is not None
+        else "unspecified"
+    )
+    floor_mult = multiplier_table.get(verification_key, 0.0)
 
     # Prefer explicit role declarations
     explicit = [ag for ag in agent_types if ag.role is not None]
@@ -208,11 +241,16 @@ def contributor_fraction_from(agent_types: list[AgentType]) -> tuple[float, floa
             for ag in agent_types
             if ag.role == AgentRole.CONTRIBUTOR
         )
-        # Treat declared share as the upper end and 0 as the worst-case
-        # lower (declared contributors might disengage).
-        return (0.0, max(contributor_share, 0.05))
+        phi_max = max(contributor_share, 0.05)
+        phi_min = floor_mult * contributor_share
+        # Guard: phi_min never exceeds phi_max
+        phi_min = min(phi_min, phi_max)
+        return (phi_min, phi_max)
 
-    # Fall back to keyword matching (legacy)
+    # Fall back to keyword matching (legacy). The keyword heuristic is
+    # unreliable enough that we keep phi_min = 0 here regardless of
+    # verification — a user willing to declare verification should also
+    # declare AgentRole.
     keywords = {
         "contributor",
         "provider",

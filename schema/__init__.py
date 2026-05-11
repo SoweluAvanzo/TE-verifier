@@ -12,6 +12,7 @@ from schema.te_ir import (
     ControllingActor,
     CrossTokenAction,
     CrossTokenFlow,
+    DistributionSpec,
     EmissionTriggerKind,
     EventOccurrence,
     FlowCoupling,
@@ -34,6 +35,7 @@ from schema.te_ir import (
     RuleTrigger,
     SanctionKind,
     SanctionStructure,
+    ScheduleModifiers,
     ThresholdCondition,
     ThresholdOp,
     ThresholdVar,
@@ -44,8 +46,19 @@ from schema.te_ir import (
     TokenFunction,
     Topology,
     ValueAnchor,
+    VoteWeighting,
     load_te,
 )
+
+# Phase-A migration to v2: exposed under a sub-namespace so v1 imports
+# (the entire __all__ below) are untouched. Consumers opt in explicitly:
+#
+#     from schema import v2
+#     te = v2.load_te_v2("path/to/file.yaml")
+#     te2 = v2.from_v1(v1_te)
+#
+# Live verifier / FM code continues to import v1 names from `schema`.
+from schema import te_ir_v2 as v2  # noqa: F401
 
 __all__ = [
     "AgentRole",
@@ -61,6 +74,7 @@ __all__ = [
     "Condition",
     "CrossTokenAction",
     "CrossTokenFlow",
+    "DistributionSpec",
     "EmissionTriggerKind",
     "EventOccurrence",
     "FlowCoupling",
@@ -83,6 +97,7 @@ __all__ = [
     "RuleTrigger",
     "SanctionKind",
     "SanctionStructure",
+    "ScheduleModifiers",
     "ThresholdCondition",
     "ThresholdOp",
     "ThresholdVar",
@@ -93,5 +108,6 @@ __all__ = [
     "TokenFunction",
     "Topology",
     "ValueAnchor",
+    "VoteWeighting",
     "load_te",
 ]

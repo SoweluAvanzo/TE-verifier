@@ -1,7 +1,20 @@
 # Curve / veCRV — vote-escrow governance pair.
-# Encoded against TE-IR v0.1. Time-decaying veCRV positions are approximated
-# at Tier-1 by giving veCRV a continuous burn rule; the per-position decay
-# semantics are Tier-2 work (LinearlyDecayingBalance IR construct).
+# Encoded against TE-IR v0.1. Public parameters as of mid-2026.
+#
+# Calibration notes:
+# - CRV terminal cap 3.03B. Current circulating ~1.5B (≈ 50% of cap).
+# - Initial CRV emission was 2.2M/day = 15.4M/week at launch (Aug 2020).
+#   Schedule decays ~16%/yr (factor 0.84 each year). After ~6 years of
+#   decay, current per-week emission ≈ 15.4M × 0.84^6 ≈ 5.4M/week.
+# - Modeled with halving_period=52 weeks, halving_factor=0.84. The
+#   AsymptoticClass `c` reflects current-era emission post-decay; the
+#   schedule continues to decay it geometrically.
+# - Schema gap: per-position veCRV decay is not first-class (case
+#   studies §4 lists `LinearlyDecayingBalance` as a Tier-2 IR addition).
+#   We approximate aggregate decay with a continuous burn rule, which
+#   double-counts when a position expires AND a new lock starts.
+# - "Curve Wars" concentration: Convex Finance accumulates veCRV via
+#   user deposits (cvxCRV); peaked at ~50% of veCRV supply.
 meta:
   name: Curve / veCRV
   description: >-
@@ -24,6 +37,14 @@ tokens:
     value_anchor: none
     transferable: true
     holding_incentive_present: true
+    holding_incentives:
+      - governance_rights
+      - time_locked_rewards     # boost yields by locking CRV → veCRV
+    earning_mechanisms:
+      - behavioral_reward       # gauge rewards for LPs
+      - exchange_purchase
+    contribution_verification: smart_contract_automation
+    redemption_mechanism: open_market_exchange
     offer_variety_K:
       min: 100
       max: 500             # number of pools and gauges
@@ -34,48 +55,48 @@ tokens:
         function:
           sign: decreasing_positive
           asymptotic_class:
-            # Per-period rate (CRV/week). Cumulative supply caps at 3.03B
-            # (implied by the decreasing schedule, not part of the rate class).
+            # Per-period rate (CRV/week) at the *current* (mid-2026)
+            # decay step; the schedule below continues the 16%/yr decay.
             family: constant
             parameter_ranges:
               c:
-                min: 0
-                max: 15400000        # ~weekly emission early years
+                min: 4500000
+                max: 6000000
+        schedule:
+          halving_period: 52       # 1 year in weeks
+          halving_factor: 0.84     # ~16%/yr decay
+          supply_cap: 1530000000   # 3.03B − ~1.5B already issued
     burn_rules: []           # no protocol-level CRV burn
     initial_distribution:
-      kind: founder_allocation
+      kind: pre_minted_reserve
       amount:
-        min: 909000000
-        max: 909000000
+        min: 1500000000
+        max: 1500000000
   - id: veCRV
     function: [governance_right]
     value_anchor: none
     transferable: false
     holding_incentive_present: true
+    holding_incentives:
+      - governance_rights
+      - time_locked_rewards
     emission_rules:
       - trigger:
           kind: behavioral_event
           event_predicate: user_locks_crv
-          event_frequency:
-            family: linear
-            parameter_ranges:
-              a:
-                min: 0
-                max: 100
-              b:
-                min: 100
-                max: 100000
         function:
           sign: always_positive
           asymptotic_class:
+            # Aggregate veCRV minted per week from CRV locks. veCRV total
+            # supply ~700M; weekly net-flow is 0.5M-10M as locks rotate.
             family: linear
             parameter_ranges:
               a:
                 min: 0
                 max: 1000
               b:
-                min: 0
-                max: 1000000
+                min: 500000
+                max: 10000000
     burn_rules:
       - trigger:
           kind: demand_driven
@@ -83,14 +104,16 @@ tokens:
         function:
           sign: decreasing_positive
           asymptotic_class:
+            # Aggregate veCRV decay per week (continuous lock decay +
+            # expiries). At steady state matches mint flow ± seasonality.
             family: linear
             parameter_ranges:
               a:
                 min: 0
                 max: 1000
               b:
-                min: 0
-                max: 1000000
+                min: 500000
+                max: 10000000
     initial_distribution:
       kind: none
 
@@ -121,11 +144,13 @@ cross_token_flows:
 
 participants:
   count_N:
-    min: 10000
+    min: 50000
     max: 500000
   expected_Q:
-    min: 100000
-    max: 5000000
+    # Token-volume terms: CRV transfer volume ≈ $10-50M/week at ~$0.50/CRV
+    # → 20-100M CRV moved per week (incl. swaps and gauge claims).
+    min: 20000000
+    max: 100000000
   average_demand_d:
     min: 0.1
     max: 5.0
@@ -139,6 +164,10 @@ participants:
         min: 0.0
         max: 0.02
   topology: network
+  topology_params:
+    average_degree:
+      min: 5
+      max: 20                # LPs interact with handful of gauges and aggregators
   agent_types:
     - id: crv_holder
       fraction: 0.6
@@ -149,6 +178,7 @@ participants:
       balance_share: 0.3
     - id: liquidity_provider   # contributor role for FM4
       fraction: 0.3
+      role: contributor
       expected_holding_time:
         expected_periods:
           min: 4
@@ -182,3 +212,24 @@ governance:
     # veCRV is highly concentrated due to Convex aggregation (~50% peak).
     min: 0.7
     max: 0.85
+  # veCRV is the canonical vote-escrow / time-locked voting system.
+  # Voting power = locked_CRV × (time_remaining / 4 years). Average
+  # lock duration across all active veCRV is high, not moderate: the
+  # dominant lockers (Convex, Yearn, individual ve-protocols) lock at
+  # the 4-year max and re-lock as decay approaches. Empirically the
+  # weight-averaged lock fraction sits around 0.7-0.9 — much closer
+  # to "everyone locks max" than to "average 2 years out of 4".
+  #
+  # The TIME_LOCKED transformation therefore reduces effective Gini
+  # only modestly. Most of the Convex-driven concentration concern
+  # survives the transformation, which is the right empirical answer
+  # (Curve Wars is a real governance issue, not an artifact of
+  # measurement). If a user wanted to model Convex explicitly as a
+  # delegation aggregator, vote_weighting = delegated would be the
+  # better choice; we use TIME_LOCKED here to demonstrate the
+  # protocol-level mechanism the design declares.
+  vote_weighting: time_locked
+  vote_weighting_params:
+    avg_lock_fraction:
+      min: 0.7
+      max: 0.9

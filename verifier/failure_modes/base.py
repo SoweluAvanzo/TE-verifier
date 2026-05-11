@@ -177,6 +177,14 @@ class Verdict(BaseModel):
     # Defaults to NOT_APPLICABLE for verdicts where the FM did not run
     # (archetype skip, applicability gate). Populated by `verifier.risk`.
     risk_level: RiskLevel = RiskLevel.NOT_APPLICABLE
+    # Sprint 1+3 — refined diagnosis combining trajectory simulation
+    # (per-token FMs) and sensitivity ranking (binding inputs). Stored
+    # as a serialized dict so we avoid a circular import between
+    # `failure_modes/base` and `simulate/refinement`. The shape matches
+    # `verifier.simulate.refinement.RefinedDiagnosis.model_dump()` —
+    # see that module for the field-by-field documentation.
+    # `None` means: no refinement was computed (PASS or NOT_APPLICABLE).
+    refined_diagnosis: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +335,51 @@ class FailureMode(ABC):
         do not consume any configurable values may ignore the parameter.
         """
         raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Phase-C extensions: dual-form check + structured safety predicate.
+    # Consumed by `verifier.minimal` to produce reachability verdicts
+    # suitable for ABM handoff. Subclasses override; the defaults are
+    # the conservative "unknown / no predicates" answers.
+    # ------------------------------------------------------------------
+
+    def is_satisfaction_reachable_when_failing(
+        self,
+        te: TokenEconomy,
+        config: "Any",
+        subject: str,
+    ) -> str:
+        """Z3 dual: does *some* assignment in the declared box satisfy
+        the FM's safety condition?
+
+        Called only when ``check`` returned FAIL for ``subject`` —
+        for PASS / PASS_AS_INTENDED the answer is trivially "true"
+        (a satisfying corner exists by definition); for NOT_APPLICABLE
+        the question is moot.
+
+        Returns one of ``"true"`` / ``"false"`` / ``"unknown"`` (string
+        literals to keep the contract JSON-friendly and avoid bringing
+        Literal types into base classes that schema-mod consumers
+        also use). Default ``"unknown"`` — subclasses should override
+        with a real Z3-dual encoding for their FM.
+        """
+        return "unknown"
+
+    def safety_predicates(
+        self,
+        te: TokenEconomy,
+        config: "Any",
+        subject: str,
+    ) -> list:
+        """Structured form of this FM's safety predicates, ready for
+        ABM consumption.
+
+        Returns a list of ``SafetyPredicate`` objects (lazy-imported to
+        keep the base class light). Most FMs have one predicate; FM4
+        and FM6 have two (the safety condition is a conjunction).
+        Default empty — subclasses override.
+        """
+        return []
 
     # Convenience for subclasses that build small Z3 queries.
     @staticmethod

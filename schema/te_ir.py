@@ -66,6 +66,11 @@ class AsymptoticFamily(str, Enum):
     BOUNDED_RANGE = "bounded_range"
     LINEAR = "linear"
     POLYNOMIAL = "polynomial"
+    # Sub-linear power-of-time: rate ≈ a · t^(1/degree) + b. degree=2
+    # gives the canonical √t shape used by Ethereum's PoS issuance curve
+    # (issuance per validator scales with √(total stake)). degree=3 is
+    # cube-root, useful for very-slowly-growing-with-time emission.
+    SUBLINEAR_ROOT = "sublinear_root"
     LOG = "log"
     EXPONENTIAL = "exponential"
     UNSPECIFIED = "unspecified"
@@ -85,6 +90,11 @@ class AsymptoticClass(_Frozen):
             raise ValueError("polynomial family requires degree")
         if self.family == AsymptoticFamily.BOUNDED_RANGE and self.bounds is None:
             raise ValueError("bounded_range family requires bounds")
+        if self.family == AsymptoticFamily.SUBLINEAR_ROOT:
+            if self.degree is None:
+                raise ValueError("sublinear_root family requires degree")
+            if self.degree < 2:
+                raise ValueError("sublinear_root requires degree ≥ 2 (degree=2 → √t)")
         return self
 
 
@@ -282,11 +292,74 @@ class RuleTrigger(_Frozen):
     conditions: list[Condition] = Field(default_factory=list)
 
 
+class DistributionSpec(_Frozen):
+    """A stochastic envelope around an otherwise deterministic value.
+
+    The verifier interprets a distribution as its *support* (μ ± 3σ
+    for Normal, full range for Uniform, etc.) and reasons over the
+    resulting range conservatively. The simulator (``verifier.abm``)
+    uses the distribution proper — sampling per period or per agent.
+    The two layers stay honest about what they each see.
+
+    ``kind`` selects the family; ``parameters`` is family-specific
+    so we don't proliferate sibling classes.
+
+    Per-family parameter contract (validated below):
+
+    * ``uniform``:    ``low``, ``high``
+    * ``normal``:     ``mu``, ``sigma``
+    * ``lognormal``:  ``mu``, ``sigma``  (parameters of the log)
+    * ``bernoulli``:  ``p``
+    * ``poisson``:    ``lambda``
+    * ``beta``:       ``alpha``, ``beta``
+
+    Schema-level mirror of ``schema.te_ir_v2.DistributionSpec`` so the
+    v1 ABM can read the same field. The v2 migration shim treats this
+    as a passthrough.
+    """
+
+    kind: Literal[
+        "uniform",
+        "normal",
+        "lognormal",
+        "bernoulli",
+        "poisson",
+        "beta",
+    ]
+    parameters: dict[str, float] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_params(self) -> "DistributionSpec":
+        expected = {
+            "uniform": {"low", "high"},
+            "normal": {"mu", "sigma"},
+            "lognormal": {"mu", "sigma"},
+            "bernoulli": {"p"},
+            "poisson": {"lambda"},
+            "beta": {"alpha", "beta"},
+        }[self.kind]
+        missing = expected - self.parameters.keys()
+        if missing:
+            raise ValueError(
+                f"distribution {self.kind} missing parameters: "
+                f"{sorted(missing)}"
+            )
+        return self
+
+
 class FunctionShape(_Frozen):
-    """The (sign, asymptotic_class) classification of a Rule's function."""
+    """The (sign, asymptotic_class) classification of a Rule's function.
+
+    When ``distribution`` is set, the ABM samples the per-period rate
+    from that distribution each period (turns the rule from a
+    once-per-run static sample into a noisy time-evolving rate). The
+    verifier sees only the support (μ±3σ for Normal, full range for
+    Uniform), so its reasoning is unchanged.
+    """
 
     sign: FunctionSign
     asymptotic_class: AsymptoticClass
+    distribution: DistributionSpec | None = None
 
 
 class RegimeSwitch(_Frozen):
@@ -296,12 +369,88 @@ class RegimeSwitch(_Frozen):
     function: FunctionShape
 
 
+class ScheduleModifiers(_Frozen):
+    """Optional schedule refinements layered on top of a Rule's base
+    asymptotic class. Each field is independent; absent / default
+    values mean "no modifier of this kind". Composes with the existing
+    asymptotic class without changing it.
+
+    Captures real-world emission patterns the asymptotic-class
+    abstraction can't express directly:
+
+    - ``supply_cap`` — cumulative-emission ceiling. Once ``Σ E(t) ≥
+      supply_cap``, the rule emits 0 for all subsequent periods.
+      Captures Bitcoin's 21M total cap.
+    - ``halving_period`` + ``halving_factor`` — every ``halving_period``
+      periods, multiply the per-period rate by ``halving_factor``.
+      Defaults to 0.5 (halving). Set ``halving_factor=0.9`` for a
+      gentler 10%-per-period decay; ``halving_factor=0.5`` and
+      ``halving_period=210`` reproduces Bitcoin's halving schedule.
+    - ``vesting_periods`` — linear ramp from 0 at t=0 to nominal rate
+      at t=vesting_periods. Captures DAO grant-style allocations.
+
+    The verifier's trajectory simulation uses all three; the static
+    layer uses ``supply_cap`` (the easy one) and treats halving via a
+    horizon-averaged rate reduction. ``vesting`` is currently
+    trajectory-only.
+    """
+
+    supply_cap: float | None = None
+    halving_period: int | None = None
+    halving_factor: float = 0.5
+    # Number of periods that have *already elapsed* since the last
+    # halving event when t=0. Lets users align the simulation with
+    # real-world calendar time without re-stating the entire schedule.
+    # Bitcoin example: ~110 weeks elapsed since the April-2024 halving
+    # by mid-2026, so the next modeled halving fires at t = 208 - 110 = 98.
+    halving_offset: int = 0
+    vesting_periods: int | None = None
+
+    @field_validator("halving_factor")
+    @classmethod
+    def _validate_factor(cls, v: float) -> float:
+        if not (0.0 < v < 1.0):
+            raise ValueError("halving_factor must be strictly between 0 and 1")
+        return v
+
+    @field_validator("supply_cap")
+    @classmethod
+    def _validate_cap(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:
+            raise ValueError("supply_cap must be positive")
+        return v
+
+    @field_validator("halving_period")
+    @classmethod
+    def _validate_period(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError("halving_period must be ≥ 1")
+        return v
+
+    @field_validator("vesting_periods")
+    @classmethod
+    def _validate_vesting(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError("vesting_periods must be ≥ 1")
+        return v
+
+    @field_validator("halving_offset")
+    @classmethod
+    def _validate_halving_offset(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("halving_offset must be ≥ 0")
+        return v
+
+
 class Rule(_Frozen):
     """A mint or burn rule. Used for both emission and burn."""
 
     trigger: RuleTrigger
     function: FunctionShape
     regimes: list[RegimeSwitch] = Field(default_factory=list)
+    # Optional schedule modifiers (Sprint "richer specs"). When None,
+    # the rule behaves exactly as before — pure asymptotic-class.
+    schedule: ScheduleModifiers | None = None
 
 
 class InitialDistributionKind(str, Enum):
@@ -459,10 +608,23 @@ class AgentType(_Frozen):
 
 class ParticipantsSpec(_Frozen):
     count_N: NumberRange
-    expected_Q: NumberRange  # transactions per period
+    # Token-volume transacted per period (NOT transaction count). FM1's
+    # Fisher-equation check `(E - B) ≤ Q` is dimensional in tokens, so
+    # this field must be expressed in token-flux terms — for a $1 stable
+    # this is also dollars/period, but for ETH/BTC convert from
+    # $-volume by dividing by token price. The field name is preserved
+    # for back-compat with existing IR files; treat it as Q in MV=PQ
+    # under V=P=1 normalization.
+    expected_Q: NumberRange
     average_demand_d: NumberRange  # redemption events per participant per period
     growth_g: AsymptoticClass  # population growth class
-    topology: Topology
+    # Default: NETWORK. Real crypto economies are network-structured
+    # (DEX pairs, social graphs, validator P2P, lock-and-vote DAOs).
+    # The well-mixed assumption is rarely true and produces a
+    # needlessly conservative `N ≥ 2Kd + 1` threshold. When NETWORK
+    # is selected without an explicit average_degree in topology_params,
+    # FM5 derives one from log(N) — see ``FM5CriticalMass``.
+    topology: Topology = Topology.NETWORK
     agent_types: list[AgentType] = Field(default_factory=list)
     average_activity_frequency: NumberRange | None = None
     # Phase 5c: topology-specific parameters. For `topology = network`,
@@ -495,8 +657,30 @@ class GovernanceType(str, Enum):
 
 
 class ControllingActor(str, Enum):
+    """Who can take a given governance action.
+
+    Semantic note for FM6 (governance capture):
+
+    - ``SINGLE_ENTITY`` — one party with unilateral authority. Always
+      counted as unilateral in Γ.
+    - ``COMMITTEE`` — a group with internal voting / multisig
+      consensus (e.g. Bitcoin core devs by rough consensus, multisig
+      treasuries, EIP process). **Not** counted as unilateral in Γ
+      because internal vote dynamics distribute control. Use this for
+      the common real-world case.
+    - ``COMMITTEE_TRUSTED`` — a small trusted group acting without
+      internal voting (e.g. a foundation board that ratifies decisions
+      by fiat). Counted as unilateral in Γ. Use this only when the
+      committee genuinely acts as a single actor.
+    - ``TOKEN_HOLDER_VOTE`` — on-chain governance. Not unilateral.
+    - ``SMART_CONTRACT`` — automated, no human discretion. Not
+      unilateral.
+    - ``NOT_ADJUSTABLE`` — protocol parameter fixed at deployment.
+    """
+
     SINGLE_ENTITY = "single_entity"
     COMMITTEE = "committee"
+    COMMITTEE_TRUSTED = "committee_trusted"
     TOKEN_HOLDER_VOTE = "token_holder_vote"
     SMART_CONTRACT = "smart_contract"
     NOT_ADJUSTABLE = "not_adjustable"
@@ -524,6 +708,44 @@ class SanctionStructure(_Frozen):
     S_normalized: NumberRange | None = None
 
 
+class VoteWeighting(str, Enum):
+    """How votes are weighted in token-holder governance (FM6 input).
+
+    The token-balance Gini alone is a crude proxy for effective voting
+    concentration. Real DAOs use mechanisms that *transform* the token
+    distribution into a voting distribution: quadratic voting (sqrt
+    scaling), vote caps (clipping), time-locking (veCRV), delegation,
+    and reputation-weighted models. FM6 reads ``vote_weighting`` and
+    adjusts the effective concentration accordingly.
+
+    Variants:
+
+    * ``LINEAR`` — 1 token = 1 vote. Effective Gini = token Gini.
+      The default; matches pre-fix behavior for back-compat.
+    * ``QUADRATIC`` — vote ≈ √(tokens). Effective Gini ≈ 0.5–0.7 × G
+      (calibrated approximation; see ``VerifierConfig``).
+    * ``CAPPED`` — max votes per address. Requires
+      ``vote_weighting_params['cap_fraction']`` ∈ (0, 1].
+    * ``TIME_LOCKED`` — veCRV / veToken pattern. Vote weight scales
+      with locked-time fraction. Requires
+      ``vote_weighting_params['avg_lock_fraction']`` ∈ [0, 1].
+    * ``DELEGATED`` — token holders delegate to a smaller set. The
+      effective concentration is over delegates, not holders. Requires
+      ``vote_weighting_params['delegate_concentration_gini']``.
+    * ``REPUTATION_WEIGHTED`` — non-token (Optimism Citizen House,
+      reputation-DAOs). Requires ``vote_weighting_params['reputation_gini']``.
+      If not provided, FM6's secondary signal is INCONCLUSIVE (token
+      Gini doesn't apply).
+    """
+
+    LINEAR = "linear"
+    QUADRATIC = "quadratic"
+    CAPPED = "capped"
+    TIME_LOCKED = "time_locked"
+    DELEGATED = "delegated"
+    REPUTATION_WEIGHTED = "reputation_weighted"
+
+
 class GovernanceSpec(_Frozen):
     type: GovernanceType
     rule_structure: dict[str, ControllingActor] = Field(default_factory=dict)
@@ -532,6 +754,17 @@ class GovernanceSpec(_Frozen):
         kind=SanctionKind.WARNING
     )
     token_balance_gini: NumberRange | None = None  # secondary FM6 signal
+    # FM6 vote-weighting (audit fix #1, expanded form). LINEAR (default)
+    # preserves pre-fix behavior: effective Gini = token Gini directly.
+    # Other variants transform the Gini per the calibration in
+    # ``VerifierConfig.vote_weighting_gini_adjustment``.
+    vote_weighting: VoteWeighting = VoteWeighting.LINEAR
+    # Parameters required by non-LINEAR weightings. Recognized keys:
+    #   cap_fraction (CAPPED)
+    #   avg_lock_fraction (TIME_LOCKED)
+    #   delegate_concentration_gini (DELEGATED)
+    #   reputation_gini (REPUTATION_WEIGHTED)
+    vote_weighting_params: dict[str, NumberRange] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +809,12 @@ class Meta(_Frozen):
     description: str | None = None
     archetype: Archetype = Archetype.OTHER
     nfrs: NFRs = NFRs()
+    # Trajectory simulation horizon, in periods. None → use the default
+    # (260 periods ≈ 5 years of weekly periods). Cap-bound or
+    # slowly-decaying systems (Bitcoin's 21M, Curve's 3.03B) need a
+    # longer horizon for the cap to bind in the simulation. Bounded
+    # to [1, 10000] to keep the forward-Euler loop fast in pure Python.
+    simulation_horizon: int | None = Field(default=None, ge=1, le=10000)
 
 
 # ---------------------------------------------------------------------------

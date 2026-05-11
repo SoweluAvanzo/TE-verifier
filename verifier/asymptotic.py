@@ -110,6 +110,15 @@ def average_rate_per_period(
         # Average of a*t^k over [0, H] is a*H^k/(k+1)
         return a * (H**k / (k + 1)) + b
 
+    if fam == AsymptoticFamily.SUBLINEAR_ROOT:
+        # Rate ≈ a · t^(1/d) + b. Average of t^(1/d) over [0, H] is
+        # (d/(d+1)) · H^(1/d). For d=2 (√t): (2/3)·√H ≈ 4.81 at H=52.
+        d = ac.degree if ac.degree is not None else 2
+        a = parameter_var(solver, name_prefix, "a", ac, NumberRange(min=0, max=1e6))
+        b = parameter_var(solver, name_prefix, "b", ac, NumberRange(min=0, max=1e6))
+        avg_factor = (d / (d + 1.0)) * (H ** (1.0 / d))
+        return a * avg_factor + b
+
     if fam == AsymptoticFamily.LOG:
         # Use a linear surrogate scaled by log(H+1) - 1 for the averaged rate;
         # this preserves monotonicity in 'a' which is what FM checks need.

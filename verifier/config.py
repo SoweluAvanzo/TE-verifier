@@ -378,6 +378,73 @@ class VerifierConfig(_FrozenModel):
     )
 
     # ------------------------------------------------------------------
+    # FM6 audit-fix — vote-weighting effective-Gini calibration
+    # ------------------------------------------------------------------
+    vote_weighting_quadratic_multiplier_min: ConfigValue[float] = Field(
+        default_factory=lambda: ConfigValue[float](
+            value=0.5,
+            paper_section="(none — calibration)",
+            paper_equation="—",
+            default_justification=(
+                "QV reduces effective Gini relative to underlying token "
+                "Gini. Exact reduction depends on the balance distribution; "
+                "for Pareto-like distributions typical in token economies "
+                "the empirical range is 0.5–0.7 of the underlying Gini. "
+                "0.5 = optimistic lower bound on the effective Gini."
+            ),
+            override_allowed=True,
+        )
+    )
+    vote_weighting_quadratic_multiplier_max: ConfigValue[float] = Field(
+        default_factory=lambda: ConfigValue[float](
+            value=0.7,
+            paper_section="(none — calibration)",
+            paper_equation="—",
+            default_justification=(
+                "Upper bound of the QV effective-Gini approximation. "
+                "Conservative on the high side (less reduction); the "
+                "precise value is computable only with the full balance "
+                "histogram, which belongs to ABM."
+            ),
+            override_allowed=True,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # FM4 audit-fix #3 — φ_min from contribution_verification strength
+    # ------------------------------------------------------------------
+    phi_verification_floor_multiplier: ConfigValue[dict[str, float]] = Field(
+        default_factory=lambda: ConfigValue[dict[str, float]](
+            value={
+                # Stronger verification → higher floor on phi_min,
+                # because declared contributors are provably present.
+                "smart_contract_automation": 0.9,
+                "third_party_certification": 0.7,
+                "physical_presence": 0.6,
+                "peer_verification": 0.5,
+                # Self-reporting and unspecified retain the pre-fix
+                # behavior: phi_min = 0 (worst case — declared
+                # contributors might be Sybils or might disengage).
+                "self_reporting": 0.0,
+                "unspecified": 0.0,
+            },
+            paper_section="§3.4 (audit extension)",
+            paper_equation="eq. (17) — refinement on φ_min",
+            default_justification=(
+                "Pre-fix, φ_min was 0 unconditionally, letting Z3 always "
+                "find a violating φ=0 even for systems with strong "
+                "on-chain verification. The multiplier scales declared "
+                "CONTRIBUTOR share by verification confidence. "
+                "SMART_CONTRACT_AUTOMATION = 0.9 reflects high confidence "
+                "(on-chain proof of contribution); SELF_REPORTING = 0.0 "
+                "preserves the prior worst-case bound. Coefficients are "
+                "calibration, not paper-derived."
+            ),
+            override_allowed=True,
+        )
+    )
+
+    # ------------------------------------------------------------------
     # Phase 5 — archetype routing
     # ------------------------------------------------------------------
     archetype_fm_applicability: ConfigValue[dict[str, list[str]]] = Field(
@@ -596,6 +663,23 @@ class VerifierConfig(_FrozenModel):
     @property
     def temptation_gap_table(self) -> dict[str, dict[str, float]]:
         return self.verification_redemption_to_temptation_gap.value
+
+    @property
+    def vote_weighting_quadratic_multiplier_range(self) -> tuple[float, float]:
+        """(min_mult, max_mult) applied to token_gini under QUADRATIC
+        voting to approximate effective Gini. See field defaults for
+        rationale."""
+        return (
+            self.vote_weighting_quadratic_multiplier_min.value,
+            self.vote_weighting_quadratic_multiplier_max.value,
+        )
+
+    @property
+    def phi_verification_floor_multiplier_table(self) -> dict[str, float]:
+        """Multiplier on declared CONTRIBUTOR share, keyed by
+        ContributionVerification value. See the field default for
+        rationale."""
+        return self.phi_verification_floor_multiplier.value
 
     @property
     def archetype_skip_table(self) -> dict[str, list[str]]:

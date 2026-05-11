@@ -15,6 +15,7 @@ from verifier.elicitation import CoherenceIssue, coherence_violations
 from verifier.failure_modes import ALL_FAILURE_MODES
 from verifier.failure_modes.base import FailureMode, Status, Verdict
 from verifier.risk import OverallRiskScore, attach_risk_levels, compute_overall_score
+from verifier.simulate import refine_verdicts
 from verifier.token_role import apply_role_applicability
 
 
@@ -185,6 +186,10 @@ def verify(
     # Phase D — attach risk_level to each verdict (midpoint evaluation)
     # *before* coherence so the verdict-aware C7 check has data.
     attach_risk_levels(te, verdicts)
+    # Sprint 1+3 — attach the dynamic refined-diagnosis block
+    # (trajectory + sensitivity) to actionable verdicts. Skipped on
+    # PASS / NOT_APPLICABLE.
+    refine_verdicts(te, verdicts)
     issues = coherence_violations(te, verdicts=verdicts)
     # Coherence errors escalate the report to FAIL severity even if
     # every FM individually passed — the IR is internally inconsistent.

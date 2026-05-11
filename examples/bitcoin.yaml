@@ -1,11 +1,24 @@
 # Bitcoin — fixed-supply native protocol asset.
-# Encoded against TE-IR v0.1 (schema/te_ir.py). Public parameters as of 2024.
+# Encoded against TE-IR v0.1 (schema/te_ir.py). Public parameters as of mid-2026.
+#
+# Calibration notes:
+# - Initial supply ≈ 19.85M BTC (post-April-2024 halving + ~2 years of mining).
+# - Block reward 3.125 BTC × ~1008 blocks/week ≈ 3150 BTC/week (current era).
+# - Halving every 210 000 blocks ≈ 208 weeks; next halving ~April 2028.
+# - Supply cap modeled as remaining-to-mine ≈ 1.15M BTC (21M − 19.85M).
+# - halving_offset=110 places the next modelled halving at t=98
+#   (≈ April 2028), aligning with the real schedule.
 meta:
   name: Bitcoin
   description: >-
     Native protocol asset of the Bitcoin network. Fixed terminal supply 21M,
     halving schedule, no protocol-level burn, off-chain BIP-driven governance.
   archetype: native_protocol_asset
+  # Long horizon — the geometric-decay halving schedule is slow to
+  # exhaust the remaining 1.15M BTC. 9000 weeks (~170 years) lets the
+  # simulator actually witness the cap binding (>95% of remaining mined)
+  # instead of cutting off at the 5-year default.
+  simulation_horizon: 9000
   nfrs:
     resilience: 5
     adaptability: 1
@@ -20,7 +33,14 @@ tokens:
     function: [medium_of_exchange, store_of_value]
     value_anchor: none
     transferable: true
-    holding_incentive_present: true
+    holding_incentive_present: false
+    holding_incentives:
+      - none                # no protocol-level holding mechanism (scarcity ≠ mechanism)
+    earning_mechanisms:
+      - resource_contribution    # mining (PoW)
+      - exchange_purchase
+    contribution_verification: smart_contract_automation
+    redemption_mechanism: open_market_exchange
     offer_variety_K:
       min: 100
       max: 100000
@@ -31,26 +51,39 @@ tokens:
         function:
           sign: decreasing_positive
           asymptotic_class:
-            # Per-period rate (BTC/week) is bounded above by the current
-            # block-subsidy schedule and decays geometrically across halvings.
-            # Cumulative supply is capped at 21M (cumulative cap is implied
-            # by the decreasing schedule and is not part of the rate class).
+            # Per-period rate (BTC/week) calibrated so the geometric-decay
+            # asymptote, given offset=110 and halving_period=208, equals
+            # the declared supply_cap of 1.15M BTC.
+            #   asymptote = c · (98 + 208) ≈ c · 306
+            #   c ≈ 3758 → midpoint of [3500, 4000]
+            # Slightly higher than the literal current rate (3150 BTC/week
+            # = 3.125 × 1008) because the schema's periodic halving can't
+            # encode "current era is only 104 weeks left, not 208". The
+            # over-estimate is in the rate; the cap is correct.
             family: constant
             parameter_ranges:
               c:
-                min: 0
-                max: 3500
+                min: 3500
+                max: 4000
+        schedule:
+          halving_period: 208       # ~4 years in weeks
+          halving_factor: 0.5
+          halving_offset: 110       # weeks since the April-2024 halving (≈ mid-2026)
+          supply_cap: 1150000       # remaining BTC to be mined as of mid-2026
     burn_rules: []  # no protocol-level burn
     initial_distribution:
-      kind: none
+      kind: pre_minted_reserve     # ~99% of terminal supply already mined
+      amount:
+        min: 19850000
+        max: 19850000
 
 participants:
   count_N:
     min: 10000000
-    max: 100000000
+    max: 200000000           # estimated global BTC holders (Triple-A / Crypto.com surveys)
   expected_Q:
-    min: 1500000   # ~daily on-chain transactions × 7
-    max: 3500000
+    min: 2500000             # ~350k tx/day × 7
+    max: 5000000             # ~700k tx/day × 7
   average_demand_d:
     min: 0.1
     max: 1.0
@@ -102,6 +135,9 @@ governance:
     S_normalized:
       min: 0.7
       max: 0.9
+  # Bitcoin balance distribution is famously concentrated: top 100
+  # addresses hold ~14% and the top 0.01% of addresses hold ~50% of
+  # supply. Independent on-chain Gini estimates put it at 0.85-0.95.
   token_balance_gini:
-    min: 0.6
-    max: 0.85
+    min: 0.85
+    max: 0.95

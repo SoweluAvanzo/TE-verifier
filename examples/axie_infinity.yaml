@@ -3,6 +3,21 @@
 # were known PRE-collapse (late 2021). The verifier should flag FM1, FM2,
 # FM3, FM4 simultaneously — the same supply-side reinforcing triad the paper
 # warns about in §3.1.
+#
+# Calibration notes:
+# - AXS cap 270M; ~30M circulating at genesis (April 2018), with vesting
+#   schedules releasing the rest over ~4 years. Modeled as initial 30M
+#   plus supply_cap of 240M to track the rest.
+# - SLP has no cap. Peak emission late 2021: ~2.7M DAU × ~150 SLP/day ≈
+#   400M SLP/day ≈ 2.8B SLP/week. Per-win parameters tightened to match.
+# - Breeding cost varied 600–1300 SLP + 1–4 AXS per breed (later raised).
+#   Peak breeding rate: ~100k breeds/day = ~700k/week.
+# - Schema gap: SLP burn demand depends on player *growth*, not stock.
+#   The schema lets us express "burn frequency family = unspecified",
+#   which is conservative but doesn't tie burn to the growth_g curve
+#   directly. The verifier still catches the failure because growth_g
+#   includes negative values; the analytical link to breeding ROI
+#   collapse remains a Tier-2 (cross-derivative) concern.
 meta:
   name: Axie Infinity
   description: >-
@@ -44,11 +59,17 @@ tokens:
         function:
           sign: decreasing_positive
           asymptotic_class:
+            # AXS/week from staking + P2E. Decreasing toward cap.
             family: constant
             parameter_ranges:
               c:
                 min: 50000
-                max: 150000      # AXS/week from staking + P2E
+                max: 150000
+        schedule:
+          # 240M AXS to be issued post-genesis through vesting + staking
+          # over ~4 years. Long-term cap of 270M total.
+          supply_cap: 240000000
+          vesting_periods: 208      # 4-year team/treasury vesting curve
     burn_rules:
       - trigger:
           kind: demand_driven
@@ -58,7 +79,7 @@ tokens:
             parameter_ranges:
               value:
                 min: 0
-                max: 100000
+                max: 700000        # ~100k breeds/day at peak × 7
         function:
           sign: always_negative
           asymptotic_class:
@@ -68,13 +89,15 @@ tokens:
                 min: 0
                 max: 0.5
               b:
-                min: 0
-                max: 5000
+                min: 1
+                max: 4              # AXS per breed
     initial_distribution:
       kind: pre_minted_reserve
       amount:
-        min: 270000000
-        max: 270000000
+        # Genesis circulating supply (April 2018 IDO + initial ecosystem).
+        # The remaining ~240M is released via the schedule above.
+        min: 30000000
+        max: 30000000
   - id: SLP
     function: [medium_of_exchange]
     value_anchor: none
@@ -94,24 +117,27 @@ tokens:
           kind: behavioral_event
           event_predicate: player_adventure_or_pvp_win
           event_frequency:
+            # Win events scale with active player count × wins per player
+            # per period. Peak: ~2.7M DAU × ~20 wins/week each.
             family: linear
             parameter_ranges:
-              # event frequency scales with active player count
               a:
                 min: 0
                 max: 10
               b:
-                min: 100000
-                max: 100000000   # daily-active scale, unconstrained ceiling
+                min: 1000000      # ~150k DAU × ~7 wins/week
+                max: 60000000     # ~3M DAU × 20 wins/week
         function:
           sign: always_positive
           asymptotic_class:
+            # SLP per win. Reward design: ~150 SLP/day total per active
+            # player; spread across ~7-20 win events per day → ~7-150
+            # SLP per event depending on activity profile.
             family: constant
             parameter_ranges:
-              # ~150 SLP per active player per day = ~1050/week
               c:
-                min: 50
-                max: 1500
+                min: 7
+                max: 150
     burn_rules:
       - trigger:
           kind: demand_driven
@@ -123,7 +149,7 @@ tokens:
             parameter_ranges:
               value:
                 min: 0
-                max: 100000
+                max: 700000        # ~100k breeds/day at peak × 7
         function:
           sign: always_negative
           asymptotic_class:
@@ -131,7 +157,7 @@ tokens:
             parameter_ranges:
               c:
                 min: 600
-                max: 1300        # SLP per breed
+                max: 1300        # SLP per breed (variable by genome)
     initial_distribution:
       kind: none
 
@@ -144,8 +170,8 @@ cross_token_flows:
       family: constant
       parameter_ranges:
         c:
-          min: 0.5
-          max: 1.0
+          min: 1
+          max: 4              # AXS per breed (matches AXS burn_rule above)
 
 participants:
   count_N:

@@ -25,8 +25,11 @@ from schema import (
     ControllingActor,
     GovernanceMaturity,
     GovernanceType,
+    NumberRange,
     TokenEconomy,
+    VoteWeighting,
 )
+from verifier.config import VerifierConfig
 from verifier.constants import GAMMA_CAPTURE_THRESHOLD, GINI_SECONDARY_THRESHOLD
 from verifier.failure_modes.base import (
     Counterexample,
@@ -41,9 +44,242 @@ from verifier.failure_modes.base import (
 # Controlling actors that constitute a "unilateral" decision in the Γ
 # computation. The paper's §3.6 definition is "decisions that can be taken
 # unilaterally by a single actor or small group."
+#
+# COMMITTEE_TRUSTED — a small trusted group that ratifies decisions by
+# fiat — counts as unilateral. The plain COMMITTEE variant captures
+# real-world multisig / voting committees (Bitcoin core dev rough
+# consensus, EIP process, multisig treasuries) whose internal vote
+# dynamics distribute control beyond what Γ-on-actor-identity captures.
+# Treating COMMITTEE as unilateral over-flagged every committee-governed
+# protocol; treating it as non-unilateral matches the paper's intent
+# ("can be taken unilaterally") more faithfully.
+#
+# Migration note: existing v1 IRs using ``committee`` keep the value
+# but acquire the new semantics. The five case-study examples (Bitcoin
+# / Ethereum protocol_change, eip_acceptance, consensus_rules) all
+# describe multi-stakeholder committee processes, so the new semantics
+# is more accurate for them. Users who genuinely meant "single trusted
+# committee" should switch their YAML to ``committee_trusted``.
 UNILATERAL_ACTORS: frozenset[ControllingActor] = frozenset(
-    {ControllingActor.SINGLE_ENTITY, ControllingActor.COMMITTEE}
+    {ControllingActor.SINGLE_ENTITY, ControllingActor.COMMITTEE_TRUSTED}
 )
+
+
+def _gini_recommendation_narrative(
+    weighting: VoteWeighting, gini_signal: float
+) -> str:
+    """Class-aware narrative for the Gini-driven FM6 recommendation.
+
+    Generic "vote caps / QV / distribution rules" advice is wrong for
+    most non-LINEAR weightings: a system that *already* declares QV
+    doesn't need to "introduce QV"; one that uses DELEGATED needs to
+    address delegate concentration, not underlying token Gini. This
+    helper picks the right advice per the declared weighting.
+    """
+    base = (
+        f"Reduce the {'effective' if weighting.value != 'linear' else 'token-balance'} "
+        f"Gini below {GINI_SECONDARY_THRESHOLD}. "
+    )
+
+    if weighting == VoteWeighting.LINEAR:
+        return base + (
+            "Vote caps, quadratic voting, time-locked vote-escrow, or "
+            "distribution rules that flatten ownership all reduce "
+            "effective single-actor control. Consider declaring one of "
+            "these mechanisms via `vote_weighting` if it's already in "
+            "place; FM6 will then credit it in the effective-Gini "
+            "calculation."
+        )
+
+    if weighting == VoteWeighting.QUADRATIC:
+        return base + (
+            "Quadratic voting is already declared — the residual effective "
+            "Gini reflects underlying token concentration the QV "
+            "transformation cannot fully mask. Reduce ``token_balance_gini`` "
+            "directly (airdrops to a broader holder set, fee-based "
+            "redistribution), or guard against Sybil attacks that would "
+            "let large holders fragment into many small addresses and "
+            "defeat QV's √-scaling."
+        )
+
+    if weighting == VoteWeighting.CAPPED:
+        return base + (
+            "A vote cap is already declared. Either tighten the cap "
+            "(reduce ``cap_fraction``) to bind harder on the top holders, "
+            "or address the broader distribution: a cap clips the top "
+            "but does not flatten the middle. Consider combining the "
+            "cap with QV (CAPPED + QV is a common pattern in modern "
+            "DAO designs)."
+        )
+
+    if weighting == VoteWeighting.TIME_LOCKED:
+        return base + (
+            "Time-locked voting is partially effective — the average "
+            "lock fraction is doing some work, but residual concentration "
+            "still clears the threshold. Options: (1) require longer "
+            "minimum locks for governance participation, raising the "
+            "weighted ``avg_lock_fraction``; (2) reduce the underlying "
+            "``token_balance_gini`` (broader distribution); (3) model "
+            "the downstream aggregation explicitly — if a wrapper like "
+            "Convex/cvxCRV holds a large fraction of locks, switch "
+            "``vote_weighting`` to ``delegated`` and supply "
+            "``delegate_concentration_gini`` to capture the real "
+            "concentration."
+        )
+
+    if weighting == VoteWeighting.DELEGATED:
+        return base + (
+            "The delegate concentration drives the verdict — addressing "
+            "underlying token Gini will not fix this. Options: (1) "
+            "encourage smaller-delegate participation (delegate-platform "
+            "fees, profile requirements, anti-Sybil enforcement); (2) "
+            "introduce a per-delegate vote cap so no single delegate "
+            "exceeds a hard ceiling; (3) require token holders to ratify "
+            "delegate decisions (split-delegation / ratification "
+            "patterns); (4) bound delegation duration so concentrated "
+            "delegates lose voting power if not actively re-affirmed."
+        )
+
+    if weighting == VoteWeighting.REPUTATION_WEIGHTED:
+        return base + (
+            "Reputation concentration drives the verdict. Token Gini is "
+            "not the relevant signal here — token-distribution levers "
+            "(airdrops, caps) won't help. Options: (1) expand the "
+            "reputation-earning surface (more ways to earn reputation, "
+            "more participants eligible); (2) introduce reputation decay "
+            "(so dormant high-reputation actors lose voting power); (3) "
+            "cap reputation per identity; (4) Sybil-resist the identity "
+            "layer so fragmenting reputation across many accounts is "
+            "infeasible."
+        )
+
+    return base + (
+        "Reduce concentration via vote caps, QV, time-locking, or "
+        "broader distribution."
+    )
+
+
+def _effective_gini_range(
+    gov,
+    config: VerifierConfig | None = None,
+) -> tuple[NumberRange | None, str]:
+    """Compute effective voting-concentration Gini under the declared
+    vote_weighting class.
+
+    Returns ``(effective_gini_range, explanation)``:
+
+    * ``effective_gini_range`` is a NumberRange of *effective* Gini
+      (under the voting transformation). ``None`` means the verifier
+      cannot derive an effective Gini from the available IR fields —
+      typically because REPUTATION_WEIGHTED was declared without
+      ``reputation_gini`` in vote_weighting_params.
+    * ``explanation`` is a short narrative naming the weighting class
+      and the parameter values used. Surfaced in the verdict so the
+      user can see how the underlying token Gini was transformed.
+
+    Approximations per class:
+
+    * LINEAR: identity — effective Gini = token Gini.
+    * QUADRATIC: effective ≈ token_gini × multiplier where
+      multiplier ∈ [config.qv_mult_min, qv_mult_max]. Approximation —
+      precise value depends on the balance distribution and is an
+      ABM concern.
+    * CAPPED: effective ≈ token_gini × (1 − cap_fraction). Conservative
+      bound — vote caps clip the top of the distribution but do not
+      flatten the middle.
+    * TIME_LOCKED: effective ≈ token_gini × avg_lock_fraction. Reflects
+      that holders who don't lock relinquish vote weight; long-term
+      lockers gain it.
+    * DELEGATED: effective = delegate_concentration_gini (substitutes
+      token Gini entirely — the relevant distribution is over voters,
+      not holders).
+    * REPUTATION_WEIGHTED: effective = reputation_gini if supplied;
+      else None (INCONCLUSIVE — token Gini doesn't apply).
+    """
+    cfg = config or VerifierConfig.paper_defaults()
+    weighting = gov.vote_weighting
+    params = gov.vote_weighting_params or {}
+    token_gini = gov.token_balance_gini
+
+    def _scale(rng: NumberRange, mult_lo: float, mult_hi: float) -> NumberRange:
+        return NumberRange(
+            min=max(0.0, min(rng.min * mult_lo, rng.min * mult_hi)),
+            max=min(1.0, max(rng.max * mult_lo, rng.max * mult_hi)),
+        )
+
+    if weighting == VoteWeighting.LINEAR:
+        if token_gini is None:
+            return None, "LINEAR voting; token_balance_gini not supplied"
+        return token_gini, "LINEAR (effective Gini = token Gini)"
+
+    if weighting == VoteWeighting.QUADRATIC:
+        if token_gini is None:
+            return None, "QUADRATIC voting; token_balance_gini not supplied"
+        mult_lo, mult_hi = cfg.vote_weighting_quadratic_multiplier_range
+        eff = _scale(token_gini, mult_lo, mult_hi)
+        return eff, (
+            f"QUADRATIC: effective Gini = token Gini × [{mult_lo:g}, "
+            f"{mult_hi:g}] ≈ [{eff.min:.3f}, {eff.max:.3f}]"
+        )
+
+    if weighting == VoteWeighting.CAPPED:
+        cap = params.get("cap_fraction")
+        if cap is None or token_gini is None:
+            return token_gini, (
+                "CAPPED voting declared but cap_fraction missing; falling "
+                "back to LINEAR (token Gini)"
+            )
+        # cap_fraction is the max single-voter share. Effective Gini
+        # reduces by (1 - cap_fraction).
+        return (
+            _scale(token_gini, 1.0 - cap.max, 1.0 - cap.min),
+            f"CAPPED at cap_fraction ∈ [{cap.min:g}, {cap.max:g}]; "
+            f"effective Gini ≈ token Gini × (1 − cap_fraction)",
+        )
+
+    if weighting == VoteWeighting.TIME_LOCKED:
+        lockf = params.get("avg_lock_fraction")
+        if lockf is None or token_gini is None:
+            return token_gini, (
+                "TIME_LOCKED voting declared but avg_lock_fraction missing; "
+                "falling back to LINEAR (token Gini)"
+            )
+        return (
+            _scale(token_gini, lockf.min, lockf.max),
+            f"TIME_LOCKED with avg_lock_fraction ∈ [{lockf.min:g}, "
+            f"{lockf.max:g}]; effective Gini scaled by the fraction "
+            f"of supply actually locked",
+        )
+
+    if weighting == VoteWeighting.DELEGATED:
+        dg = params.get("delegate_concentration_gini")
+        if dg is None:
+            return token_gini, (
+                "DELEGATED voting declared but delegate_concentration_gini "
+                "missing; falling back to token Gini (likely understates "
+                "true voter concentration)"
+            )
+        return dg, (
+            f"DELEGATED: substituting delegate_concentration_gini ∈ "
+            f"[{dg.min:.3f}, {dg.max:.3f}] for token Gini — voting "
+            f"concentration is over delegates, not holders"
+        )
+
+    if weighting == VoteWeighting.REPUTATION_WEIGHTED:
+        rg = params.get("reputation_gini")
+        if rg is None:
+            return None, (
+                "REPUTATION_WEIGHTED voting: token Gini is not applicable "
+                "and reputation_gini was not supplied → INCONCLUSIVE on "
+                "the secondary signal"
+            )
+        return rg, (
+            f"REPUTATION_WEIGHTED: substituting reputation_gini ∈ "
+            f"[{rg.min:.3f}, {rg.max:.3f}] for token Gini — voting power "
+            f"is non-token-derived"
+        )
+
+    return token_gini, "unknown weighting class; falling back to LINEAR"
 
 
 class FM6GovernanceCapture(FailureMode):
@@ -53,21 +289,118 @@ class FM6GovernanceCapture(FailureMode):
         "in a small group, undermining distributed governance."
     )
 
-    def check(self, te: TokenEconomy, config=None) -> list[Verdict]:
-        return [self._check_system(te)]
+    def check(self, te: TokenEconomy, config: VerifierConfig | None = None) -> list[Verdict]:
+        return [self._check_system(te, config)]
 
-    def _check_system(self, te: TokenEconomy) -> Verdict:
+    def is_satisfaction_reachable_when_failing(
+        self,
+        te: TokenEconomy,
+        config: VerifierConfig | None,
+        subject: str,
+    ) -> str:
+        """Phase-C formal dual for FM6.
+
+        Safety requires BOTH:
+          • Γ ≤ Γ_threshold (centralization fraction)
+          • effective_gini ≤ Gini_threshold (concentration via voting)
+
+        Γ is deterministic from ``rule_structure`` (no range to search
+        over). The effective Gini is a NumberRange; we check whether
+        its minimum end clears the threshold.
+        """
         gov = te.governance
         rules = gov.rule_structure
+        if not rules:
+            # No rule_structure → Γ uncomputable. Fall back to Gini alone.
+            eff, _note = _effective_gini_range(gov, config)
+            if eff is None:
+                return "unknown"
+            return "true" if eff.min <= GINI_SECONDARY_THRESHOLD else "false"
+
+        unilateral = sum(1 for a in rules.values() if a in UNILATERAL_ACTORS)
+        gamma = unilateral / len(rules)
+        if gamma > GAMMA_CAPTURE_THRESHOLD:
+            # Γ alone fails — no parameter assignment in the box can
+            # fix it (rule_structure is committed, not ranged).
+            return "false"
+
+        eff, _note = _effective_gini_range(gov, config)
+        if eff is None:
+            # Gini side unevaluable but Γ side passes — satisfaction
+            # reachable on the Γ axis; Gini side is undecidable.
+            return "unknown"
+        return "true" if eff.min <= GINI_SECONDARY_THRESHOLD else "false"
+
+    def safety_predicates(
+        self,
+        te: TokenEconomy,
+        config: VerifierConfig | None,
+        subject: str,
+    ) -> list:
+        from verifier.safety_predicate import SafetyPredicate
+
+        preds: list = []
+        gov = te.governance
+        if gov.rule_structure:
+            preds.append(
+                SafetyPredicate(
+                    failure_mode="FM6",
+                    variable="Gamma",
+                    operator="<=",
+                    threshold=GAMMA_CAPTURE_THRESHOLD,
+                    formula=(
+                        "unilateral_decisions / total_decisions; "
+                        "unilateral = SINGLE_ENTITY or COMMITTEE_TRUSTED"
+                    ),
+                    inputs=["rule_structure"],
+                    paper_section="§3.6 eq. (22)",
+                )
+            )
+        # Always emit the Gini predicate when an effective Gini exists.
+        eff, _note = _effective_gini_range(gov, config)
+        if eff is not None:
+            label = (
+                "effective_gini"
+                if gov.vote_weighting.value != "linear"
+                else "token_balance_gini"
+            )
+            preds.append(
+                SafetyPredicate(
+                    failure_mode="FM6",
+                    variable=label,
+                    operator="<=",
+                    threshold=GINI_SECONDARY_THRESHOLD,
+                    formula=(
+                        f"effective Gini under vote_weighting="
+                        f"{gov.vote_weighting.value}"
+                    ),
+                    inputs=["token_balance_gini", "vote_weighting_params"],
+                    paper_section="§3.6 (secondary signal)",
+                )
+            )
+        return preds
+
+    def _check_system(
+        self, te: TokenEconomy, config: VerifierConfig | None = None
+    ) -> Verdict:
+        gov = te.governance
+        rules = gov.rule_structure
+
+        # Audit fix: compute the effective voting concentration via the
+        # declared vote_weighting class. For LINEAR (default) this
+        # equals token_balance_gini; for QUADRATIC / CAPPED / etc. it's
+        # adjusted per the calibration in VerifierConfig.
+        effective_gini_range, weighting_note = _effective_gini_range(gov, config)
+
         if not rules:
             # Γ is not computable without rule_structure, but the Gini
             # secondary signal may still be informative. Surface it
             # rather than collapsing the whole verdict to INCONCLUSIVE.
             if (
-                gov.token_balance_gini is not None
-                and gov.token_balance_gini.max > GINI_SECONDARY_THRESHOLD
+                effective_gini_range is not None
+                and effective_gini_range.max > GINI_SECONDARY_THRESHOLD
             ):
-                gini_signal = gov.token_balance_gini.max
+                gini_signal = effective_gini_range.max
                 return Verdict(
                     failure_mode=self.name,
                     subject="system",
@@ -87,6 +420,11 @@ class FM6GovernanceCapture(FailureMode):
                         f"pattern). Fill in rule_structure for a complete "
                         f"FM6 verdict; the Gini concern is independently "
                         f"actionable."
+                        + (
+                            f"  [{weighting_note}]"
+                            if gov.vote_weighting.value != "linear"
+                            else ""
+                        )
                     ),
                     counterexample=Counterexample(
                         parameter_values={"token_gini": gini_signal},
@@ -123,17 +461,13 @@ class FM6GovernanceCapture(FailureMode):
                     recommendation=NumericRecommendation(
                         parameter="token_gini",
                         current_range=(
-                            gov.token_balance_gini.min,
-                            gov.token_balance_gini.max,
+                            effective_gini_range.min,
+                            effective_gini_range.max,
                         ),
                         safe_threshold=GINI_SECONDARY_THRESHOLD,
                         direction="<=",
-                        narrative=(
-                            f"Reduce the token-balance Gini below "
-                            f"{GINI_SECONDARY_THRESHOLD}. Vote caps, "
-                            f"quadratic voting, or distribution rules "
-                            f"that flatten ownership all reduce "
-                            f"effective single-actor control."
+                        narrative=_gini_recommendation_narrative(
+                            gov.vote_weighting, gini_signal
                         ),
                     ),
                     swept_fields=["governance.token_balance_gini"],
@@ -156,10 +490,13 @@ class FM6GovernanceCapture(FailureMode):
         total = len(rules)
         gamma = unilateral / total
 
-        # Secondary signal: token balance Gini
+        # Secondary signal: effective Gini under the declared
+        # vote_weighting. LINEAR collapses to token_balance_gini.max
+        # (pre-fix behavior); other weightings adjust the underlying
+        # distribution via ``_effective_gini_range``.
         gini_signal: float | None = None
-        if gov.token_balance_gini is not None:
-            gini_signal = gov.token_balance_gini.max  # worst case
+        if effective_gini_range is not None:
+            gini_signal = effective_gini_range.max  # worst case
 
         # NFR7 reweighting: centralized-by-design declaration
         is_centralized_intended = (
@@ -298,8 +635,13 @@ class FM6GovernanceCapture(FailureMode):
                 f"unilateral decisions: {unilateral_decisions}"
             )
         if gini_violation and gini_signal is not None:
+            label = (
+                "Effective Gini"
+                if gov.vote_weighting.value != "linear"
+                else "Token Gini"
+            )
             narrative_parts.append(
-                f"Token Gini = {gini_signal:.3f} > "
+                f"{label} = {gini_signal:.3f} > "
                 f"{GINI_SECONDARY_THRESHOLD} (effective single-actor control "
                 f"via concentrated balances)"
             )
@@ -344,16 +686,15 @@ class FM6GovernanceCapture(FailureMode):
             recommendation = NumericRecommendation(
                 parameter="token_gini",
                 current_range=(
-                    gov.token_balance_gini.min if gov.token_balance_gini else 0,
+                    effective_gini_range.min
+                    if effective_gini_range is not None
+                    else 0,
                     gini_signal,
                 ),
                 safe_threshold=GINI_SECONDARY_THRESHOLD,
                 direction="<=",
-                narrative=(
-                    f"Reduce the token-balance Gini below "
-                    f"{GINI_SECONDARY_THRESHOLD}. Vote caps, quadratic voting, "
-                    f"or distribution rules that flatten ownership all "
-                    f"reduce effective single-actor control."
+                narrative=_gini_recommendation_narrative(
+                    gov.vote_weighting, gini_signal
                 ),
             )
 
@@ -378,8 +719,18 @@ class FM6GovernanceCapture(FailureMode):
                     else ""
                 )
                 + (
-                    f"token-balance Gini = {gini_signal:.3f} exceeds the "
-                    f"{GINI_SECONDARY_THRESHOLD} secondary-signal threshold."
+                    (
+                        f"effective Gini = {gini_signal:.3f} exceeds the "
+                        f"{GINI_SECONDARY_THRESHOLD} secondary-signal "
+                        f"threshold under vote_weighting={gov.vote_weighting.value} "
+                        f"({weighting_note})."
+                        if gov.vote_weighting.value != "linear"
+                        else (
+                            f"token-balance Gini = {gini_signal:.3f} "
+                            f"exceeds the {GINI_SECONDARY_THRESHOLD} "
+                            f"secondary-signal threshold."
+                        )
+                    )
                     if gini_violation and gini_signal is not None
                     else ""
                 )

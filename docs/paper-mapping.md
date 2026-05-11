@@ -61,6 +61,9 @@ documented in `docs/proofs/derivations.md`.
 | Verification → γ range | `contribution_verification_to_gamma` | docx 1.5 → FM4 γ | §3.4 eq. (18) | docx mechanism descriptions translated to γ intervals. |
 | Holding incentive → τ floor | `holding_incentive_to_tau_floor` | docx 1.4 → FM2 τ | §3.2 eq. (12) | docx 1.4 ranking translated to per-mechanism floors. |
 | (Verification, redemption) → temptation gap | `verification_redemption_to_temptation_gap` | docx 1.5 + 1.6 → FM4 (T − R) | §3.4 eq. (18) | Monotone matrix; small gap when verification + redemption are both structured. |
+| Verification → φ_min floor multiplier | `phi_verification_floor_multiplier` | docx 1.5 → FM4 φ_min | §3.4 eq. (17) — audit refinement | Scales declared CONTRIBUTOR share by verification confidence; pre-fix had φ_min ≡ 0, which let Z3 always violate φ·K ≥ d even for strongly-verified systems. |
+| QV effective-Gini multiplier (min) | `vote_weighting_quadratic_multiplier_min` | docx 4.x → FM6 effective Gini | §3.6 — audit refinement | Lower bound of the QV effective-Gini approximation applied to token_balance_gini under `VoteWeighting.QUADRATIC`. |
+| QV effective-Gini multiplier (max) | `vote_weighting_quadratic_multiplier_max` | docx 4.x → FM6 effective Gini | §3.6 — audit refinement | Upper bound of the QV effective-Gini approximation; conservative on the high side. |
 
 ### Phase 5 — Archetype routing and NFR multipliers
 

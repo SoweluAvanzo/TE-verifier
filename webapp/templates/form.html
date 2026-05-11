@@ -346,6 +346,68 @@
               </div>
             </div>
           </div>
+          <details class="rule-schedule">
+            <summary>Advanced (cap, halving, vesting)</summary>
+            <p class="hint">
+              Optional refinements that capture real designs the
+              asymptotic class can't express alone — e.g. Bitcoin's
+              21M cap + halving every 210k blocks.
+            </p>
+            <div class="field schedule-row">
+              <label class="checkbox">
+                <input type="checkbox" class="schedule-cap-toggle" />
+                <span>Total cap on tokens minted</span>
+              </label>
+              <input type="number" class="schedule-cap-value" step="any" placeholder="cap (e.g. 21000000)" hidden />
+            </div>
+            <div class="field schedule-row">
+              <label class="checkbox">
+                <input type="checkbox" class="schedule-halving-toggle" />
+                <span>Halving / periodic reduction</span>
+              </label>
+              <div class="halving-grid" hidden>
+                <input type="number" class="schedule-halving-period" step="1" min="1" placeholder="period (e.g. 210)" />
+                <input type="number" class="schedule-halving-factor" step="0.05" min="0.01" max="0.99" placeholder="factor (default 0.5)" />
+              </div>
+            </div>
+            <div class="field schedule-row">
+              <label class="checkbox">
+                <input type="checkbox" class="schedule-vesting-toggle" />
+                <span>Vesting / linear unlock</span>
+              </label>
+              <input type="number" class="schedule-vesting-periods" step="1" min="1" placeholder="periods to fully unlock" hidden />
+            </div>
+          </details>
+          <details class="rule-distribution">
+            <summary>Stochastic envelope (ABM-only)</summary>
+            <p class="hint">
+              Opt this rule into per-period noise during simulation.
+              The verifier sees only the support of the distribution
+              (μ±3σ for Normal, [low, high] for Uniform); the ABM
+              samples from the distribution each period. Without an
+              envelope, the rate is sampled once per run and held
+              constant.
+            </p>
+            <div class="field schedule-row">
+              <label class="checkbox">
+                <input type="checkbox" class="dist-toggle" />
+                <span>Add a distribution envelope</span>
+              </label>
+            </div>
+            <div class="dist-grid" hidden>
+              <select class="dist-kind">
+                {% for dk in distribution_kinds %}
+                <option value="{{ dk }}">{{ dk }}</option>
+                {% endfor %}
+              </select>
+              <input type="number" class="dist-p1" step="any" placeholder="first param" />
+              <input type="number" class="dist-p2" step="any" placeholder="second param (if applicable)" />
+              <small class="dist-param-hint">
+                uniform: low, high · normal/lognormal: mu, sigma ·
+                bernoulli: p · poisson: lambda · beta: alpha, beta
+              </small>
+            </div>
+          </details>
         </div>
       </template>
 
@@ -399,6 +461,32 @@
               </div>
             </div>
           </div>
+          <details class="rule-distribution">
+            <summary>Stochastic envelope (ABM-only)</summary>
+            <p class="hint">
+              Opt this burn rule into per-period noise during
+              simulation. Same semantics as on the mint rules above.
+            </p>
+            <div class="field schedule-row">
+              <label class="checkbox">
+                <input type="checkbox" class="dist-toggle" />
+                <span>Add a distribution envelope</span>
+              </label>
+            </div>
+            <div class="dist-grid" hidden>
+              <select class="dist-kind">
+                {% for dk in distribution_kinds %}
+                <option value="{{ dk }}">{{ dk }}</option>
+                {% endfor %}
+              </select>
+              <input type="number" class="dist-p1" step="any" placeholder="first param" />
+              <input type="number" class="dist-p2" step="any" placeholder="second param (if applicable)" />
+              <small class="dist-param-hint">
+                uniform: low, high · normal/lognormal: mu, sigma ·
+                bernoulli: p · poisson: lambda · beta: alpha, beta
+              </small>
+            </div>
+          </details>
         </div>
       </template>
 
@@ -541,6 +629,64 @@
             <input type="number" name="gov-S-min" min="0" max="1" step="0.05" placeholder="min" />
             <span>to</span>
             <input type="number" name="gov-S-max" min="0" max="1" step="0.05" placeholder="max" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="gov-vote-weighting">
+            Vote weighting (FM6 effective-Gini transform)
+          </label>
+          <select id="gov-vote-weighting" name="gov-vote-weighting">
+            {% for vw in vote_weightings %}
+            <option value="{{ vw }}" {% if vw == 'linear' %}selected{% endif %}>
+              {{ vw.replace('_', ' ') }}
+            </option>
+            {% endfor %}
+          </select>
+          <p class="hint">
+            Selects how token holdings translate into voting power.
+            <code>linear</code> = 1 token / 1 vote (the default;
+            verifier behavior unchanged). Other choices reduce or
+            substitute the effective Gini used by FM6.
+          </p>
+        </div>
+
+        <!-- vote_weighting_params — only the relevant block is shown -->
+        <div class="field range-field vw-param" id="vw-cap_fraction" hidden>
+          <label>Cap fraction (max single-voter share) — for CAPPED</label>
+          <div class="range">
+            <input type="number" name="vw-cap_fraction-min" min="0" max="1" step="0.01" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="vw-cap_fraction-max" min="0" max="1" step="0.01" placeholder="max" />
+          </div>
+        </div>
+        <div class="field range-field vw-param" id="vw-avg_lock_fraction" hidden>
+          <label>
+            Average lock fraction (locked-time / max-lock) — for TIME_LOCKED
+          </label>
+          <div class="range">
+            <input type="number" name="vw-avg_lock_fraction-min" min="0" max="1" step="0.01" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="vw-avg_lock_fraction-max" min="0" max="1" step="0.01" placeholder="max" />
+          </div>
+        </div>
+        <div class="field range-field vw-param" id="vw-delegate_concentration_gini" hidden>
+          <label>
+            Delegate concentration Gini — for DELEGATED
+            <small>(Gini over voting delegates, not holders)</small>
+          </label>
+          <div class="range">
+            <input type="number" name="vw-delegate_concentration_gini-min" min="0" max="1" step="0.01" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="vw-delegate_concentration_gini-max" min="0" max="1" step="0.01" placeholder="max" />
+          </div>
+        </div>
+        <div class="field range-field vw-param" id="vw-reputation_gini" hidden>
+          <label>Reputation Gini — for REPUTATION_WEIGHTED</label>
+          <div class="range">
+            <input type="number" name="vw-reputation_gini-min" min="0" max="1" step="0.01" placeholder="min" />
+            <span>to</span>
+            <input type="number" name="vw-reputation_gini-max" min="0" max="1" step="0.01" placeholder="max" />
           </div>
         </div>
 
@@ -743,10 +889,33 @@
         </p>
       </div>
       <div id="verdict-content" hidden>
-        <h2>Verdict</h2>
-        <div id="report-summary"></div>
-        <div id="coherence-issues"></div>
-        <div id="verdict-cards"></div>
+        <div class="verdict-header">
+          <h2>Verdict</h2>
+          <div class="view-toggle">
+            <button type="button" class="view-toggle-btn active" data-view="rich">
+              Rich
+            </button>
+            <button type="button" class="view-toggle-btn" data-view="minimal">
+              Minimal (reachability)
+            </button>
+          </div>
+        </div>
+        <div id="rich-view">
+          <div id="report-summary"></div>
+          <div id="coherence-issues"></div>
+          <div id="verdict-cards"></div>
+        </div>
+        <div id="minimal-view" hidden>
+          <p class="hint">
+            The minimal reachability output. Same format the ABM
+            simulator and cadCAD export consume. Each verdict reports
+            whether violation/satisfaction is reachable in the
+            declared parameter box, the binding threshold, and the
+            structured safety predicates.
+            <a href="/simulate" class="nav-link">Run the ABM →</a>
+          </p>
+          <div id="minimal-table"></div>
+        </div>
       </div>
     </aside>
   </main>

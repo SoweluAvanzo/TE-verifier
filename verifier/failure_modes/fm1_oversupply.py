@@ -447,3 +447,109 @@ class FM1Oversupply(FailureMode):
             "is conservative — alternatively, demonstrate that Q growth keeps pace."
         )
         return s
+
+    # ------------------------------------------------------------------
+    # Phase-C: dual encoding + structured safety predicate
+    # ------------------------------------------------------------------
+
+    def is_satisfaction_reachable_when_failing(
+        self, te: TokenEconomy, config, subject: str
+    ) -> str:
+        """Dual: any (E, B, Q) corner with E_net ≤ Q?"""
+        token = next((t for t in te.tokens if t.id == subject), None)
+        if token is None or not token.transferable:
+            return "unknown"
+        if not token.emission_rules:
+            return "true"  # no emission → trivially safe
+
+        solver = self.make_solver()
+        source_own_E: dict[str, z3.ArithRef] = {}
+        for src in te.tokens:
+            source_own_E[src.id] = own_emission_rate_per_period(
+                solver, f"{src.id}_ownE_for_fm1sat_{token.id}", src
+            )
+        E_terms = []
+        for i, rule in enumerate(token.emission_rules):
+            if not rule_contributes(rule, te, side="emission"):
+                continue
+            E_terms.append(
+                rule_rate_per_period(solver, f"{token.id}_emit_sat_{i}", rule)
+            )
+        for i, flow in enumerate(te.cross_token_flows):
+            if (
+                flow.target_token == token.id
+                and flow.target_action == CrossTokenAction.MINT
+            ):
+                E_terms.append(
+                    cross_token_flow_rate(
+                        solver,
+                        f"{token.id}_xtmint_sat_{i}",
+                        flow,
+                        source_own_E.get(flow.source_token, z3.RealVal(0)),
+                    )
+                )
+        E_total = sum(E_terms[1:], E_terms[0]) if E_terms else z3.RealVal(0)
+
+        B_terms = []
+        for i, rule in enumerate(token.burn_rules):
+            if not rule_contributes(rule, te, side="burn"):
+                continue
+            B_terms.append(
+                rule_rate_per_period(solver, f"{token.id}_burn_sat_{i}", rule)
+            )
+        for i, flow in enumerate(te.cross_token_flows):
+            if (
+                flow.target_token == token.id
+                and flow.target_action == CrossTokenAction.BURN
+            ):
+                B_terms.append(
+                    cross_token_flow_rate(
+                        solver,
+                        f"{token.id}_xtburn_sat_{i}",
+                        flow,
+                        source_own_E.get(flow.source_token, z3.RealVal(0)),
+                    )
+                )
+        B_total = sum(B_terms[1:], B_terms[0]) if B_terms else z3.RealVal(0)
+
+        Q_lo, Q_hi = te.participants.expected_Q.min, te.participants.expected_Q.max
+        Q = z3.Real(f"Q_sat_{token.id}")
+        solver.add(Q >= Q_lo, Q <= Q_hi)
+        solver.add(E_total - B_total <= Q)  # safety
+        result = solver.check()
+        if result == z3.sat:
+            return "true"
+        if result == z3.unsat:
+            return "false"
+        return "unknown"
+
+    def safety_predicates(self, te: TokenEconomy, config, subject: str) -> list:
+        from verifier.safety_predicate import SafetyPredicate
+
+        token = next((t for t in te.tokens if t.id == subject), None)
+        if (
+            token is None
+            or not token.transferable
+            or not token.emission_rules
+        ):
+            return []
+        Q_lo = te.participants.expected_Q.min
+        return [
+            SafetyPredicate(
+                failure_mode="FM1",
+                variable=f"net_emission_per_period[{subject}]",
+                operator="<=",
+                threshold=Q_lo,
+                formula=(
+                    "(Σ emission rules) − (Σ burn rules + xt-BURN flows); "
+                    "compare to Q_per_period in token-volume units"
+                ),
+                inputs=[
+                    "emission_rules",
+                    "burn_rules",
+                    "cross_token_flows",
+                    "expected_Q",
+                ],
+                paper_section="§3.1 eq. (5)",
+            )
+        ]

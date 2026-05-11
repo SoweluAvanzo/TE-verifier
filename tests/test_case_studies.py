@@ -14,14 +14,16 @@ from tests.conftest import lookup_status, report_for
 
 
 # ---------------------------------------------------------------------------
-# Bitcoin — fixed-supply native asset; FM3 flagged for no burn, FM6 flagged
-# on Gini secondary signal; otherwise clean.
+# Bitcoin — fixed-supply native asset. With the supply_cap schedule
+# modifier declared on the emission rule, FM3 is `pass_as_intended`
+# (capped supply replaces the need for burn). FM6 flagged on the Gini
+# secondary signal (top 0.01% holds ~50% of supply).
 # ---------------------------------------------------------------------------
 
 
 def test_bitcoin_overall():
     r = report_for("bitcoin")
-    assert r.severity.value == "fail"  # FM3 (no burn) + FM6 (Gini)
+    assert r.severity.value == "fail"  # FM6 (Gini) drives severity
 
 
 @pytest.mark.parametrize(
@@ -29,10 +31,13 @@ def test_bitcoin_overall():
     [
         ("FM1", "BTC", "pass"),
         ("FM2", "BTC", "pass"),
-        ("FM3", "BTC", "fail"),  # no burn at all
+        # FM3 is `pass_as_intended` — supply is capped via Rule.schedule.
+        # Sustainability becomes an FM1 question (does Q absorb the
+        # bounded supply?) which it does.
+        ("FM3", "BTC", "pass_as_intended"),
         ("FM4", "system", "not_applicable"),
         ("FM5", "system", "pass"),
-        ("FM6", "system", "fail"),  # Gini high enough to flag
+        ("FM6", "system", "fail"),  # Gini 0.85-0.95 in mid-2026 calibration
     ],
 )
 def test_bitcoin_per_failure_mode(fm: str, subject: str, expected: str):
@@ -41,20 +46,22 @@ def test_bitcoin_per_failure_mode(fm: str, subject: str, expected: str):
 
 
 # ---------------------------------------------------------------------------
-# Ethereum — demand-burning fee economy; structurally clean except for the
-# Gini-based FM6 secondary signal.
+# Ethereum — post-Merge, post-Dencun (Mar 2024). EIP-1559 burn dropped
+# sharply once L2s migrated to blobs, so weekly burn (~500-50000 ETH) is
+# now usually below issuance (~13000-17500 ETH/week). The verifier
+# correctly flags FM3 under this calibration; this is a real concern,
+# not a verifier artifact. FM6 still flags on Gini.
 # ---------------------------------------------------------------------------
 
 
 def test_ethereum_overall():
     r = report_for("ethereum")
-    # ETH should pass the supply-side modes; the only flag is FM6 on Gini.
     failures = {(v.failure_mode, v.subject) for v in r.failures()}
-    # Allow FM6 system flag; everything else must NOT fail.
-    for fm, subj in failures:
-        assert "FM6" in fm and subj == "system", (
-            f"unexpected failure: {fm} on {subj}"
-        )
+    # Post-Dencun: FM3 (burn coverage) and FM6 (Gini) both flag.
+    allowed = {"FM3", "FM6"}
+    for fm, _subj in failures:
+        head = fm.split(":")[0].strip()
+        assert head in allowed, f"unexpected failure: {fm}"
 
 
 @pytest.mark.parametrize(
@@ -62,7 +69,8 @@ def test_ethereum_overall():
     [
         ("FM1", "ETH", "pass"),
         ("FM2", "ETH", "pass"),
-        ("FM3", "ETH", "pass"),  # demand-driven burn earns its credit
+        # Post-Dencun: burn is structurally below issuance most weeks.
+        ("FM3", "ETH", "fail"),
         ("FM4", "system", "not_applicable"),
         ("FM5", "system", "pass"),
     ],
@@ -115,10 +123,12 @@ def test_curve_vecrv_fm2_not_applicable():
     assert lookup_status(r, "FM2", "veCRV") == "not_applicable"
 
 
-def test_curve_crv_no_burn_flagged():
-    """CRV has no protocol-level burn → FM3 must FAIL (ρ = 0)."""
+def test_curve_crv_supply_cap_intended():
+    """CRV has no protocol-level burn but declares a supply_cap (3.03B)
+    via Rule.schedule, so FM3 resolves to pass_as_intended — supply
+    stability is achieved by termination, not by burn."""
     r = report_for("curve_vecrv")
-    assert lookup_status(r, "FM3", "CRV") == "fail"
+    assert lookup_status(r, "FM3", "CRV") == "pass_as_intended"
 
 
 def test_curve_governance_capture_flagged():

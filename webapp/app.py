@@ -23,6 +23,7 @@ from schema import (
     CirculationSpeed,
     ContributionVerification,
     ControllingActor,
+    DistributionSpec,
     EmissionTriggerKind,
     FunctionShape,
     FunctionSign,
@@ -46,9 +47,16 @@ from schema import (
     TokenFunction,
     Topology,
     ValueAnchor,
+    VoteWeighting,
     load_te,
 )
 from verifier import verify
+from verifier.abm import (
+    SimulationConfig,
+    export_cadcad_config,
+    run_simulation,
+)
+from verifier.minimal import minimal_verdicts
 from verifier.paper import ALL_CONDITIONS
 
 
@@ -101,6 +109,10 @@ def index() -> str:
         governance_types=[e.value for e in GovernanceType],
         controlling_actors=[e.value for e in ControllingActor],
         agent_roles=["contributor", "consumer", "governance_only", "observer"],
+        vote_weightings=[e.value for e in VoteWeighting],
+        distribution_kinds=[
+            "uniform", "normal", "lognormal", "bernoulli", "poisson", "beta",
+        ],
     )
 
 
@@ -259,6 +271,107 @@ def conditions() -> dict:
             ],
         }
     return jsonify(out)
+
+
+@app.route("/simulate")
+def simulate_page() -> str:
+    """Render the ABM simulator page.
+
+    The simulator drives ``verifier.abm.run_simulation`` against a
+    user-supplied YAML (or a loaded example) and renders charts of
+    P(violation), deployment-vs-dynamic split, and time-to-violation
+    distributions per failure mode. The page also offers a download
+    of the cadCAD-compatible export.
+    """
+    examples = sorted(p.stem for p in EXAMPLES_DIR.glob("*.yaml"))
+    return render_template("simulate.html", examples=examples)
+
+
+@app.route("/api/minimal-verdicts", methods=["POST"])
+def minimal_verdicts_endpoint() -> dict:
+    """Return the minimal (reachability) verifier output.
+
+    Accepts a YAML body; emits the list of ``ReachabilityVerdict``
+    dicts (failure_mode, subject, structural_status, violation_reachable,
+    satisfaction_reachable, minimum_param_shift, witness,
+    safety_predicates).
+    """
+    body = request.get_json(force=True)
+    yaml_text = body.get("yaml", "")
+    try:
+        raw = yaml.safe_load(yaml_text)
+        te = TokenEconomy.model_validate(raw)
+    except Exception as e:
+        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
+    verdicts = minimal_verdicts(te)
+    return jsonify(verdicts=[v.model_dump(mode="json") for v in verdicts])
+
+
+@app.route("/api/simulate", methods=["POST"])
+def simulate_endpoint() -> dict:
+    """Run the reference ABM and return the simulation report.
+
+    Body:
+      - yaml: the TE-IR YAML text
+      - n_runs (int, default 200, max 5000): Monte Carlo replicates
+      - horizon_periods (int, default 260, max 5000): simulation length
+      - seed (int|None): determinism control
+      - skip_non_fragile (bool, default True): triage SOUND/BROKEN FMs
+    """
+    body = request.get_json(force=True)
+    yaml_text = body.get("yaml", "")
+    try:
+        raw = yaml.safe_load(yaml_text)
+        te = TokenEconomy.model_validate(raw)
+    except Exception as e:
+        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
+
+    # Bound the inputs to prevent the browser from triggering an
+    # arbitrarily-long server-side simulation.
+    try:
+        cfg = SimulationConfig(
+            n_runs=min(max(1, int(body.get("n_runs", 200))), 5000),
+            horizon_periods=min(max(1, int(body.get("horizon_periods", 260))), 5000),
+            seed=(int(body["seed"]) if body.get("seed") not in (None, "") else None),
+            skip_non_fragile=bool(body.get("skip_non_fragile", True)),
+            record_trajectories=bool(body.get("record_trajectories", False)),
+        )
+    except (ValueError, TypeError) as e:
+        return jsonify(error=f"invalid config: {e}"), 400
+
+    try:
+        report = run_simulation(te, config=cfg)
+    except Exception as e:
+        return jsonify(error=f"simulation failed: {e}"), 500
+    return jsonify(report.model_dump(mode="json"))
+
+
+@app.route("/api/cadcad-export", methods=["POST"])
+def cadcad_export_endpoint() -> dict:
+    """Return the cadCAD-compatible config dict for the given spec.
+
+    Same body shape as /api/simulate (n_runs, horizon_periods are
+    surfaced into the export's sim_config). The returned JSON is
+    intended to be saved to disk and consumed by a cadCAD pipeline
+    outside this app.
+    """
+    body = request.get_json(force=True)
+    yaml_text = body.get("yaml", "")
+    try:
+        raw = yaml.safe_load(yaml_text)
+        te = TokenEconomy.model_validate(raw)
+    except Exception as e:
+        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
+    try:
+        cfg = SimulationConfig(
+            n_runs=min(max(1, int(body.get("n_runs", 500))), 5000),
+            horizon_periods=min(max(1, int(body.get("horizon_periods", 260))), 5000),
+            seed=(int(body["seed"]) if body.get("seed") not in (None, "") else None),
+        )
+    except (ValueError, TypeError) as e:
+        return jsonify(error=f"invalid config: {e}"), 400
+    config = export_cadcad_config(te, sim_config=cfg)
+    return jsonify(config)
 
 
 def main() -> None:  # pragma: no cover

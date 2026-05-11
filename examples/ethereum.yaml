@@ -1,10 +1,23 @@
 # Ethereum (post-Merge, EIP-1559) — demand-burning fee economy.
-# Encoded against TE-IR v0.1. Public parameters as of late 2024.
+# Encoded against TE-IR v0.1. Public parameters as of mid-2026.
+#
+# Calibration notes:
+# - Total supply ~120.5M ETH (Merge offset issuance ≈ EIP-1559 burn over time).
+# - PoS issuance ~0.55%/yr ≈ 13k–17k ETH/week, scales with √(active stake).
+# - EIP-1559 burn varies enormously by activity. Post-Dencun (Mar 2024)
+#   blob fees moved most L2 fee burn off mainnet, so weekly burn dropped
+#   to ~500–5000 ETH/week. High-activity windows still spike to 30–50k.
+# - Issuance modeled with the SUBLINEAR_ROOT (degree=2) family on time
+#   as a stand-in for the underlying √(active_stake) curve, since stake
+#   itself grows slowly. `a` and `b` give a current-era envelope of
+#   ~13k–17.5k ETH/week; the √t shape captures the slow stake growth
+#   (≈ a few percent per year) without requiring a stake-state IR field.
 meta:
   name: Ethereum
   description: >-
     Post-Merge proof-of-stake Ethereum with EIP-1559 base fee burn.
-    Demand-driven burn proportional to transaction throughput.
+    Demand-driven burn proportional to transaction throughput; net
+    issuance frequently slightly negative under high activity.
   archetype: native_protocol_asset
   nfrs:
     resilience: 5
@@ -21,6 +34,13 @@ tokens:
     value_anchor: none
     transferable: true
     holding_incentive_present: true
+    holding_incentives:
+      - staking            # validator staking yields ~3-4% APR
+    earning_mechanisms:
+      - algorithmic_issuance     # validator rewards
+      - exchange_purchase
+    contribution_verification: smart_contract_automation
+    redemption_mechanism: open_market_exchange
     offer_variety_K:
       min: 1000
       max: 100000
@@ -31,55 +51,51 @@ tokens:
         function:
           sign: always_positive
           asymptotic_class:
-            family: linear
+            # Per-period (week) issuance scales sub-linearly with stake,
+            # itself growing slowly. SUBLINEAR_ROOT(degree=2) gives
+            # rate ≈ a·√t + b. With these ranges, t=0 emits b ≈ 11000–13000
+            # ETH/week and t=260 emits a·√260+b ≈ 13000–17500 ETH/week.
+            family: sublinear_root
+            degree: 2
             parameter_ranges:
-              # Per-period (week) issuance rate over current ~30M ETH staked
-              # is ~10000-15000 ETH/week, well-bounded.
               a:
-                min: 0
-                max: 50          # rate of growth per period
+                min: 100
+                max: 250
               b:
-                min: 8000
-                max: 16000        # baseline issuance per week
+                min: 11000
+                max: 13500
     burn_rules:
       - trigger:
           kind: demand_driven
           event_predicate: transaction_included
-          event_frequency:
-            family: linear
-            parameter_ranges:
-              a:
-                min: 0
-                max: 1000
-              b:
-                min: 1000000
-                max: 10000000     # transactions per week
         function:
           sign: always_negative
           asymptotic_class:
-            family: linear
+            # Total ETH burned per week via base_fee × gas_used.
+            # Post-Dencun (Mar 2024) blob fees drove this much lower;
+            # high-activity weeks still spike to deflationary territory.
+            # No event_frequency multiplier — `c` is already per-period.
+            family: constant
             parameter_ranges:
-              # Burn ≈ base_fee × gas_used aggregated to per-week.
-              # Historical range ~5000-30000 ETH/week, can exceed issuance.
-              a:
-                min: 0
-                max: 100
-              b:
-                min: 5000
-                max: 30000
+              c:
+                min: 500
+                max: 50000
     initial_distribution:
-      kind: pre_minted_reserve
+      kind: pre_minted_reserve     # current circulating, not genesis pre-mine
       amount:
-        min: 60000000
-        max: 60000000
+        min: 120500000
+        max: 120500000
 
 participants:
   count_N:
-    min: 5000000
-    max: 50000000
+    min: 10000000
+    max: 100000000          # global ETH holders (Triple-A: ~50M)
   expected_Q:
-    min: 5000000
-    max: 30000000
+    # Token-volume terms: ETH transfer volume on L1 ≈ $150-300B/week at
+    # ~$3000/ETH → ~50-100M ETH/week moved. (Tx count is ~7-10M/week, but
+    # FM1 needs token flux, not transaction count.)
+    min: 50000000
+    max: 100000000
   average_demand_d:
     min: 1.0
     max: 10.0
@@ -100,7 +116,7 @@ participants:
         expected_periods:
           min: 50
           max: 150
-      balance_share: 0.6
+      balance_share: 0.5
     - id: defi_user
       fraction: 0.3
       expected_holding_time:
@@ -109,12 +125,14 @@ participants:
           max: 30
       balance_share: 0.2
     - id: validator
+      # ~33M ETH staked at ~32 ETH/validator ≈ 1M validators; share of
+      # total holders is small but their balance share is large.
       fraction: 0.2
       expected_holding_time:
         expected_periods:
           min: 50
           max: 200
-      balance_share: 0.2
+      balance_share: 0.3
 
 governance:
   type: hybrid
@@ -132,6 +150,8 @@ governance:
     S_normalized:
       min: 0.7
       max: 0.95
+  # ETH balance distribution: top 100 wallets ~30-35% of supply. Etherscan/
+  # Glassnode estimates put Gini at 0.7-0.85.
   token_balance_gini:
-    min: 0.5
-    max: 0.7
+    min: 0.7
+    max: 0.85
