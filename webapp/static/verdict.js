@@ -43,24 +43,11 @@
     // ---- Summary ----
     reportSummary.innerHTML = "";
 
-    // Headline: counts + a numeric percentage.
-    // Per user feedback, we deliberately drop the "low / moderate /
-    // high / critical" band label and the prose ("broadly sound",
-    // "redesign required") — those over-claim relative to what the
-    // weighted score can actually distinguish. The verdict cards plus
-    // the pass/fail counts below are the honest summary.
-    if (report.overall_risk) {
-      const o = report.overall_risk;
-      const overall = document.createElement("div");
-      overall.className = "overall-risk";
-      overall.dataset.band = o.band;
-      overall.innerHTML =
-        `<div class="overall-risk-headline">` +
-        `<span class="overall-risk-dot" data-band="${o.band}"></span>` +
-        `<span class="pct">Risk score: ${o.normalized_pct.toFixed(1)}%</span>` +
-        `</div>`;
-      reportSummary.appendChild(overall);
-    }
+    // Headline: pass/fail counts only.
+    // The weighted "risk score: X.Y %" was dropped per user feedback —
+    // a single normalized percentage over 6 heterogeneous FMs implies
+    // a precision the underlying score cannot deliver. The verdict
+    // cards plus the pass/fail counts below are the honest summary.
 
     const meta = document.createElement("div");
     meta.className = "report-meta";
@@ -95,6 +82,30 @@
             `<em>→ ${escapeHtml(ci.suggestion)}</em>`;
           coherenceContainer.appendChild(div);
         });
+      }
+      // Task 3 — derived function-shape labels. Surfaces what the
+      // verifier inferred about each rule's monotonicity / convexity
+      // so the user can sanity-check their coefficient ranges.
+      if (report.function_shapes && report.function_shapes.length > 0) {
+        const h = document.createElement("h3");
+        h.textContent = "Function shapes (derived)";
+        h.style.marginTop = "1rem";
+        coherenceContainer.appendChild(h);
+        const list = document.createElement("ul");
+        list.className = "shape-list";
+        report.function_shapes.forEach((s) => {
+          const li = document.createElement("li");
+          const deg = s.degree != null ? ` (degree=${s.degree})` : "";
+          const idx = s.rule_kind.includes("regime")
+            ? "" : `[${s.rule_index}]`;
+          li.innerHTML =
+            `<code>${escapeHtml(s.token_id)}.${escapeHtml(s.rule_kind)}${idx}</code> ` +
+            `→ <strong>${escapeHtml(s.family)}${escapeHtml(deg)}</strong>` +
+            ` &middot; ${escapeHtml(s.monotonicity)}, ${escapeHtml(s.convexity)}` +
+            `<br/><em>${escapeHtml(s.summary)}</em>`;
+          list.appendChild(li);
+        });
+        coherenceContainer.appendChild(list);
       }
     }
 

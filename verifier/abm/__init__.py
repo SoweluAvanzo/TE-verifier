@@ -28,12 +28,16 @@ Public API:
 
 from verifier.abm.cadcad_export import export_cadcad_config
 from verifier.abm.engine import SimulationConfig, run_simulation
+from verifier.abm.explore import ExploreReport, PeriodSnapshot, run_explore
 from verifier.abm.report import FMSimulationResult, SimulationReport
 
 __all__ = [
+    "ExploreReport",
     "FMSimulationResult",
+    "PeriodSnapshot",
     "SimulationConfig",
     "SimulationReport",
     "export_cadcad_config",
+    "run_explore",
     "run_simulation",
 ]

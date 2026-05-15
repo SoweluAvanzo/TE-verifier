@@ -207,7 +207,7 @@ class FM3BurnEmission(FailureMode):
 
         # Phase B2 — emission rules contribute if EVER active (over-conservative).
         E_terms = [
-            rule_rate_per_period(solver, f"{token.id}_emit_{i}", rule)
+            rule_rate_per_period(solver, f"{token.id}_emit_{i}", rule, te=te)
             for i, rule in enumerate(token.emission_rules)
             if rule_contributes(rule, te, side="emission")
         ]
@@ -229,7 +229,7 @@ class FM3BurnEmission(FailureMode):
 
         # Phase B2 — burn rules contribute only if ALWAYS active (under-conservative).
         B_terms = [
-            rule_rate_per_period(solver, f"{token.id}_burn_{i}", rule)
+            rule_rate_per_period(solver, f"{token.id}_burn_{i}", rule, te=te)
             for i, rule in enumerate(token.burn_rules)
             if rule_contributes(rule, te, side="burn")
         ]
@@ -574,7 +574,7 @@ class FM3BurnEmission(FailureMode):
             if not rule_contributes(rule, te, side="emission"):
                 continue
             E_terms.append(
-                rule_rate_per_period(solver, f"{token.id}_emit_sat_{i}", rule)
+                rule_rate_per_period(solver, f"{token.id}_emit_sat_{i}", rule, te=te)
             )
         for i, flow in enumerate(te.cross_token_flows):
             if (
@@ -596,7 +596,7 @@ class FM3BurnEmission(FailureMode):
             if not rule_contributes(rule, te, side="burn"):
                 continue
             B_terms.append(
-                rule_rate_per_period(solver, f"{token.id}_burn_sat_{i}", rule)
+                rule_rate_per_period(solver, f"{token.id}_burn_sat_{i}", rule, te=te)
             )
         for i, flow in enumerate(te.cross_token_flows):
             if (

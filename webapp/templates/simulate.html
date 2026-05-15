@@ -9,12 +9,14 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='simulate.css') }}" />
 </head>
 <body>
+  {% set current_step = 2 %}{% include '_step_nav.html' %}
   <header class="page-header compact">
     <div class="header-row">
       <h1>Token Economy Verifier — ABM Simulator</h1>
       <nav>
         <a href="/" class="nav-link">← Questionnaire</a>
         <a href="/yaml" class="nav-link">YAML editor</a>
+        <a href="/explore" class="nav-link">Trajectory explorer</a>
       </nav>
     </div>
     <p class="subtitle">
@@ -112,11 +114,31 @@
         produce the per-FM likelihood report.
       </p>
 
+      <div id="severity-banner" class="severity-banner hidden">
+        <div class="severity-headline">
+          <span class="severity-icon" id="severity-icon">·</span>
+          <div class="severity-text">
+            <span class="severity-title" id="severity-title">—</span>
+            <span class="severity-sub" id="severity-sub">—</span>
+          </div>
+        </div>
+        <div class="severity-counts" id="severity-counts"></div>
+      </div>
+
       <div id="summary" class="hidden">
-        <h3>Summary</h3>
+        <h3>Summary <span class="hint-inline">— failed FMs first; click a row to jump to its card</span></h3>
         <div id="summary-table-wrapper"></div>
-        <h3>Headline</h3>
+        <h3>Headlines</h3>
         <ul id="headline-list" class="headline-list"></ul>
+        <details class="explainer">
+          <summary>How to read this table</summary>
+          <ul>
+            <li><strong>P(deploy)</strong> — fraction of runs that violate at t=0. High here = configuration problem; tighten parameter ranges.</li>
+            <li><strong>P(dynamic)</strong> — fraction of runs that start safe and become unsafe during the horizon. High here = drift problem; add a corrective mechanism (rate cap, decay, etc.).</li>
+            <li><strong>95 % CI</strong> — Wilson interval on the total violation probability. Wide intervals at low N mean run more replicates.</li>
+            <li><strong>t<sub>med</sub></strong> — median time-to-violation across the subset of runs that violated <em>dynamically</em>. "—" means all violations were at deployment (t=0), so no dynamic time-to-failure to report.</li>
+          </ul>
+        </details>
       </div>
 
       <div id="per-fm-cards" class="hidden"></div>

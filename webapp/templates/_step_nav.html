@@ -1,0 +1,54 @@
+{# Stepwise verification navigator.
+   Usage: {% set current_step = 2 %} {% include '_step_nav.html' %}
+   current_step ∈ {0,1,2,3}.  0 = no highlight.
+#}
+<aside class="step-nav" aria-label="Verification pipeline">
+  <ol class="step-nav-list">
+    <li class="step-nav-item{% if current_step == 1 %} is-current{% endif %}{% if current_step > 1 %} is-done{% endif %}">
+      <a href="/" class="step-nav-link">
+        <span class="step-num">1</span>
+        <div class="step-body">
+          <span class="step-title">Formal verifier</span>
+          <span class="step-sub">Specify · prove possibility</span>
+        </div>
+      </a>
+      <div class="step-scope">
+        <strong>What it answers:</strong> for ANY parameter values in the
+        declared ranges, is the failure condition unreachable?<br>
+        <strong>Outputs:</strong> per-FM verdict (pass / fail / inconclusive),
+        Z3 counterexample, critical-value recommendations.
+      </div>
+    </li>
+    <li class="step-nav-item{% if current_step == 2 %} is-current{% endif %}{% if current_step > 2 %} is-done{% endif %}">
+      <a href="/simulate" class="step-nav-link">
+        <span class="step-num">2</span>
+        <div class="step-body">
+          <span class="step-title">Monte Carlo</span>
+          <span class="step-sub">Sample · measure likelihood</span>
+        </div>
+      </a>
+      <div class="step-scope">
+        <strong>What it answers:</strong> across N independent samples of
+        your declared parameter ranges, how often does each FM violate?<br>
+        <strong>Outputs:</strong> P(violation) with 95 % CI, deployment vs
+        dynamic split, time-to-violation quantiles, predicate trajectories.
+      </div>
+    </li>
+    <li class="step-nav-item{% if current_step == 3 %} is-current{% endif %}">
+      <a href="/explore" class="step-nav-link">
+        <span class="step-num">3</span>
+        <div class="step-body">
+          <span class="step-title">ABM trajectory</span>
+          <span class="step-sub">Simulate · reveal dynamics</span>
+        </div>
+      </a>
+      <div class="step-scope">
+        <strong>What it answers:</strong> in one seeded run, what does the
+        agent population actually do period-by-period? Who exits, who
+        accumulates reputation, where does balance concentrate?<br>
+        <strong>Outputs:</strong> per-period snapshots, trade graph,
+        per-type breakdown, exit + reputation curves, action mix.
+      </div>
+    </li>
+  </ol>
+</aside>

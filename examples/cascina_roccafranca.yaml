@@ -1,0 +1,401 @@
+# CommonsHood — Cascina Roccafranca pilot (Mirafiori Nord, Torino).
+#
+# Reality basis: CommonsHood is a blockchain wallet for local communities
+# developed at the Computer Science Department of the University of
+# Turin (Boella, Schifanella et al., IEEE 2020). Piloted within the EU
+# UIA CO-CITY project (€5.16M, March 2017–February 2020), led by the
+# City of Turin with the Fondazione Cascina Roccafranca and the network
+# of Case del Quartiere (neighborhood community centres). Mirafiori Nord
+# (~50 000 residents) is the reference neighborhood; the Cascina
+# Roccafranca community house runs the "Per abitare Mirafiori" volunteer
+# programme — residents commit ≥ 3 hours/week to recover green areas
+# (ex bocciofila on Corso Siracusa), staff a proximity social office at
+# the former Lilliput centre, refurbish basketball/volleyball courts,
+# and run cultural workshops. Local Mirafiori merchants accept civic
+# loyalty vouchers as payment.
+#
+# This YAML encodes the pilot as a two-token CommonsHood deployment:
+#   ROCCA — purpose-driven civic-reward token earned per verified
+#           volunteer hour; SBT-style reputation gates governance voting
+#           by Cascina Roccafranca members.
+#   BUONO — local-currency voucher minted when a resident swaps ROCCA
+#           at the Cascina counter; redeemable at participating
+#           Mirafiori shops; burned on retailer acceptance.
+#
+# Documented failure modes (CO-CITY review 2020, Domenicale et al. 2025):
+#  - FM4 free-rider: Cascina staff's verification capacity caps activity;
+#    when verif_prob drops, civic contribution collapses.
+#  - FM2 velocity trap: ROCCA velocity → 1 when residents swap the moment
+#    they earn — high reputation_yield slows this by giving holding value.
+#  - FM5 critical mass: < 200 active residents means low offer variety K.
+#  - FM6 governance capture: City of Torino holds rate control unilaterally;
+#    Γ rises if Cascina Roccafranca staff don't co-decide.
+#  - Provider burnout: same as time bank but applied to neighborhood
+#    volunteer-residents.
+#
+# Phase E surfaces:
+#  - reputation_yield: very high (2.0+) for residents — ROCCA reputation
+#    gates SBT membership, which gates governance voting in real pilots.
+#    Decay slow (~1 %/period, ~90-week half-life) mirroring SBT permanence.
+#  - exit_propensity: CO-CITY follow-up reports ~20 % annual volunteer
+#    churn; per-period propensity ~0.005 lands at that rate.
+#  - utility_jitter: governance_payoff jitter wide — civic engagement
+#    varies dramatically (Putnam 1995 "Bowling Alone"). income_yield
+#    jitter moderate — intrinsic-vs-extrinsic motivation split
+#    (SDT / Bénabou & Tirole).
+#
+# Cross-token: ROCCA → BUONO swap uses CrossTokenFlow so a resident
+# burning ROCCA mints an equivalent BUONO at the Cascina Roccafranca
+# counter for a participating Mirafiori merchant.
+meta:
+  name: CommonsHood — Cascina Roccafranca
+  description: >-
+    CommonsHood wallet pilot for the Mirafiori Nord neighborhood
+    (Torino), run by the Fondazione Cascina Roccafranca within the EU
+    UIA CO-CITY programme. Residents earn ROCCA (purpose-driven civic
+    reward) by delivering verified volunteer hours; ROCCA swaps to
+    BUONO vouchers honoured by ~10 participating Mirafiori shops.
+    Reputation gates SBT-style governance voting. Roles: City of
+    Torino (initiator) + Cascina Roccafranca staff + Mirafiori merchant
+    + active resident + occasional resident + passive lurker.
+  archetype: community_reward
+  simulation_horizon: 104             # 2 years (CO-CITY pilot length)
+  nfrs:
+    resilience: 4
+    adaptability: 3
+    accessibility: 5                  # Cascina-mediated, low barrier
+    transparency: 5                   # public-sector legal mandate
+    proportionality: 4
+    circulation_speed: balanced
+    governance_maturity: medium_term
+
+tokens:
+  # Purpose-driven civic-reward token: earned per verified volunteer hour at the Cascina; restricted-
+  # transfer; carries reputation weight.
+  - id: ROCCA
+    function: [governance_right, access_right]
+    value_anchor: service_or_access_unit
+    transferable: true
+    holding_incentive_present: true
+    holding_incentives:
+      - reputation                    # ROCCA balance → SBT membership tier
+      - governance_rights
+    earning_mechanisms:
+      - behavioral_reward
+    contribution_verification: peer_verification
+    redemption_mechanism: specific_goods_or_services
+    offer_variety_K:
+      min: 4                          # civic work categories at Cascina Roccafranca (gardens, social office, sports courts, workshops)
+      max: 12
+    emission_rules:
+      - trigger:
+          event_id: volunteer_hour_logged
+        function:
+          asymptotic_class:
+            family: constant
+            parameter_ranges:
+              c: { min: 2.0, max: 5.0 }   # 2-5 ROCCA per hour of verified work
+    burn_rules:
+      - trigger:
+          event_id: rocca_swapped_for_buono
+        function:
+          asymptotic_class:
+            family: constant
+            parameter_ranges:
+              c: { min: 2.0, max: 5.0 }
+    initial_distribution:
+      kind: pre_minted_reserve
+      amount:
+        # Small bootstrap: 1-2 ROCCA × N members so new joiners have a
+        # baseline status balance.
+        min: 200
+        max: 1000
+  # BUONO: minted via ROCCA redemption (cross-token flow); spent at local
+  # retailers; burned on retailer acceptance.
+  - id: BUONO
+    function: [medium_of_exchange]
+    value_anchor: pegged                # 1 BUONO = ~5 € of local goods
+    transferable: true
+    holding_incentive_present: false
+    holding_incentives: [none]
+    earning_mechanisms:
+      - exchange_purchase               # acquired by spending ROCCA
+    contribution_verification: third_party_certification
+    redemption_mechanism: specific_goods_or_services
+    offer_variety_K:
+      min: 8                            # retailer categories
+      max: 30
+    emission_rules:
+      - trigger:
+          event_id: rocca_swapped_for_buono
+        function:
+          asymptotic_class:
+            family: constant
+            parameter_ranges:
+              c: { min: 2.0, max: 5.0 }     # 1 ROCCA → 2-5 BUONO
+    burn_rules:
+      - trigger:
+          event_id: buono_redeemed_at_shop
+        function:
+          asymptotic_class:
+            family: constant
+            parameter_ranges:
+              c: { min: 2.0, max: 5.0 }
+    initial_distribution:
+      kind: none
+
+# Phase-H1: top-level events catalog. Each mint / burn rule above
+# references one of these by id. Frequency lives here once, never
+# duplicated across rules.
+events:
+  - id: volunteer_hour_logged
+    label: Verified volunteer hour at Cascina Roccafranca — garden recovery, proximity social office, sports court refurb, cultural workshops
+    kind: behavioral
+    frequency:
+      # ~200 citizens × 0.3 service events / week ≈ 60 events.
+      family: linear
+      parameter_ranges:
+        a: { min: 0.0, max: 0.05 }
+        b: { min: 20, max: 400 }
+  - id: rocca_swapped_for_buono
+    label: Resident swaps ROCCA for BUONO at the Cascina Roccafranca counter
+    kind: demand_driven
+    frequency:
+      family: linear
+      parameter_ranges:
+        a: { min: 0.0, max: 0.0 }
+        b: { min: 15, max: 350 }
+  - id: buono_redeemed_at_shop
+    label: Mirafiori merchant accepts a BUONO in exchange for a local good/service
+    kind: demand_driven
+    frequency:
+      family: linear
+      parameter_ranges:
+        a: { min: 0.0, max: 0.0 }
+        b: { min: 12, max: 320 }
+
+# Phase-I1: non-tokenized assets that retailers offer. Modeling them
+# here lets the ABM track per-asset inventory + consumption alongside
+# the BUONO token flow.
+non_tokenized_assets:
+  - id: mirafiori_shop_basket
+    label: Basket of goods/services offered by participating Mirafiori merchants (redeemable with BUONO)
+    kind: good
+    unique: false
+    creation:
+      asymptotic_class:
+        family: linear
+        parameter_ranges:
+          a: { min: 0.0, max: 0.0 }
+          b: { min: 50, max: 200 }      # units stocked per period
+    consumption:
+      asymptotic_class:
+        family: linear
+        parameter_ranges:
+          a: { min: 0.0, max: 0.0 }
+          b: { min: 12, max: 320 }      # consumption tracks buono redemption
+    redemption_cost:
+      min: 2.0
+      max: 5.0
+    referenced_tokens: [BUONO]
+    # K-contribution: this single asset record stands in for the
+    # ~8-30 retailer categories the BUONO token redeems against.
+    # Mid-range pick = Likert 4 (broad variety) → 10.
+    variety_contribution: 10
+
+cross_token_flows:
+  - source_token: ROCCA
+    source_event: rocca_swapped_for_buono
+    target_token: BUONO
+    target_action: mint
+    amount:
+      family: constant
+      parameter_ranges:
+        c:
+          min: 2.0                       # 1 ROCCA burns → 2 BUONO minted
+          max: 5.0
+
+participants:
+  count_N:
+    min: 100
+    max: 800
+  expected_Q:
+    # Per-period token-volume (sum across both tokens, both directions).
+    min: 30
+    max: 800
+  average_demand_d:
+    min: 0.2
+    max: 0.7
+  growth_g:
+    family: linear
+    parameter_ranges:
+      a:
+        min: 0.0
+        max: 0.02
+      b:
+        min: 0.0
+        max: 0.0
+  topology: network
+  topology_params:
+    average_degree:
+      min: 8
+      max: 18                            # urban social graph
+  agent_types:
+    - id: resident_active
+      fraction: 0.45
+      role: contributor
+      expected_holding_time:
+        expected_periods:
+          min: 6
+          max: 30                        # ROCCA held for status; slow redemption
+      balance_share: 0.50
+      # Frequent participants — clean parks, mentor, host events. Earn ROCCA
+      # via verified work. Strong reputation accumulation gates them into
+      # SBT membership (modeled here as governance_payoff sensitivity).
+      action_set: [earn, hold, vote, redeem]
+      utility:
+        income_yield: 1.2
+        holding_yield: 0.5
+        governance_payoff: 0.7
+        redemption_value: 0.4            # redeem occasionally for BUONO
+        social_payoff: 0.5
+        action_temperature: 0.5
+        # CO-CITY follow-up survey: ~20 % annual volunteer attrition.
+        # Per-period at sigmoid(0)=0.5: 0.005 × 0.5 × 104 ≈ 26 % expected
+        # exits over 2 years (worst-case at neutral utility). Citizens
+        # with rising reputation drop well below that.
+        exit_propensity: 0.005
+        social_comparison_delta: 0.4
+        # Reputation is the load-bearing Phase-E3 mechanism: it gates
+        # SBT eligibility, which gates governance. Yield high, decay slow.
+        reputation_yield: 2.5
+        reputation_decay: 0.01
+      utility_jitter:
+        income_yield: 0.4                # intrinsic vs extrinsic split
+        governance_payoff: 0.6           # huge variance in political engagement
+        social_payoff: 0.3
+    - id: resident_occasional
+      fraction: 0.30
+      role: contributor
+      expected_holding_time:
+        expected_periods:
+          min: 4
+          max: 18
+      balance_share: 0.18
+      # Drop-in volunteers — show up for events but don't pursue badges.
+      # Higher exit propensity, lower reputation accumulation. The
+      # cohort that turns over fastest in real pacts.
+      action_set: [earn, redeem, hold, transfer]
+      utility:
+        income_yield: 0.6
+        redemption_value: 0.9            # they redeem ROCCA for BUONO sooner
+        holding_yield: 0.2
+        social_payoff: 0.4
+        action_temperature: 0.7
+        exit_propensity: 0.015
+        social_comparison_delta: 0.5
+        reputation_yield: 1.2
+        reputation_decay: 0.025
+      utility_jitter:
+        income_yield: 0.3
+        redemption_value: 0.3
+    - id: casa_quartiere_staff
+      fraction: 0.05
+      role: governance_only
+      expected_holding_time:
+        expected_periods:
+          min: 8
+          max: 40
+      balance_share: 0.15
+      # Non-profits running initiatives: verify contributions, mint ROCCA
+      # to citizens. Carry institutional weight in votes. Very low exit
+      # (Cascina staff don't leave the pilot lightly). Reputation high — they
+      # are the verification authority.
+      action_set: [hold, vote, transfer]
+      utility:
+        governance_payoff: 2.0
+        holding_yield: 1.0
+        social_payoff: 1.2
+        action_temperature: 0.4
+        exit_propensity: 0.002
+        social_comparison_delta: 0.2
+        reputation_yield: 3.0
+        reputation_decay: 0.005          # very slow decay — institutional
+      utility_jitter:
+        governance_payoff: 0.7
+        social_payoff: 0.4
+    - id: mirafiori_merchant
+      fraction: 0.15
+      role: consumer
+      expected_holding_time:
+        expected_periods:
+          min: 1
+          max: 6
+      balance_share: 0.12
+      # Local shops accept BUONO, submit them for reimbursement. Low
+      # holding (they need cashflow), low reputation pickup, modest exit
+      # (they leave if redemption volume falls below break-even).
+      action_set: [redeem, transfer, hold]
+      utility:
+        redemption_value: 1.8
+        social_payoff: 0.6
+        action_temperature: 0.7
+        exit_propensity: 0.01
+        social_comparison_delta: 0.4
+        reputation_yield: 0.3            # reputation matters less for retailers
+        reputation_decay: 0.04
+      utility_jitter:
+        redemption_value: 0.4
+        social_payoff: 0.3
+    - id: lurker_resident
+      fraction: 0.05
+      role: observer
+      expected_holding_time:
+        expected_periods:
+          min: 12
+          max: 50
+      balance_share: 0.05
+      # Joined the pact but never delivered work. Highest exit rate —
+      # documented "passive registration" pattern in Italian pacts.
+      action_set: [hold]
+      utility:
+        holding_yield: 0.5
+        risk_aversion: 0.6
+        action_temperature: 1.5
+        exit_propensity: 0.03
+        social_comparison_delta: 0.6
+        reputation_yield: 0.1
+        reputation_decay: 0.05
+      utility_jitter:
+        holding_yield: 0.3
+
+governance:
+  # Hybrid: City of Torino (Initiator) sets rate baselines; Cascina Roccafranca staff
+  # co-decide via committee; citizens with SBT vote on changes.
+  type: hybrid
+  rule_structure:
+    emission_rate_adjustment: committee
+    burn_rate_adjustment: committee
+    participant_eligibility: token_holder_vote
+    provider_onboarding: committee
+    exchange_ratios: committee
+    reward_structure_modification: committee
+    system_rule_modification: token_holder_vote
+  monitoring_capacity_gamma:
+    min: 0.7
+    max: 0.95                            # municipal records strong
+  sanction_structure:
+    kind: graduated
+    S_normalized:
+      min: 0.3
+      max: 0.7
+  vote_weighting: reputation_weighted
+  vote_weighting_params:
+    reputation_gini:
+      min: 0.4
+      max: 0.65
+  token_balance_gini:
+    min: 0.35
+    max: 0.60                            # ROCCA distribution more uneven than
+                                          # time-bank's HOUR (associations
+                                          # mint, citizens earn at varying rates)

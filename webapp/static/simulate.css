@@ -317,3 +317,108 @@
   width: 100% !important;
   height: 200px !important;
 }
+
+/* =====================================================================
+ * Severity banner — top-of-results headline showing overall outcome.
+ * ===================================================================== */
+
+.severity-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #d8d8d2;
+  background: #fff;
+  margin: 0.4rem 0 0.9rem 0;
+}
+
+.severity-banner.sev-fail   { background: #fdf3f3; border-color: #d18b8b; }
+.severity-banner.sev-warn   { background: #fdf7e8; border-color: #d2b15a; }
+.severity-banner.sev-pass   { background: #eef7ee; border-color: #82b88a; }
+.severity-banner.sev-inconc { background: #f3f3f6; border-color: #b8b8c2; }
+
+.severity-headline {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.severity-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  font-size: 1.4rem;
+  font-weight: 700;
+  background: #fff;
+  color: #444;
+}
+
+.severity-banner.sev-fail   .severity-icon { background: #b03030; color: #fff; }
+.severity-banner.sev-warn   .severity-icon { background: #b88500; color: #fff; }
+.severity-banner.sev-pass   .severity-icon { background: #2d7a3a; color: #fff; }
+.severity-banner.sev-inconc .severity-icon { background: #6a6a72; color: #fff; }
+
+.severity-text { display: flex; flex-direction: column; }
+
+.severity-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.severity-sub {
+  font-size: 0.85rem;
+  color: #555;
+  margin-top: 0.15rem;
+}
+
+.severity-counts {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.severity-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  background: #fff;
+  border: 1px solid #d8d8d2;
+  border-radius: 12px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.severity-pill .pill-n   { font-weight: 700; }
+.severity-pill .pill-lbl { color: #555; }
+
+.severity-pill.sp-fail   { border-color: #d18b8b; color: #b03030; }
+.severity-pill.sp-pass   { border-color: #82b88a; color: #2d7a3a; }
+.severity-pill.sp-skip   { border-color: #b8b8c2; color: #555; }
+
+/* Sort indicators + clickable rows */
+.summary-table tbody tr { cursor: pointer; }
+.summary-table tbody tr:hover { background: #f5f8fb; }
+
+.summary-table .col-ci    { font-family: ui-monospace, monospace; font-size: 0.82rem; }
+.summary-table .col-runs  { color: #555; font-size: 0.85rem; }
+
+.hint-inline {
+  font-weight: 400;
+  font-size: 0.78rem;
+  color: #555;
+  margin-left: 0.4rem;
+}
+
+/* Flash animation when a summary row jumps to its card. */
+.fm-card.flash {
+  outline: 2px solid #1f5d8c;
+  outline-offset: 4px;
+  transition: outline 0.3s ease;
+}

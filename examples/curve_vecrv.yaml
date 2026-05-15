@@ -176,6 +176,17 @@ participants:
           min: 8
           max: 50
       balance_share: 0.3
+      # Generic CRV holder — neither locked nor LPing. Mixes hold +
+      # sell into market (transfer + redeem) with occasional governance
+      # participation when an emission-gauge vote is live.
+      role: observer
+      action_set: [hold, transfer, redeem, vote]
+      utility:
+        holding_yield: 1.5
+        social_payoff: 1.0
+        redemption_value: 0.8
+        governance_payoff: 0.4
+        action_temperature: 0.9
     - id: liquidity_provider   # contributor role for FM4
       fraction: 0.3
       role: contributor
@@ -184,6 +195,15 @@ participants:
           min: 4
           max: 30
       balance_share: 0.2
+      # Provides liquidity to gauges and harvests CRV emissions (EARN).
+      # Often sells emissions for stables (TRANSFER) but also reinvests
+      # some via redemption-into-LP. Some LPs vote-lock.
+      action_set: [earn, transfer, hold]
+      utility:
+        income_yield: 3.0
+        social_payoff: 1.5
+        holding_yield: 0.4
+        action_temperature: 0.5
     - id: vecrv_locker
       fraction: 0.1
       expected_holding_time:
@@ -191,6 +211,18 @@ participants:
           min: 100
           max: 208            # 4 years × 52 weeks
       balance_share: 0.5
+      # Locks CRV for 1-4 years for vote-escrow rewards. Action loop
+      # mostly STAKEs (locks) and VOTEs on gauge weights. veCRV is
+      # non-transferable so TRANSFER is excluded by token.transferable
+      # downstream anyway, but reflecting it here keeps the softmax
+      # honest.
+      role: governance_only
+      action_set: [stake, vote, hold]
+      utility:
+        holding_yield: 2.5
+        governance_payoff: 3.0
+        risk_aversion: 1.0
+        action_temperature: 0.4
 
 governance:
   type: dao

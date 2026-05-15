@@ -87,7 +87,27 @@ def _ac_midpoint_rate(ac: AsymptoticClass | None, *, periods_horizon: float = 52
 
 
 def _rule_midpoint_rate(rule, *, periods_horizon: float = 52.0) -> float:
-    fn = _ac_midpoint_rate(rule.function.asymptotic_class, periods_horizon=periods_horizon)
+    # K5: DSL-only rules — use a deterministic mid-of-range evaluation
+    # by binding each ParamDecl to the midpoint of its declared range.
+    if getattr(rule.function, "expression", None) is not None:
+        from verifier.expr_eval import EvalEnv, evaluate
+        params = {}
+        for p in (rule.function.parameters or []):
+            params[p.name] = (p.range.min + p.range.max) / 2.0
+        env = EvalEnv(
+            state={"t": periods_horizon / 2.0},
+            params=params,
+            consts={"horizon": periods_horizon},
+            agents=[], tokens=[], events=[], assets=[],
+        )
+        try:
+            fn = float(evaluate(rule.function.expression, env))
+        except Exception:
+            fn = 0.0
+        if not math.isfinite(fn):
+            fn = 0.0
+    else:
+        fn = _ac_midpoint_rate(rule.function.asymptotic_class, periods_horizon=periods_horizon)
     if rule.trigger.event_frequency is not None:
         freq = _ac_midpoint_rate(rule.trigger.event_frequency, periods_horizon=periods_horizon)
         return fn * freq

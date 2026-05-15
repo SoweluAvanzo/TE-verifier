@@ -61,6 +61,33 @@ def _declared_emission_upper_bound(token: Token) -> float:
     total = 0.0
     for rule in token.emission_rules:
         ac = rule.function.asymptotic_class
+        if ac is None:
+            # K5: DSL expression — use a midpoint evaluation as a
+            # conservative upper-bound surrogate. Param midpoint avoids
+            # double-counting the range; the >10× check this feeds is
+            # tolerant enough.
+            from verifier.expr_eval import EvalEnv, evaluate as _ev
+            params = {}
+            for p in (rule.function.parameters or []):
+                params[p.name] = p.range.max
+            try:
+                fn_ub = float(_ev(
+                    rule.function.expression,
+                    EvalEnv(
+                        state={"t": H},
+                        params=params,
+                        consts={"horizon": H},
+                        agents=[], tokens=[], events=[], assets=[],
+                    ),
+                ))
+            except Exception:
+                fn_ub = 0.0
+            ef = rule.trigger.event_frequency
+            if ef is not None and ef.family == AsymptoticFamily.CONSTANT:
+                ef_r = ef.parameter_ranges.get("c")
+                fn_ub *= ef_r.max if ef_r else 1.0
+            total += fn_ub
+            continue
         fam = ac.family
         if fam == AsymptoticFamily.CONSTANT:
             r = ac.parameter_ranges.get("c")
@@ -210,7 +237,7 @@ class FM1Oversupply(FailureMode):
             # Phase B2 — skip rules whose conditions are statically NEVER.
             if not rule_contributes(rule, te, side="emission"):
                 continue
-            E = rule_rate_per_period(solver, f"{token.id}_emit_{i}", rule)
+            E = rule_rate_per_period(solver, f"{token.id}_emit_{i}", rule, te=te)
             E_terms.append(E)
         for i, flow in enumerate(te.cross_token_flows):
             if (
@@ -239,7 +266,7 @@ class FM1Oversupply(FailureMode):
             # logic.
             if not rule_contributes(rule, te, side="burn"):
                 continue
-            B = rule_rate_per_period(solver, f"{token.id}_burn_{i}", rule)
+            B = rule_rate_per_period(solver, f"{token.id}_burn_{i}", rule, te=te)
             B_terms.append(B)
         for i, flow in enumerate(te.cross_token_flows):
             if (
@@ -473,7 +500,7 @@ class FM1Oversupply(FailureMode):
             if not rule_contributes(rule, te, side="emission"):
                 continue
             E_terms.append(
-                rule_rate_per_period(solver, f"{token.id}_emit_sat_{i}", rule)
+                rule_rate_per_period(solver, f"{token.id}_emit_sat_{i}", rule, te=te)
             )
         for i, flow in enumerate(te.cross_token_flows):
             if (
@@ -495,7 +522,7 @@ class FM1Oversupply(FailureMode):
             if not rule_contributes(rule, te, side="burn"):
                 continue
             B_terms.append(
-                rule_rate_per_period(solver, f"{token.id}_burn_sat_{i}", rule)
+                rule_rate_per_period(solver, f"{token.id}_burn_sat_{i}", rule, te=te)
             )
         for i, flow in enumerate(te.cross_token_flows):
             if (

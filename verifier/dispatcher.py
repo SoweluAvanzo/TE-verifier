@@ -25,6 +25,25 @@ class Severity(str, Enum):
     FAIL = "fail"
 
 
+class FunctionShapeDescription(BaseModel):
+    """Derived shape label for a Rule's function (Phase G / Task 3).
+
+    Computed deterministically from the AsymptoticFamily + coefficient
+    range sign — no user input, just a sanity echo of what the spec
+    actually describes so the user can spot mis-set coefficients."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    token_id: str
+    rule_kind: str
+    rule_index: int
+    family: str
+    degree: int | None = None
+    monotonicity: str
+    convexity: str
+    summary: str
+
+
 class Report(BaseModel):
     """Aggregated verifier output for a single TokenEconomy."""
 
@@ -36,6 +55,7 @@ class Report(BaseModel):
     summary: dict[str, int] = Field(default_factory=dict)
     coherence_issues: list[CoherenceIssue] = Field(default_factory=list)
     overall_risk: OverallRiskScore | None = None
+    function_shapes: list[FunctionShapeDescription] = Field(default_factory=list)
 
     def failures(self) -> list[Verdict]:
         return [v for v in self.verdicts if v.status == Status.FAIL]
@@ -70,6 +90,18 @@ class Report(BaseModel):
                 lines.append(f"  [{ci.severity}] {ci.location}")
                 lines.append(f"    {ci.message}")
                 lines.append(f"    → {ci.suggestion}")
+            lines.append("")
+        if self.function_shapes:
+            lines.append("## Function shapes (derived)")
+            for s in self.function_shapes:
+                label = f"{s.token_id}.{s.rule_kind}"
+                if s.rule_index >= 0 and "regime" not in s.rule_kind:
+                    label += f"[{s.rule_index}]"
+                deg = f"(degree={s.degree})" if s.degree else ""
+                lines.append(
+                    f"  · {label}: {s.family}{deg} — "
+                    f"{s.monotonicity}, {s.convexity}. {s.summary}"
+                )
             lines.append("")
         for fm_name, group in self.by_failure_mode().items():
             lines.append(f"## {fm_name}")
@@ -191,12 +223,47 @@ def verify(
     # PASS / NOT_APPLICABLE.
     refine_verdicts(te, verdicts)
     issues = coherence_violations(te, verdicts=verdicts)
+    # Sign-soundness check: surfaces mint rules whose declared parameter
+    # box admits a strictly-negative rate (mathematically impossible
+    # mint) as an error-level coherence issue. Burn rules dual.
+    from verifier.elicitation import CoherenceIssue as _CI
+    from verifier.sign_validation import validate_signs
+    for sv in validate_signs(te):
+        issues.append(_CI(
+            severity="error",
+            location=f"tokens.{sv.token_id}.{sv.rule_kind}_rules[{sv.rule_index}].function",
+            message=sv.explanation,
+            suggestion=(
+                "Set the leading-coefficient lower bound such that the "
+                "rate stays ≥ 0 across the horizon. Concretely: pick a "
+                "non-negative ``parameter_ranges['a'].min`` (and "
+                "``parameter_ranges['b'].min`` for offset terms) so the "
+                "worst-case rate doesn't go below zero."
+            ),
+        ))
     # Coherence errors escalate the report to FAIL severity even if
     # every FM individually passed — the IR is internally inconsistent.
     severity = _severity_of(summary)
     if any(i.severity == "error" for i in issues) and severity == Severity.OK:
         severity = Severity.WARN
     overall = compute_overall_score(verdicts, issues)
+    # Task 3 — derive function-shape labels for every rule. Surfaced
+    # on the Report so the verdict UI can echo "linear (a < 0):
+    # decreasing, linear" back at the user.
+    from verifier.shape_summary import describe_shapes
+    shapes = [
+        FunctionShapeDescription(
+            token_id=s.token_id,
+            rule_kind=s.rule_kind,
+            rule_index=s.rule_index,
+            family=s.family,
+            degree=s.degree,
+            monotonicity=s.monotonicity,
+            convexity=s.convexity,
+            summary=s.summary,
+        )
+        for s in describe_shapes(te)
+    ]
     return Report(
         te_name=te.meta.name,
         verdicts=verdicts,
@@ -204,6 +271,7 @@ def verify(
         summary=summary,
         coherence_issues=issues,
         overall_risk=overall,
+        function_shapes=shapes,
     )
 
 

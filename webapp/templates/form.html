@@ -8,11 +8,14 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='form.css') }}" />
 </head>
 <body>
+  {% set current_step = 1 %}{% include '_step_nav.html' %}
   <header class="page-header compact">
     <div class="header-row">
       <h1>Token Economy Verifier</h1>
       <nav>
         <a href="/yaml" class="nav-link">Advanced (YAML editor) →</a>
+        <a href="/simulate" class="nav-link">Monte Carlo →</a>
+        <a href="/explore" class="nav-link">Trajectory explorer →</a>
       </nav>
     </div>
     <p class="subtitle">
@@ -296,56 +299,136 @@
           </div>
           <div class="rule-grid">
             <div class="field">
-              <label>Trigger</label>
-              <select class="rule-trigger">
-                {% for et in emission_triggers %}
-                <option value="{{ et }}">{{ et.replace('_', ' ') }}</option>
-                {% endfor %}
+              <label>Linked event <small>(from the Events catalog above)</small></label>
+              <select class="rule-event-id">
+                <option value="">— pick an event —</option>
               </select>
+              <p class="hint hint-inline">
+                Define the event in Stage 4 first. The rule fires when the
+                linked event fires; the event carries the kind + frequency.
+              </p>
             </div>
-            <div class="field">
-              <label>Sign</label>
-              <select class="rule-sign">
-                {% for s in function_signs %}
-                <option value="{{ s }}" {% if s == 'always_positive' %}selected{% endif %}>{{ s.replace('_', ' ') }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="field">
-              <label>Frequency family</label>
+            <!-- Mint sign is intrinsic (rate ≥ 0); not a user choice.
+                 Whether the function rises, falls, or curves is now
+                 expressed through the asymptotic family + the sign of
+                 the leading coefficient. The schema's FunctionSign
+                 enum is filled in automatically by the form. -->
+            <div class="field rule-freq-block" hidden>
+              <label>Event frequency family <small>(events per period)</small></label>
+              <p class="hint hint-inline">
+                How many trigger events fire per period. Only shown when
+                the trigger is event-based (behavioral / physical / demand /
+                rule / threshold). For <code>time_based</code> the trigger
+                fires exactly once per period, so this field is hidden.
+              </p>
               <select class="rule-freq-family">
                 <option value="constant">constant</option>
-                <option value="linear">linear</option>
+                <option value="linear">linear (a·t + b)</option>
+                <option value="polynomial:2">quadratic (a·t² + b)</option>
+                <option value="polynomial:3">cubic (a·t³ + b)</option>
+                <option value="polynomial:4">quartic (a·t⁴ + b)</option>
+                <option value="sublinear_root:2">√t (square root)</option>
+                <option value="sublinear_root:3">∛t (cube root)</option>
+                <option value="log">logarithmic (a·log(t) + b)</option>
+                <option value="exponential">exponential (a·bᵗ)</option>
                 <option value="bounded_range">bounded_range</option>
                 <option value="unspecified">unspecified</option>
               </select>
             </div>
-            <div class="field range-field">
-              <label>Frequency range</label>
+            <div class="field range-field rule-freq-block" hidden>
+              <label>Event frequency range <small>(events per period)</small></label>
               <div class="range">
-                <input type="number" class="rule-freq-min" step="any" placeholder="min" />
+                <input type="number" class="rule-freq-min" min="0" step="any" placeholder="min" />
                 <span>to</span>
-                <input type="number" class="rule-freq-max" step="any" placeholder="max" />
+                <input type="number" class="rule-freq-max" min="0" step="any" placeholder="max" />
               </div>
             </div>
             <div class="field">
-              <label>Function class</label>
+              <label class="rule-fn-family-label">Function class
+                <small class="rule-fn-family-unit">(tokens per period)</small></label>
               <select class="rule-fn-family">
                 <option value="constant">constant</option>
-                <option value="linear">linear</option>
+                <option value="linear">linear (a·t + b)</option>
+                <option value="polynomial:2">quadratic (a·t² + b)</option>
+                <option value="polynomial:3">cubic (a·t³ + b)</option>
+                <option value="polynomial:4">quartic (a·t⁴ + b)</option>
+                <option value="sublinear_root:2">√t (square root)</option>
+                <option value="sublinear_root:3">∛t (cube root)</option>
+                <option value="log">logarithmic (a·log(t) + b)</option>
+                <option value="exponential">exponential (a·bᵗ)</option>
                 <option value="bounded_range">bounded_range</option>
                 <option value="unspecified">unspecified</option>
+                <option value="expression">expression (advanced DSL)</option>
               </select>
             </div>
             <div class="field range-field">
-              <label>Tokens per trigger</label>
+              <label class="rule-fn-range-label">Tokens-per-period range</label>
+              <p class="hint hint-inline rule-fn-range-hint">
+                For event-driven triggers the effective rate is
+                <em>tokens-per-event × event-frequency</em>; this field
+                covers the first factor.
+              </p>
               <div class="range">
-                <input type="number" class="rule-fn-min" step="any" placeholder="min" />
+                <input type="number" class="rule-fn-min" step="any" placeholder="min (negative ⇒ decreasing)" />
                 <span>to</span>
                 <input type="number" class="rule-fn-max" step="any" placeholder="max" />
               </div>
             </div>
+            <!-- Phase K DSL: shown when family=expression. Authors a
+                 state-dependent function as a textual expression plus a
+                 named-parameter list. See docs/dsl-reference.md. -->
+            <div class="field rule-fn-dsl" hidden>
+              <label>DSL expression
+                <small>(state-dependent — references event.*, state.*, param.*, agent.*)</small>
+              </label>
+              <textarea class="rule-fn-expression" rows="2"
+                        placeholder='e.g. event.amount * event.duration / param.max_lock_periods'></textarea>
+              <p class="hint hint-inline">
+                Surface syntax — parsed server-side on submit.
+                See <a href="https://github.com/" onclick="event.preventDefault()" title="docs/dsl-reference.md">DSL reference</a>
+                for namespaces, operators, and the decidable subset Z3
+                accepts.
+              </p>
+              <div class="rule-fn-params">
+                <label>Parameters</label>
+                <div class="rule-fn-params-list"></div>
+                <button type="button" class="add-rule-fn-param ghost">+ Add parameter</button>
+                <p class="hint hint-inline">Each <code>param.NAME</code>
+                  used inside the expression needs a declared range.</p>
+              </div>
+            </div>
+            <div class="field">
+              <label>Event label (free-text)</label>
+              <input type="text" class="rule-event-predicate"
+                     placeholder="e.g. service_delivered" />
+              <p class="hint hint-inline">Optional. Used by EventOccurrence
+              conditions on OTHER rules to refer to this rule's event.</p>
+            </div>
           </div>
+          <details class="rule-conditions">
+            <summary>Conditions (rule active when…)</summary>
+            <p class="hint">
+              Restrict when this rule contributes. Combined with AND.
+              <code>threshold</code>: compare a system variable (t / M / Q / N / K)
+              to a value. <code>time window</code>: rule active only inside
+              <code>[start, end]</code> periods. <code>event occurrence</code>:
+              rule active iff a labelled event exists on another token.
+            </p>
+            <div class="rule-conditions-list"></div>
+            <button type="button" class="add-rule-condition ghost">+ Add condition</button>
+          </details>
+          <details class="rule-regimes">
+            <summary>Regime switches (piecewise function — sticky)</summary>
+            <p class="hint">
+              Replace this rule's function shape once a condition fires.
+              Useful for "quadratic up to t=30 then constant" style
+              specifications. Predicates reuse the same structured
+              conditions; the first matching regime wins, stays active
+              once fired (sticky).
+            </p>
+            <div class="rule-regimes-list"></div>
+            <button type="button" class="add-rule-regime ghost">+ Add regime switch</button>
+          </details>
           <details class="rule-schedule">
             <summary>Advanced (cap, halving, vesting)</summary>
             <p class="hint">
@@ -358,7 +441,7 @@
                 <input type="checkbox" class="schedule-cap-toggle" />
                 <span>Total cap on tokens minted</span>
               </label>
-              <input type="number" class="schedule-cap-value" step="any" placeholder="cap (e.g. 21000000)" hidden />
+              <input type="number" class="schedule-cap-value" min="0" step="any" placeholder="cap (e.g. 21000000)" hidden />
             </div>
             <div class="field schedule-row">
               <label class="checkbox">
@@ -379,19 +462,19 @@
             </div>
           </details>
           <details class="rule-distribution">
-            <summary>Stochastic envelope (ABM-only)</summary>
+            <summary>Stochastic (ABM-only)</summary>
             <p class="hint">
               Opt this rule into per-period noise during simulation.
               The verifier sees only the support of the distribution
               (μ±3σ for Normal, [low, high] for Uniform); the ABM
-              samples from the distribution each period. Without an
-              envelope, the rate is sampled once per run and held
-              constant.
+              samples from the distribution each period. Without a
+              stochastic spec, the rate is sampled once per run and
+              held constant.
             </p>
             <div class="field schedule-row">
               <label class="checkbox">
                 <input type="checkbox" class="dist-toggle" />
-                <span>Add a distribution envelope</span>
+                <span>Add a distribution</span>
               </label>
             </div>
             <div class="dist-grid" hidden>
@@ -419,50 +502,99 @@
           </div>
           <div class="rule-grid">
             <div class="field">
-              <label>Trigger</label>
-              <select class="rule-trigger">
-                {% for bt in burn_triggers %}
-                <option value="{{ bt }}">{{ bt.replace('_', ' ') }}</option>
-                {% endfor %}
+              <label>Linked event <small>(from the Events catalog above)</small></label>
+              <select class="rule-event-id">
+                <option value="">— pick an event —</option>
               </select>
             </div>
-            <div class="field">
-              <label>Frequency family</label>
+            <div class="field rule-freq-block" hidden>
+              <label>Event frequency family <small>(events per period)</small></label>
+              <p class="hint hint-inline">
+                How many trigger events fire per period. Only shown when
+                the trigger is event-based (behavioral / physical / demand /
+                rule / threshold). For <code>time_based</code> the trigger
+                fires exactly once per period, so this field is hidden.
+              </p>
               <select class="rule-freq-family">
                 <option value="constant">constant</option>
-                <option value="linear">linear</option>
+                <option value="linear">linear (a·t + b)</option>
+                <option value="polynomial:2">quadratic (a·t² + b)</option>
+                <option value="polynomial:3">cubic (a·t³ + b)</option>
+                <option value="polynomial:4">quartic (a·t⁴ + b)</option>
+                <option value="sublinear_root:2">√t (square root)</option>
+                <option value="sublinear_root:3">∛t (cube root)</option>
+                <option value="log">logarithmic (a·log(t) + b)</option>
+                <option value="exponential">exponential (a·bᵗ)</option>
                 <option value="bounded_range">bounded_range</option>
                 <option value="unspecified">unspecified</option>
               </select>
             </div>
-            <div class="field range-field">
-              <label>Frequency range</label>
+            <div class="field range-field rule-freq-block" hidden>
+              <label>Event frequency range <small>(events per period)</small></label>
               <div class="range">
-                <input type="number" class="rule-freq-min" step="any" placeholder="min" />
+                <input type="number" class="rule-freq-min" min="0" step="any" placeholder="min" />
                 <span>to</span>
-                <input type="number" class="rule-freq-max" step="any" placeholder="max" />
+                <input type="number" class="rule-freq-max" min="0" step="any" placeholder="max" />
               </div>
             </div>
             <div class="field">
-              <label>Function class</label>
+              <label class="rule-fn-family-label">Function class
+                <small class="rule-fn-family-unit">(tokens per period)</small></label>
               <select class="rule-fn-family">
                 <option value="constant">constant</option>
-                <option value="linear">linear</option>
+                <option value="linear">linear (a·t + b)</option>
+                <option value="polynomial:2">quadratic (a·t² + b)</option>
+                <option value="polynomial:3">cubic (a·t³ + b)</option>
+                <option value="polynomial:4">quartic (a·t⁴ + b)</option>
+                <option value="sublinear_root:2">√t (square root)</option>
+                <option value="sublinear_root:3">∛t (cube root)</option>
+                <option value="log">logarithmic (a·log(t) + b)</option>
+                <option value="exponential">exponential (a·bᵗ)</option>
                 <option value="bounded_range">bounded_range</option>
                 <option value="unspecified">unspecified</option>
               </select>
             </div>
             <div class="field range-field">
-              <label>Tokens per trigger</label>
+              <label class="rule-fn-range-label">Tokens-per-period range</label>
+              <p class="hint hint-inline rule-fn-range-hint">
+                For event-driven triggers the effective rate is
+                <em>tokens-per-event × event-frequency</em>; this field
+                covers the first factor.
+              </p>
               <div class="range">
-                <input type="number" class="rule-fn-min" step="any" placeholder="min" />
+                <input type="number" class="rule-fn-min" step="any" placeholder="min (negative ⇒ decreasing)" />
                 <span>to</span>
                 <input type="number" class="rule-fn-max" step="any" placeholder="max" />
               </div>
             </div>
+            <div class="field">
+              <label>Event label (free-text)</label>
+              <input type="text" class="rule-event-predicate"
+                     placeholder="e.g. coupon_redeemed_at_retailer" />
+              <p class="hint hint-inline">Optional. Used by EventOccurrence
+              conditions on OTHER rules to refer to this rule's event.</p>
+            </div>
           </div>
+          <details class="rule-conditions">
+            <summary>Conditions (rule active when…)</summary>
+            <p class="hint">
+              Restrict when this rule contributes. Combined with AND.
+              Same condition kinds as on mint rules.
+            </p>
+            <div class="rule-conditions-list"></div>
+            <button type="button" class="add-rule-condition ghost">+ Add condition</button>
+          </details>
+          <details class="rule-regimes">
+            <summary>Regime switches (piecewise function — sticky)</summary>
+            <p class="hint">
+              Replace this rule's function shape once a condition fires.
+              Sticky — once activated, the regime stays active.
+            </p>
+            <div class="rule-regimes-list"></div>
+            <button type="button" class="add-rule-regime ghost">+ Add regime switch</button>
+          </details>
           <details class="rule-distribution">
-            <summary>Stochastic envelope (ABM-only)</summary>
+            <summary>Stochastic (ABM-only)</summary>
             <p class="hint">
               Opt this burn rule into per-period noise during
               simulation. Same semantics as on the mint rules above.
@@ -470,7 +602,7 @@
             <div class="field schedule-row">
               <label class="checkbox">
                 <input type="checkbox" class="dist-toggle" />
-                <span>Add a distribution envelope</span>
+                <span>Add a distribution</span>
               </label>
             </div>
             <div class="dist-grid" hidden>
@@ -527,23 +659,322 @@
             <div class="field range-field xt-ratio-field" hidden>
               <label>Coupling ratio</label>
               <div class="range">
-                <input type="number" class="xt-ratio-min" step="any" placeholder="min" />
+                <input type="number" class="xt-ratio-min" min="0" step="any" placeholder="min" />
                 <span>to</span>
-                <input type="number" class="xt-ratio-max" step="any" placeholder="max" />
+                <input type="number" class="xt-ratio-max" min="0" step="any" placeholder="max" />
               </div>
             </div>
             <div class="field xt-amount-block">
               <label>Amount class (independent flows)</label>
               <select class="xt-amount-family">
                 <option value="constant">constant</option>
-                <option value="linear">linear</option>
+                <option value="linear">linear (a·t + b)</option>
+                <option value="polynomial:2">quadratic (a·t² + b)</option>
+                <option value="polynomial:3">cubic (a·t³ + b)</option>
+                <option value="sublinear_root:2">√t (square root)</option>
+                <option value="log">logarithmic (a·log(t) + b)</option>
+                <option value="exponential">exponential (a·bᵗ)</option>
                 <option value="bounded_range">bounded_range</option>
               </select>
               <div class="range">
-                <input type="number" class="xt-amount-min" step="any" placeholder="min" />
+                <input type="number" class="xt-amount-min" min="0" step="any" placeholder="min" />
                 <span>to</span>
-                <input type="number" class="xt-amount-max" step="any" placeholder="max" />
+                <input type="number" class="xt-amount-max" min="0" step="any" placeholder="max" />
               </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ====================================================== Condition row -->
+      <!-- Re-used by rule.conditions, rule.regimes, and population_events. -->
+      <template id="condition-row-tpl">
+        <div class="condition-row">
+          <select class="cond-kind">
+            <option value="threshold">threshold</option>
+            <option value="time_window">time window</option>
+            <option value="event_occurrence">event occurrence</option>
+          </select>
+          <div class="cond-fields cond-threshold">
+            <select class="cond-thr-var">
+              {% for v in threshold_vars %}
+              <option value="{{ v }}">{{ v }}</option>
+              {% endfor %}
+            </select>
+            <select class="cond-thr-op">
+              {% for o in threshold_ops %}
+              <option value="{{ o }}">{{ o }}</option>
+              {% endfor %}
+            </select>
+            <input type="number" class="cond-thr-value" step="any" placeholder="value" />
+          </div>
+          <div class="cond-fields cond-time" hidden>
+            <input type="number" class="cond-time-start" min="0" step="1" placeholder="start period" />
+            <span>to</span>
+            <input type="number" class="cond-time-end" min="0" step="1" placeholder="end (blank = open)" />
+          </div>
+          <div class="cond-fields cond-event" hidden>
+            <select class="cond-event-id">
+              <option value="">— pick an event —</option>
+            </select>
+            <!-- Legacy back-compat inputs (hidden by default; only used
+                 when the prefilled IR carries source_token/source_event
+                 and the event_id can't be resolved). -->
+            <input type="text" class="cond-event-token" placeholder="legacy: source token id" hidden />
+            <input type="text" class="cond-event-evt" placeholder="legacy: event label" hidden />
+          </div>
+          <button type="button" class="remove-condition ghost-danger" title="Remove condition">×</button>
+        </div>
+      </template>
+
+      <!-- ====================================================== Regime row -->
+      <template id="regime-row-tpl">
+        <div class="regime-row">
+          <div class="regime-row-head">
+            <span class="regime-label">When this condition fires, swap to:</span>
+            <button type="button" class="remove-regime ghost-danger" title="Remove regime">×</button>
+          </div>
+          <div class="regime-predicate"></div>
+          <div class="regime-grid">
+            <!-- Regime sign inherits the parent rule (mint ⇒ always_positive,
+                 burn ⇒ always_negative). Shape of the regime curve is
+                 captured by the family + signed coefficients below. -->
+            <div class="field">
+              <label>Regime function class</label>
+              <select class="regime-fn-family">
+                <option value="constant">constant</option>
+                <option value="linear">linear (a·t + b)</option>
+                <option value="polynomial:2">quadratic (a·t² + b)</option>
+                <option value="polynomial:3">cubic (a·t³ + b)</option>
+                <option value="sublinear_root:2">√t (square root)</option>
+                <option value="log">logarithmic (a·log(t) + b)</option>
+                <option value="exponential">exponential (a·bᵗ)</option>
+                <option value="bounded_range">bounded_range</option>
+                <option value="unspecified">unspecified</option>
+              </select>
+            </div>
+            <div class="field range-field">
+              <label>Regime rate range</label>
+              <div class="range">
+                <input type="number" class="regime-fn-min" step="any" placeholder="min (negative ⇒ decreasing)" />
+                <span>to</span>
+                <input type="number" class="regime-fn-max" step="any" placeholder="max" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- =================================================== Stage 4 — Events catalog -->
+      <section class="form-stage" id="stage-events">
+        <header class="stage-header">
+          <h2><span class="stage-num">4</span> Events <small>(catalog)</small></h2>
+        </header>
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            Define every event that drives token mints, burns, or
+            population changes here once. Mint / burn rules and condition
+            predicates reference these events by id — no inline trigger
+            definitions any more.
+          </p>
+          <p>
+            Each event captures (1) its kind — time_based / behavioral /
+            physical_resource_flow / algorithmic / demand_driven / etc. —
+            and (2) its <em>frequency</em>, an asymptotic class describing
+            how many firings per period. For pure time-based events the
+            frequency is implicitly 1 (leave it empty).
+          </p>
+        </details>
+
+        <div id="events-container"></div>
+        <button type="button" class="ghost" id="add-event-btn">+ Add event</button>
+      </section>
+
+      <template id="event-row-tpl">
+        <div class="event-row" data-eidx="__EIDX__">
+          <div class="event-row-head">
+            <h4>Event #__EIDX__</h4>
+            <button type="button" class="remove-event ghost-danger">remove</button>
+          </div>
+          <div class="event-grid">
+            <div class="field">
+              <label>ID <small>(referenced by rules)</small></label>
+              <input type="text" class="event-id" placeholder="e.g. service_delivered" required />
+            </div>
+            <div class="field">
+              <label>Label</label>
+              <input type="text" class="event-label" placeholder="Plain-English description" />
+            </div>
+            <div class="field">
+              <label>Kind</label>
+              <select class="event-kind">
+                <option value="time_based">time_based</option>
+                <option value="behavioral">behavioral</option>
+                <option value="physical_resource_flow">physical_resource_flow</option>
+                <option value="algorithmic">algorithmic</option>
+                <option value="demand_driven">demand_driven</option>
+                <option value="rule_driven">rule_driven</option>
+                <option value="threshold_driven">threshold_driven</option>
+                <option value="expiry">expiry</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+            <div class="field event-freq-block">
+              <label>Frequency family <small>(events / period)</small></label>
+              <select class="event-freq-family">
+                <option value="">— none (time-based) —</option>
+                <option value="constant">constant</option>
+                <option value="linear">linear (a·t + b)</option>
+                <option value="polynomial:2">quadratic</option>
+                <option value="polynomial:3">cubic</option>
+                <option value="sublinear_root:2">√t</option>
+                <option value="log">logarithmic</option>
+                <option value="exponential">exponential</option>
+                <option value="bounded_range">bounded_range</option>
+                <option value="unspecified">unspecified</option>
+              </select>
+            </div>
+            <div class="field range-field event-freq-block">
+              <label>Frequency range</label>
+              <div class="range">
+                <input type="number" class="event-freq-min" min="0" step="any" placeholder="min" />
+                <span>to</span>
+                <input type="number" class="event-freq-max" min="0" step="any" placeholder="max" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- =================================================== Stage 4.1 — Non-tokenized assets (sub-stage of Events) -->
+      <section class="form-stage" id="stage-assets">
+        <header class="stage-header">
+          <h2><span class="stage-num">4.1</span> Non-tokenized assets</h2>
+        </header>
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            Goods, services, badges, NFTs that participate in the
+            economy without being fungible tokens themselves. The ABM
+            tracks per-asset inventory + cumulative creation /
+            consumption; the verifier treats them as redemption sinks
+            for FM3 burn-pathway feasibility.
+          </p>
+          <p>
+            Mark <code>unique=true</code> for NFTs (single spawn).
+            Creation / consumption shapes mirror token mint / burn rules.
+          </p>
+        </details>
+
+        <div id="assets-container"></div>
+        <button type="button" class="ghost" id="add-asset-btn">+ Add non-tokenized asset</button>
+      </section>
+
+      <template id="asset-row-tpl">
+        <div class="asset-row" data-aidx="__AIDX__">
+          <div class="asset-row-head">
+            <h4>Asset #__AIDX__</h4>
+            <button type="button" class="remove-asset ghost-danger">remove</button>
+          </div>
+          <div class="asset-grid">
+            <div class="field">
+              <label>ID</label>
+              <input type="text" class="asset-id" placeholder="e.g. coupon_item" />
+            </div>
+            <div class="field">
+              <label>Label</label>
+              <input type="text" class="asset-label" placeholder="Plain-English description" />
+            </div>
+            <div class="field">
+              <label>Kind</label>
+              <select class="asset-kind">
+                <option value="service">service</option>
+                <option value="good">good</option>
+                <option value="badge">badge</option>
+                <option value="nft">nft</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="checkbox-inline">
+                <input type="checkbox" class="asset-unique" /> Unique (non-fungible)
+              </label>
+            </div>
+          </div>
+          <details class="asset-shapes">
+            <summary>Creation / consumption shapes</summary>
+            <div class="asset-grid">
+              <div class="field">
+                <label>Creation family</label>
+                <select class="asset-create-family">
+                  <option value="">— none —</option>
+                  <option value="constant">constant</option>
+                  <option value="linear">linear</option>
+                  <option value="polynomial:2">quadratic</option>
+                  <option value="log">logarithmic</option>
+                  <option value="exponential">exponential</option>
+                  <option value="bounded_range">bounded_range</option>
+                </select>
+              </div>
+              <div class="field range-field">
+                <label>Creation range</label>
+                <div class="range">
+                  <input type="number" class="asset-create-min" min="0" step="any" placeholder="min" />
+                  <span>to</span>
+                  <input type="number" class="asset-create-max" min="0" step="any" placeholder="max" />
+                </div>
+              </div>
+              <div class="field">
+                <label>Consumption family</label>
+                <select class="asset-consume-family">
+                  <option value="">— none —</option>
+                  <option value="constant">constant</option>
+                  <option value="linear">linear</option>
+                  <option value="polynomial:2">quadratic</option>
+                  <option value="log">logarithmic</option>
+                  <option value="exponential">exponential</option>
+                  <option value="bounded_range">bounded_range</option>
+                </select>
+              </div>
+              <div class="field range-field">
+                <label>Consumption range</label>
+                <div class="range">
+                  <input type="number" class="asset-consume-min" min="0" step="any" placeholder="min" />
+                  <span>to</span>
+                  <input type="number" class="asset-consume-max" min="0" step="any" placeholder="max" />
+                </div>
+              </div>
+            </div>
+          </details>
+          <div class="asset-grid">
+            <div class="field range-field">
+              <label>Redemption cost (tokens / unit)</label>
+              <div class="range">
+                <input type="number" class="asset-cost-min" min="0" step="any" placeholder="min" />
+                <span>to</span>
+                <input type="number" class="asset-cost-max" min="0" step="any" placeholder="max" />
+              </div>
+            </div>
+            <div class="field">
+              <label>Tokens that pay for this asset</label>
+              <input type="text" class="asset-referenced-tokens" placeholder="comma-separated token ids (e.g. PDT, CVT)" />
+            </div>
+            <div class="field">
+              <label>Variety contribution
+                <small>(Likert 1–5 → distinct sub-offers this record stands for)</small>
+              </label>
+              <select class="asset-variety-likert">
+                <option value="1">1 — one homogeneous good (K += 1)</option>
+                <option value="2">2 — narrow variety (K += 3)</option>
+                <option value="3">3 — moderate variety (K += 5)</option>
+                <option value="4">4 — broad variety (K += 10)</option>
+                <option value="5">5 — very broad variety (K += 20)</option>
+              </select>
+              <p class="hint hint-inline">
+                Sums across all asset records referencing a token to derive
+                the token's <code>offer_variety_K</code> (paper §3.4). Set
+                high when one record stands in for a whole category.
+              </p>
             </div>
           </div>
         </div>
@@ -748,7 +1179,12 @@
           <select id="part-growth" name="part-growth">
             <option value="constant">constant (g ≈ 0)</option>
             <option value="linear">linear (steady growth)</option>
-            <option value="bounded_range">bounded_range (with explicit min/max)</option>
+            <option value="polynomial:2">quadratic (accelerating)</option>
+            <option value="polynomial:3">cubic</option>
+            <option value="sublinear_root:2">√t (slowing)</option>
+            <option value="log">logarithmic (saturating)</option>
+            <option value="exponential">exponential (compounding)</option>
+            <option value="bounded_range">bounded_range (explicit min/max)</option>
             <option value="unspecified">unspecified — verifier sweeps</option>
           </select>
         </div>
@@ -806,6 +1242,21 @@
         </div>
 
         <button type="button" id="add-agent-btn" class="ghost">+ Add agent type</button>
+
+        <details class="stage-extras">
+          <summary>Population events (mid-simulation spawn / despawn / utility shift)</summary>
+          <p class="hint">
+            Schedule changes to the agent population that fire at a
+            specific period during simulation. Use this for stress
+            tests like "what if 30 % of consumers leave at period 50"
+            or "what if the staking yield doubles at period 100".
+            Leave empty for static populations.
+          </p>
+          <div id="pop-events-container">
+            <!-- Population-event rows injected by JS -->
+          </div>
+          <button type="button" id="add-pop-event-btn" class="ghost">+ Add population event</button>
+        </details>
       </section>
 
       <!-- =================================================== Stage 8 — NFRs -->
@@ -863,6 +1314,8 @@
       <!-- =================================================== Submit -->
       <section class="form-actions">
         <button type="button" id="verify-btn" class="primary">▶ Verify</button>
+        <button type="button" id="simulate-direct-btn" class="ghost" title="Send the form-built spec to the Monte Carlo simulator.">▶ Monte Carlo</button>
+        <button type="button" id="explore-direct-btn" class="ghost" title="Send the form-built spec to the trajectory explorer.">▶ Explore trajectory</button>
         <button type="button" id="download-btn" class="ghost">⬇ Download YAML</button>
         <span id="verify-status"></span>
       </section>
@@ -891,31 +1344,26 @@
       <div id="verdict-content" hidden>
         <div class="verdict-header">
           <h2>Verdict</h2>
-          <div class="view-toggle">
-            <button type="button" class="view-toggle-btn active" data-view="rich">
-              Rich
-            </button>
-            <button type="button" class="view-toggle-btn" data-view="minimal">
-              Minimal (reachability)
-            </button>
-          </div>
         </div>
-        <div id="rich-view">
-          <div id="report-summary"></div>
-          <div id="coherence-issues"></div>
-          <div id="verdict-cards"></div>
-        </div>
-        <div id="minimal-view" hidden>
+        <div id="coherence-issues"></div>
+        <div id="minimal-view">
           <p class="hint">
-            The minimal reachability output. Same format the ABM
-            simulator and cadCAD export consume. Each verdict reports
-            whether violation/satisfaction is reachable in the
-            declared parameter box, the binding threshold, and the
-            structured safety predicates.
+            Reachability summary — same format the ABM simulator and
+            cadCAD export consume. Each verdict reports whether
+            violation/satisfaction is reachable in the declared parameter
+            box, the binding threshold, and the structured safety
+            predicates.
             <a href="/simulate" class="nav-link">Run the ABM →</a>
+            <a href="/explore" class="nav-link">Explore one trajectory →</a>
           </p>
           <div id="minimal-table"></div>
         </div>
+        <!-- Hidden stubs retained so verdict.js renderReport can still
+             populate the cached report payload without DOM lookups
+             erroring. Display is suppressed; the minimal table above is
+             the user-facing surface. -->
+        <div id="report-summary" hidden></div>
+        <div id="verdict-cards" hidden></div>
       </div>
     </aside>
   </main>
@@ -935,7 +1383,9 @@
 {
   "agent_roles": {{ agent_roles | tojson }},
   "asymptotic_families": {{ asymptotic_families | tojson }},
-  "function_signs": {{ function_signs | tojson }}
+  "function_signs": {{ function_signs | tojson }},
+  "action_kinds": {{ action_kinds | tojson }},
+  "population_event_kinds": {{ population_event_kinds | tojson }}
 }
   </script>
   <script src="{{ url_for('static', filename='form.js') }}"></script>

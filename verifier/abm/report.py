@@ -34,6 +34,11 @@ class SimulationConfig(BaseModel):
     # per period for the trajectory chart. Off by default — recording
     # roughly doubles simulation time and inflates report size.
     record_trajectories: bool = False
+    # Phase-A ABM agent count cap. ``None`` ⇒ derive from
+    # ``DEFAULT_MAX_AGENTS`` capped by the workload budget (so very
+    # large n_runs × horizon doesn't push the inner loop into hours).
+    # Pass an explicit value to override entirely (useful for tests).
+    max_agents: int | None = Field(default=None, ge=1, le=10_000)
 
 
 class TrajectoryPoint(BaseModel):

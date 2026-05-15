@@ -1,0 +1,306 @@
+# Curve / veCRV — vote-escrow governance pair.  (Phase K DSL variant.)
+#
+# Same TE as curve_vecrv.yaml except the veCRV emission rule uses the
+# Phase-K state-dependent DSL expression
+#
+#     veCRV minted per lock = event.amount * event.duration / param.max_lock_periods
+#
+# fed by a top-level ``user_locks_crv`` event with typed payload, instead
+# of the legacy aggregate ``linear`` AsymptoticClass approximation. The
+# rest of the TE (CRV emission, veCRV burn, governance, participants)
+# is unchanged.
+#
+# Encoded against TE-IR v0.1. Public parameters as of mid-2026.
+#
+# Calibration notes:
+# - CRV terminal cap 3.03B. Current circulating ~1.5B (≈ 50% of cap).
+# - Initial CRV emission was 2.2M/day = 15.4M/week at launch (Aug 2020).
+#   Schedule decays ~16%/yr (factor 0.84 each year). After ~6 years of
+#   decay, current per-week emission ≈ 15.4M × 0.84^6 ≈ 5.4M/week.
+# - Modeled with halving_period=52 weeks, halving_factor=0.84. The
+#   AsymptoticClass `c` reflects current-era emission post-decay; the
+#   schedule continues to decay it geometrically.
+# - Schema gap: per-position veCRV decay is not first-class (case
+#   studies §4 lists `LinearlyDecayingBalance` as a Tier-2 IR addition).
+#   We approximate aggregate decay with a continuous burn rule, which
+#   double-counts when a position expires AND a new lock starts.
+# - "Curve Wars" concentration: Convex Finance accumulates veCRV via
+#   user deposits (cvxCRV); peaked at ~50% of veCRV supply.
+meta:
+  name: Curve / veCRV
+  description: >-
+    DEX governance via vote-escrow tokens. Locking CRV mints non-transferable
+    veCRV with voting power decaying linearly over the lock period (max 4y).
+    No protocol-level CRV burn; "Curve Wars" concentration is real.
+  archetype: governance_utility_pair
+  nfrs:
+    resilience: 4
+    adaptability: 3
+    accessibility: 3
+    transparency: 5
+    proportionality: 4
+    circulation_speed: retain_value
+    governance_maturity: short_term
+
+tokens:
+  - id: CRV
+    function: [governance_right, medium_of_exchange]
+    value_anchor: none
+    transferable: true
+    holding_incentive_present: true
+    holding_incentives:
+      - governance_rights
+      - time_locked_rewards     # boost yields by locking CRV → veCRV
+    earning_mechanisms:
+      - behavioral_reward       # gauge rewards for LPs
+      - exchange_purchase
+    contribution_verification: smart_contract_automation
+    redemption_mechanism: open_market_exchange
+    offer_variety_K:
+      min: 100
+      max: 500             # number of pools and gauges
+    emission_rules:
+      - trigger:
+          kind: time_based
+          event_predicate: per_block
+        function:
+          sign: decreasing_positive
+          asymptotic_class:
+            # Per-period rate (CRV/week) at the *current* (mid-2026)
+            # decay step; the schedule below continues the 16%/yr decay.
+            family: constant
+            parameter_ranges:
+              c:
+                min: 4500000
+                max: 6000000
+        schedule:
+          halving_period: 52       # 1 year in weeks
+          halving_factor: 0.84     # ~16%/yr decay
+          supply_cap: 1530000000   # 3.03B − ~1.5B already issued
+    burn_rules: []           # no protocol-level CRV burn
+    initial_distribution:
+      kind: pre_minted_reserve
+      amount:
+        min: 1500000000
+        max: 1500000000
+  - id: veCRV
+    function: [governance_right]
+    value_anchor: none
+    transferable: false
+    holding_incentive_present: true
+    holding_incentives:
+      - governance_rights
+      - time_locked_rewards
+    emission_rules:
+      # Phase-K state-dependent expression. Reads the per-lock amount
+      # and duration from the user_locks_crv event payload (declared
+      # in the top-level events: catalog below) and computes per-lock
+      # veCRV mint exactly as the Curve contract does.
+      - trigger:
+          event_id: user_locks_crv
+        function:
+          sign: always_positive
+          expression: "event.amount * event.duration / param.max_lock_periods"
+          parameters:
+            - name: max_lock_periods
+              range:
+                min: 208
+                max: 208
+    burn_rules:
+      - trigger:
+          kind: demand_driven
+          event_predicate: lock_decay_per_block
+        function:
+          sign: decreasing_positive
+          asymptotic_class:
+            # Aggregate veCRV decay per week (continuous lock decay +
+            # expiries). At steady state matches mint flow ± seasonality.
+            family: linear
+            parameter_ranges:
+              a:
+                min: 0
+                max: 1000
+              b:
+                min: 500000
+                max: 10000000
+    initial_distribution:
+      kind: none
+
+# Phase-H/K event catalog.
+# user_locks_crv carries the per-lock amount + duration as typed payload
+# fields that the veCRV mint expression reads via event.amount and
+# event.duration. Frequency captures how many locks happen per week
+# (calibrated against historic veCRV mint volume: ~100-500 locks/wk).
+events:
+  - id: user_locks_crv
+    label: User locks CRV to mint veCRV
+    kind: behavioral
+    frequency:
+      family: linear
+      parameter_ranges:
+        a:
+          min: 0
+          max: 5
+        b:
+          min: 100
+          max: 500
+    payload:
+      - name: amount
+        type: scalar
+        range:
+          min: 100        # tiny retail locks
+          max: 100000     # whale lock cap (per-lock; aggregators batch above this)
+      - name: duration
+        type: scalar
+        range:
+          min: 4          # min lock 1 month
+          max: 208        # max lock 4 years in weeks
+
+cross_token_flows:
+  - source_token: CRV
+    source_event: user.lock(amount, duration)
+    target_token: veCRV
+    target_action: mint
+    amount:
+      family: linear
+      parameter_ranges:
+        a:
+          min: 0
+          max: 1
+        b:
+          min: 0
+          max: 0
+  - source_token: veCRV
+    source_event: lock_expired
+    target_token: CRV
+    target_action: transfer
+    amount:
+      family: constant
+      parameter_ranges:
+        c:
+          min: 1
+          max: 1
+
+participants:
+  count_N:
+    min: 50000
+    max: 500000
+  expected_Q:
+    # Token-volume terms: CRV transfer volume ≈ $10-50M/week at ~$0.50/CRV
+    # → 20-100M CRV moved per week (incl. swaps and gauge claims).
+    min: 20000000
+    max: 100000000
+  average_demand_d:
+    min: 0.1
+    max: 5.0
+  growth_g:
+    family: log
+    parameter_ranges:
+      a:
+        min: 0.0
+        max: 0.05
+      b:
+        min: 0.0
+        max: 0.02
+  topology: network
+  topology_params:
+    average_degree:
+      min: 5
+      max: 20                # LPs interact with handful of gauges and aggregators
+  agent_types:
+    - id: crv_holder
+      fraction: 0.6
+      expected_holding_time:
+        expected_periods:
+          min: 8
+          max: 50
+      balance_share: 0.3
+      # Generic CRV holder — neither locked nor LPing. Mixes hold +
+      # sell into market (transfer + redeem) with occasional governance
+      # participation when an emission-gauge vote is live.
+      role: observer
+      action_set: [hold, transfer, redeem, vote]
+      utility:
+        holding_yield: 1.5
+        social_payoff: 1.0
+        redemption_value: 0.8
+        governance_payoff: 0.4
+        action_temperature: 0.9
+    - id: liquidity_provider   # contributor role for FM4
+      fraction: 0.3
+      role: contributor
+      expected_holding_time:
+        expected_periods:
+          min: 4
+          max: 30
+      balance_share: 0.2
+      # Provides liquidity to gauges and harvests CRV emissions (EARN).
+      # Often sells emissions for stables (TRANSFER) but also reinvests
+      # some via redemption-into-LP. Some LPs vote-lock.
+      action_set: [earn, transfer, hold]
+      utility:
+        income_yield: 3.0
+        social_payoff: 1.5
+        holding_yield: 0.4
+        action_temperature: 0.5
+    - id: vecrv_locker
+      fraction: 0.1
+      expected_holding_time:
+        expected_periods:
+          min: 100
+          max: 208            # 4 years × 52 weeks
+      balance_share: 0.5
+      # Locks CRV for 1-4 years for vote-escrow rewards. Action loop
+      # mostly STAKEs (locks) and VOTEs on gauge weights. veCRV is
+      # non-transferable so TRANSFER is excluded by token.transferable
+      # downstream anyway, but reflecting it here keeps the softmax
+      # honest.
+      role: governance_only
+      action_set: [stake, vote, hold]
+      utility:
+        holding_yield: 2.5
+        governance_payoff: 3.0
+        risk_aversion: 1.0
+        action_temperature: 0.4
+
+governance:
+  type: dao
+  rule_structure:
+    gauge_weights: token_holder_vote
+    pool_admin_fee: token_holder_vote
+    emission_distribution: token_holder_vote
+    new_pool_listing: token_holder_vote
+    parameter_changes: token_holder_vote
+  monitoring_capacity_gamma:
+    min: 0.95
+    max: 1.0
+  sanction_structure:
+    kind: none
+    S_normalized:
+      min: 0
+      max: 0.05
+  token_balance_gini:
+    # veCRV is highly concentrated due to Convex aggregation (~50% peak).
+    min: 0.7
+    max: 0.85
+  # veCRV is the canonical vote-escrow / time-locked voting system.
+  # Voting power = locked_CRV × (time_remaining / 4 years). Average
+  # lock duration across all active veCRV is high, not moderate: the
+  # dominant lockers (Convex, Yearn, individual ve-protocols) lock at
+  # the 4-year max and re-lock as decay approaches. Empirically the
+  # weight-averaged lock fraction sits around 0.7-0.9 — much closer
+  # to "everyone locks max" than to "average 2 years out of 4".
+  #
+  # The TIME_LOCKED transformation therefore reduces effective Gini
+  # only modestly. Most of the Convex-driven concentration concern
+  # survives the transformation, which is the right empirical answer
+  # (Curve Wars is a real governance issue, not an artifact of
+  # measurement). If a user wanted to model Convex explicitly as a
+  # delegation aggregator, vote_weighting = delegated would be the
+  # better choice; we use TIME_LOCKED here to demonstrate the
+  # protocol-level mechanism the design declares.
+  vote_weighting: time_locked
+  vote_weighting_params:
+    avg_lock_fraction:
+      min: 0.7
+      max: 0.9

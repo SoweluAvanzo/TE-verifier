@@ -1,0 +1,282 @@
+# Time bank — local mutual-aid hours-exchange.
+#
+# Reality basis: Banca del Tempo (Italy, ~200 active branches, 50–300 members
+# each), Time Dollars (US, ~30k members), TimeRepublik (cross-border), plus
+# the CommonsHood platform (UniTO; Boella, Schifanella et al.) as a
+# concrete blockchain substrate for community-token exchange. Members
+# earn HOUR tokens by providing verified services (childcare, gardening,
+# tutoring, repairs, transportation) and spend them to request services
+# from others. No fiat link, no cap, demand-driven burn.
+#
+# Documented failure modes (Cahn 2004; Seyfang 2004):
+#  - FM4 free-rider: chronic over-demand → providers burn out and leave.
+#  - FM5 critical mass: small banks (<50 active members) struggle to clear
+#    supply-demand matches — service offer variety K stays narrow.
+#  - FM6 capture: "old hands" sometimes monopolize matching / coordination.
+#
+# Phase E surfaces:
+#  - exit_propensity: providers leave when reciprocation lags (peer-comparison
+#    via social_comparison_delta).
+#  - reputation_yield: per-service reputation badge gates future requests;
+#    decay slow (memory-like) to mirror real-world trust persistence.
+#  - utility_jitter: members are heterogeneous on income_yield — altruistic
+#    vs transactional motivation (SDT, Bénabou & Tirole crowding-out).
+#
+# Calibration choices:
+#  - Single-token (HOUR). Most time banks use 1 token = 1 hour, no fiat.
+#  - Emission: per verified service event, constant rate (1 HOUR per hour of
+#    service). event_frequency drives total weekly minting.
+#  - Burn: per redemption, constant rate (mirror of emission).
+#  - Topology: NETWORK with avg_degree ≈ log(N) — members trade with a small
+#    cluster of trusted peers, not the full population.
+#  - Verification: peer-reported (verif_prob ≈ 0.80 in Domenicale et al.).
+meta:
+  name: Time Bank
+  description: >-
+    Local hours-exchange mutual-aid network. Members earn HOUR tokens by
+    delivering verified services, redeem them to request services from
+    peers. No fiat anchor, no cap, demand-driven burn. Documented
+    failure modes are FM4 (provider burnout / free-rider) and FM5
+    (critical mass in small branches).
+  archetype: community_reward
+  simulation_horizon: 156           # ~3 years in weeks
+  nfrs:
+    resilience: 4                   # community-driven, member-driven recovery
+    adaptability: 4
+    accessibility: 5                # low barrier — anyone can join
+    transparency: 4                 # members can see each others' balances
+    proportionality: 4              # 1 hour = 1 hour, by design
+    circulation_speed: circulate_fast
+    governance_maturity: indefinite
+
+events:
+  - id: service_delivered
+    label: Verified service hour delivered by a provider
+    kind: behavioral
+    frequency:
+      # Total verified services per week across the branch.
+      # ~50 members × 0.4 services/member/week ≈ 20 (small);
+      # ~300 members × 0.6 services/member/week ≈ 180 (large).
+      family: linear
+      parameter_ranges:
+        a: { min: 0.0, max: 0.0 }
+        b: { min: 20, max: 180 }
+  - id: service_requested
+    label: Service request fulfilled (drives HOUR burn)
+    kind: demand_driven
+    frequency:
+      family: linear
+      parameter_ranges:
+        a: { min: 0.0, max: 0.0 }
+        b: { min: 15, max: 170 }
+
+tokens:
+  - id: HOUR
+    function: [medium_of_exchange]
+    value_anchor: pegged                   # implicitly pegged to "1 hour of labor"
+    transferable: true
+    holding_incentive_present: true
+    holding_incentives:
+      - reputation
+      - governance_rights
+    earning_mechanisms:
+      - behavioral_reward          # contribution-verified service delivery
+    contribution_verification: peer_verification
+    redemption_mechanism: specific_goods_or_services
+    offer_variety_K:
+      min: 6                       # small branch — narrow service mix
+      max: 25                      # larger branch — broad service mix
+    emission_rules:
+      - trigger:
+          event_id: service_delivered
+        function:
+          asymptotic_class:
+            # 1 HOUR minted per verified service hour. Service durations
+            # average 1–2 hours per exchange.
+            family: constant
+            parameter_ranges:
+              c: { min: 1.0, max: 2.0 }
+    burn_rules:
+      - trigger:
+          event_id: service_requested
+        function:
+          asymptotic_class:
+            family: constant
+            parameter_ranges:
+              c: { min: 1.0, max: 2.0 }
+    initial_distribution:
+      # Real time banks give 3–10 HOUR starter credit on join — enough
+      # for new members to request services before they've delivered any.
+      # Without this, requesters have zero scalar utility from t=0 and
+      # exit immediately under Phase E1 social-comparison pressure.
+      kind: pre_minted_reserve
+      amount:
+        min: 250                  # ~5 HOUR × 50 members (small branch)
+        max: 1500                 # ~5 HOUR × 300 members (large branch)
+
+participants:
+  count_N:
+    min: 50
+    max: 300
+  expected_Q:
+    # Weekly token-volume traded. Roughly emission + burn = 2× weekly mints.
+    min: 30
+    max: 350
+  average_demand_d:
+    min: 0.1
+    max: 0.5                      # ~1 request per member every 2–10 weeks
+  growth_g:
+    family: linear
+    parameter_ranges:
+      a:
+        min: -0.005               # slight churn — small branches contract slowly
+        max: 0.02                 # modest growth in successful branches
+      b:
+        min: 0.0
+        max: 0.0
+  topology: network
+  topology_params:
+    average_degree:
+      min: 6
+      max: 14                     # small-world social graph
+  agent_types:
+    - id: active_provider
+      fraction: 0.35
+      role: contributor
+      expected_holding_time:
+        expected_periods:
+          min: 4
+          max: 26                 # 1 month to 6 months between actions
+      balance_share: 0.45
+      # Reliable givers: deliver services frequently. Reputation matters —
+      # signals trust to requesters. Exit when reciprocation lags peers
+      # (the documented "provider burnout" pattern).
+      action_set: [earn, hold, transfer, vote]
+      utility:
+        income_yield: 1.2
+        holding_yield: 0.3
+        social_payoff: 0.6
+        governance_payoff: 0.4
+        action_temperature: 0.5
+        # Phase E1 — moderate exit pressure when own utility falls below
+        # the population mean. Drives the documented "burnout" curve.
+        exit_propensity: 0.12
+        social_comparison_delta: 0.6
+        # Phase E3 — reputation accumulates and matters for status; slow
+        # decay (~2 % per week, half-life ≈ 35 weeks) mirrors how real
+        # time banks sustain "old hand" recognition for years.
+        reputation_yield: 1.5
+        reputation_decay: 0.02
+      # Phase E2 — providers split between altruistic (low income_yield
+      # interpretation) and transactional (high). Real time banks
+      # document this bimodality.
+      utility_jitter:
+        income_yield: 0.5
+        social_payoff: 0.4
+        governance_payoff: 0.3
+    - id: active_requester
+      fraction: 0.35
+      role: consumer
+      expected_holding_time:
+        expected_periods:
+          min: 2
+          max: 10
+      balance_share: 0.20
+      # Use the bank to request services more than they provide. Real
+      # time-bank surveys show requesters DO occasionally provide back
+      # (one-third of average activity) — so EARN is in their action_set
+      # at a lower utility weight than REDEEM.
+      action_set: [earn, redeem, hold, transfer]
+      utility:
+        income_yield: 0.6         # occasional reciprocation — survey
+                                  # data shows requesters provide ~30 %
+                                  # as often as dedicated providers
+        redemption_value: 1.5
+        holding_yield: 0.2
+        social_payoff: 0.4
+        action_temperature: 0.6
+        exit_propensity: 0.04
+        social_comparison_delta: 0.4
+        reputation_yield: 0.6
+        reputation_decay: 0.03
+      utility_jitter:
+        income_yield: 0.2
+        redemption_value: 0.4
+        social_payoff: 0.3
+    - id: bridge_member
+      fraction: 0.15
+      role: contributor
+      expected_holding_time:
+        expected_periods:
+          min: 3
+          max: 14
+      balance_share: 0.25
+      # Both provider AND requester — the connector role. Strong vote
+      # participation (informal coordination role). Moderate reputation
+      # accumulation across both sides.
+      action_set: [earn, redeem, transfer, hold, vote]
+      utility:
+        income_yield: 0.8
+        redemption_value: 0.8
+        social_payoff: 0.7
+        governance_payoff: 0.5
+        action_temperature: 0.6
+        exit_propensity: 0.07
+        social_comparison_delta: 0.5
+        reputation_yield: 1.0
+        reputation_decay: 0.025
+      utility_jitter:
+        income_yield: 0.4
+        redemption_value: 0.4
+        governance_payoff: 0.4
+    - id: lurker
+      fraction: 0.15
+      role: observer
+      expected_holding_time:
+        expected_periods:
+          min: 10
+          max: 40
+      balance_share: 0.10
+      # Joined but rarely active. Higher exit propensity than the rest —
+      # first to leave when the branch loses momentum. Minimal reputation
+      # pickup. Survey data (Seyfang 2004) puts annual lurker attrition
+      # at ~30 %; with the per-period sigmoid that maps to ~0.08–0.12.
+      action_set: [hold, transfer]
+      utility:
+        holding_yield: 1.0
+        social_payoff: 0.1
+        risk_aversion: 0.3
+        action_temperature: 1.2
+        exit_propensity: 0.10
+        social_comparison_delta: 0.5
+        reputation_yield: 0.2
+        reputation_decay: 0.05
+      utility_jitter:
+        holding_yield: 0.3
+        risk_aversion: 0.4
+
+governance:
+  type: dao
+  rule_structure:
+    emission_rate_adjustment: token_holder_vote
+    burn_rate_adjustment: token_holder_vote
+    participant_eligibility: token_holder_vote
+    provider_onboarding: token_holder_vote
+    exchange_ratios: not_adjustable        # 1 hour = 1 hour
+    reward_structure_modification: token_holder_vote
+    system_rule_modification: token_holder_vote
+  monitoring_capacity_gamma:
+    min: 0.6
+    max: 0.85                # peer-monitored; not perfect
+  sanction_structure:
+    kind: warning            # graduated — usually starts with a warning
+    S_normalized:
+      min: 0.2
+      max: 0.5
+  vote_weighting: linear
+  # Hours are democratically-priced — balance distribution stays fairly
+  # flat. Real time-bank surveys (Seyfang 2004) report Gini ~0.30–0.45
+  # for active members; we widen slightly to capture mixed branches.
+  token_balance_gini:
+    min: 0.25
+    max: 0.50

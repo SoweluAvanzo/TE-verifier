@@ -49,9 +49,11 @@ def test_form_page_renders(client) -> None:
     assert "dist-kind" in html
     # COMMITTEE_TRUSTED is in the actor dropdowns.
     assert "committee_trusted" in html
-    # Minimal-view toggle present.
-    assert "view-toggle-btn" in html
-    assert 'data-view="minimal"' in html
+    # Minimal reachability view is the only verdict surface (the
+    # Rich/Minimal toggle was removed; minimal is the default).
+    assert 'id="minimal-view"' in html
+    assert 'id="minimal-table"' in html
+    assert "view-toggle-btn" not in html
 
 
 def test_yaml_editor_renders(client) -> None:

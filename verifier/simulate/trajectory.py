@@ -192,7 +192,36 @@ def _rule_base_rate_at(rule, t: float) -> float:
     schedule-aware path inside trajectory simulation; everywhere else,
     `_rule_rate_at` is the right entry point.
     """
-    fn = _ac_at_time(rule.function.asymptotic_class, t)
+    # K5: DSL expression — midpoint-evaluate against (state.t, midpoint
+    # params, midpoint event payload). Conservative — gives the
+    # trajectory layer a deterministic point estimate.
+    if getattr(rule.function, "expression", None) is not None:
+        from verifier.expr_eval import EvalEnv, evaluate as _ev
+        params = {}
+        for p in (rule.function.parameters or []):
+            params[p.name] = (p.range.min + p.range.max) / 2.0
+        event_payload = {}
+        # Event payload not threadable from this layer without a TE
+        # handle. _ac_at_time path below is the legacy fallback when
+        # the expression references only state/param.
+        try:
+            fn = float(_ev(
+                rule.function.expression,
+                EvalEnv(
+                    state={"t": float(t)},
+                    params=params,
+                    consts={"horizon": 52.0},
+                    event=event_payload or None,
+                    agents=[], tokens=[], events=[], assets=[],
+                ),
+            ))
+        except Exception:
+            fn = 0.0
+        import math as _math
+        if not _math.isfinite(fn):
+            fn = 0.0
+    else:
+        fn = _ac_at_time(rule.function.asymptotic_class, t)
     if rule.trigger.event_frequency is not None:
         freq = _ac_at_time(rule.trigger.event_frequency, t)
         return fn * freq

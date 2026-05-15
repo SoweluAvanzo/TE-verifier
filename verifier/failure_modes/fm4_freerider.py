@@ -545,12 +545,26 @@ class FM4FreeRider(FailureMode):
     @staticmethod
     def _is_applicable(te: TokenEconomy) -> bool:
         for token in te.tokens:
-            # Pegged stablecoins have collateral-backed mints (vault open,
-            # CDR-driven smart-contract issuance) that *look* behavioral
-            # but are not contribution-reward. A scholar-style "earn by
-            # contributing" loop does not exist for them, so FM4 is not
-            # applicable. Skip such tokens for the applicability check.
-            if token.value_anchor == ValueAnchor.PEGGED:
+            # Collateral-backed stablecoins (DAI/USDC-style): emission is
+            # CDR-driven via smart-contract automation, with the token
+            # pegged to fiat. No "earn by contributing" loop, so FM4 is
+            # not applicable. We narrow the prior blanket PEGGED skip to
+            # only fire when verification is also smart_contract — this
+            # is the audit-trail signature of a pure-collateral mint.
+            #
+            # Tokens pegged to non-fiat units (service hours, kilowatt-
+            # hours, civic-pact service units — value_anchor=PEGGED or
+            # SERVICE_OR_ACCESS_UNIT with peer / physical / third-party
+            # verification) DO have a contribution loop and need FM4.
+            verifications = {
+                token.contribution_verification,
+            }
+            collateral_backed_peg = (
+                token.value_anchor == ValueAnchor.PEGGED
+                and verifications
+                == {ContributionVerification.SMART_CONTRACT_AUTOMATION}
+            )
+            if collateral_backed_peg:
                 continue
             for rule in token.emission_rules:
                 if rule.trigger.kind in CONTRIBUTION_TRIGGER_KINDS:

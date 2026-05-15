@@ -51,11 +51,36 @@ from schema import (
     VoteWeighting,
 )
 from verifier import elicitation
+from schema import ActionKind
+from verifier.abm.actions import (
+    apply_reputation_decay,
+    build_type_cache,
+    compute_pool_shares,
+    execute_action,
+    is_staked,
+    pick_action_cached,
+    prepare_pools,
+)
 from verifier.abm.agents import (
+    effective_max_agents,
     spawn_agents,
     step_agents,
     tau_bar_from_agents,
 )
+from verifier.abm.analytics import (
+    action_mix,
+    contributor_fraction,
+    gini,
+    mean_reputation,
+)
+from verifier.abm.delegation import (
+    assign_delegates,
+    delegate_concentration_gini,
+)
+from verifier.abm.events import apply_population_events
+from verifier.abm.exit import any_exit_enabled, apply_exit_decisions
+from verifier.abm.regimes import active_function_for_rule
+from verifier.abm.topology import build_neighbor_graph
 from verifier.abm.predicates import evaluate as eval_predicate
 from verifier.abm.samplers import Sampler
 from verifier.abm.state import State, initial_state
@@ -144,11 +169,77 @@ def _sample_ac(ac: AsymptoticClass, sampler: Sampler) -> float:
     return 0.0
 
 
-def _sample_rule_rate(rule, sampler: Sampler) -> float:
-    """Per-period rate (function × frequency if event-based)."""
-    base = _sample_ac(rule.function.asymptotic_class, sampler)
-    if rule.trigger.event_frequency is not None:
-        freq = _sample_ac(rule.trigger.event_frequency, sampler)
+def _sample_rule_rate(rule, sampler: Sampler, te=None, state=None) -> float:
+    """Per-period rate (function × frequency if event-based).
+
+    Phase-K5: if the rule's FunctionShape carries an ``expression``,
+    evaluate it through the DSL evaluator. Otherwise fall back to
+    legacy ``asymptotic_class`` sampling. ``te`` + ``state`` are
+    optional context for the DSL path (needed for state.* and
+    sum_over(...) lookups).
+    """
+    from verifier.expr_eval import evaluate_function_shape, sample_event_payload
+    # Sample the event payload once if the rule is event-driven. This
+    # supplies ``event.*`` references inside DSL expressions.
+    event_payload: dict | None = None
+    event_def = None
+    if te is not None and rule.trigger.event_id is not None:
+        try:
+            event_def = te.get_event(rule.trigger.event_id)
+        except KeyError:
+            event_def = None
+    if event_def is not None and event_def.payload:
+        event_payload = sample_event_payload(event_def, sampler)
+    if rule.function.expression is not None:
+        base = evaluate_function_shape(
+            rule.function,
+            state=state or {},
+            event=event_payload,
+            sampler=sampler,
+            tokens=[t.id for t in te.tokens] if te is not None else None,
+        )
+    else:
+        base = _sample_ac(rule.function.asymptotic_class, sampler)
+    # Frequency multiplier: prefer the event catalog when an event_id
+    # is set (Phase-H semantics), otherwise the legacy inline.
+    frequency_ac = event_def.frequency if event_def is not None else None
+    if frequency_ac is None:
+        frequency_ac = rule.trigger.event_frequency
+    if frequency_ac is not None:
+        freq = _sample_ac(frequency_ac, sampler)
+        base *= freq
+    return base
+
+
+def _sample_rate_with_function(rule, function_shape, sampler: Sampler, te=None, state=None) -> float:
+    """Per-period rate using a caller-supplied FunctionShape (typically
+    the active regime's function instead of the rule's base function).
+    Frequency multiplier inherits from the rule's trigger. K5: DSL-aware."""
+    from verifier.expr_eval import evaluate_function_shape, sample_event_payload
+    event_payload: dict | None = None
+    event_def = None
+    if te is not None and rule.trigger.event_id is not None:
+        try:
+            event_def = te.get_event(rule.trigger.event_id)
+        except KeyError:
+            event_def = None
+    if event_def is not None and event_def.payload:
+        event_payload = sample_event_payload(event_def, sampler)
+    if function_shape.expression is not None:
+        base = evaluate_function_shape(
+            function_shape,
+            state=state or {},
+            event=event_payload,
+            sampler=sampler,
+            tokens=[t.id for t in te.tokens] if te is not None else None,
+        )
+    else:
+        base = _sample_ac(function_shape.asymptotic_class, sampler)
+    frequency_ac = event_def.frequency if event_def is not None else None
+    if frequency_ac is None:
+        frequency_ac = rule.trigger.event_frequency
+    if frequency_ac is not None:
+        freq = _sample_ac(frequency_ac, sampler)
         base *= freq
     return base
 
@@ -179,6 +270,7 @@ def _build_initial_state(
     te: TokenEconomy,
     sampler: Sampler,
     config: VerifierConfig | None,
+    effective_agent_cap: int | None = None,
 ) -> tuple[State, dict[str, Any]]:
     """Sample once per run, build the initial state + frozen params dict
     (which the per-period step function reuses)."""
@@ -188,6 +280,20 @@ def _build_initial_state(
     # Initial M per token
     for t in te.tokens:
         state["tokens"][t.id]["M"] = _initial_supply(t)
+
+    # Phase-H: events catalog + non-tokenized asset state. These start
+    # empty and are populated by ``_step_state`` per period.
+    state["events_realized"] = {e.id: 0.0 for e in te.events}
+    state["assets"] = {
+        a.id: {
+            "count": 0.0,           # current inventory
+            "created": 0.0,          # cumulative creation
+            "consumed": 0.0,         # cumulative consumption
+            "kind": a.kind.value,
+            "unique": bool(a.unique),
+        }
+        for a in te.non_tokenized_assets
+    }
 
     # Sample participants block
     state["N"] = sampler.sample_range(te.participants.count_N)
@@ -214,17 +320,27 @@ def _build_initial_state(
     # path. We collect the rule sources here for both branches.
     static_rates = {tid: {"E": 0.0, "B": 0.0} for tid in token_ids}
     stochastic_rules: list[tuple[str, str, Any]] = []  # (token_id, side, rule)
+    # Phase-F: rules with a non-empty ``regimes`` list. ``_step_state``
+    # re-checks each one's predicate every period and swaps the rule's
+    # rate contribution in static_rates when a regime fires.
+    regime_rules: list[tuple[str, str, Any, float]] = []
     for token in te.tokens:
         for rule in token.emission_rules:
             if getattr(rule.function, "distribution", None) is not None:
                 stochastic_rules.append((token.id, "E", rule))
             else:
-                static_rates[token.id]["E"] += _sample_rule_rate(rule, sampler)
+                rate = _sample_rule_rate(rule, sampler, te=te, state=state)
+                static_rates[token.id]["E"] += rate
+                if getattr(rule, "regimes", None):
+                    regime_rules.append((token.id, "E", rule, rate))
         for rule in token.burn_rules:
             if getattr(rule.function, "distribution", None) is not None:
                 stochastic_rules.append((token.id, "B", rule))
             else:
-                static_rates[token.id]["B"] += _sample_rule_rate(rule, sampler)
+                rate = _sample_rule_rate(rule, sampler, te=te, state=state)
+                static_rates[token.id]["B"] += rate
+                if getattr(rule, "regimes", None):
+                    regime_rules.append((token.id, "B", rule, rate))
     # Cross-token flows — always static-per-run (their amount is
     # an AsymptoticClass, not a FunctionShape with a distribution).
     for flow in te.cross_token_flows:
@@ -307,6 +423,70 @@ def _build_initial_state(
         "stochastic_rules": stochastic_rules,
         # Keep the sampler reference so ``_step_state`` can draw noise.
         "_sampler": sampler,
+        # Phase A: agent_type lookup by id, so the per-period action
+        # loop can find an agent's type-level action_set + utility.
+        "agent_types_by_id": {
+            at.id: at for at in te.participants.agent_types
+        },
+        # Per-type hot-path caches — resolved once at run start, reused
+        # every period by ``pick_action_cached``. Without this, every
+        # agent / period pair re-allocated a list and a dict and was
+        # 50× slower.
+        "type_cache_by_id": {
+            at.id: build_type_cache(at) for at in te.participants.agent_types
+        },
+        # First-declared token id; cached so execute_action doesn't have
+        # to read state["tokens"].keys() per call.
+        "primary_token_id": (te.tokens[0].id if te.tokens else None),
+        # Phase-H: events catalog + non-tokenized assets snapshot for
+        # the per-period realizer. Pre-resolved event_conditions cache
+        # avoids recomputing the list each step.
+        # K5: TokenEconomy handle for evaluators that need to look up
+        # event catalog / token list / parameter declarations.
+        "_te": te,
+        "te_events": list(te.events),
+        "te_event_conditions": {
+            e.id: list(e.conditions) for e in te.events
+        },
+        "te_assets": list(te.non_tokenized_assets),
+        # Phase-F: regime-switch rules. Each period _step_state checks
+        # whether any predicate has fired and patches static_rates with
+        # the regime's function. Cached lookups keep activations sticky.
+        "regime_rules": regime_rules,
+        "_regime_active_idx": {},     # id(rule) -> activated regime index
+        "_regime_current_contrib": {  # id(rule) -> current rate currently
+                                       # added to static_rates for this rule
+            id(rule): rate for _tid, _side, rule, rate in regime_rules
+        },
+        # Phase-E follow-up: cross-token flows. Pre-resolve the sampled
+        # amount per flow so the per-period realization step is pure
+        # arithmetic. Each entry: (source_token, source_event,
+        # target_token, target_action, sampled_amount). _step_state
+        # uses these to push agent-driven primary-token activity into
+        # the secondary token's realized E/B — previously a gap that
+        # left target tokens flat in agent-driven simulations.
+        "cross_token_flows_sampled": [
+            (
+                flow.source_token,
+                flow.source_event,
+                flow.target_token,
+                flow.target_action,
+                _sample_ac(flow.amount, sampler),
+            )
+            for flow in te.cross_token_flows
+        ],
+        # Per-call agent cap, computed by ``run_simulation`` from the
+        # SimulationConfig and threaded down so the spawn call sees it.
+        "effective_max_agents": effective_agent_cap,
+        # Phase C: population events fire mid-simulation. The engine
+        # consults this list at the top of every period.
+        "population_events": list(te.participants.population_events),
+        # Phase C: stash the vote_weighting so events can rebuild
+        # delegate assignments after spawn / despawn.
+        "vote_weighting": te.governance.vote_weighting,
+        # Cached snapshot of participants — events.apply needs it to
+        # rebuild the interaction graph after population changes.
+        "participants_snapshot": te.participants,
     }
     return state, params
 
@@ -338,57 +518,299 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
     see by construction.
     """
     state["t"] = state["t"] + 1
-
-    # Evolve per-agent state. Each agent's clock advances; agents
-    # whose holding time has elapsed "act" (reset). This produces a
-    # live tau_bar trajectory below.
-    agents = state.get("agents") or []
-    if agents:
-        step_agents(agents, state["t"])
-        # Update tau_bar per token from per-agent state. Use the same
-        # value across tokens (v1: one population, not per-token
-        # agent partitions). Honors the existing fallback when no
-        # agents are present.
-        live_tau = tau_bar_from_agents(
-            agents, state["t"], fallback=0.0
-        )
-        # Only update transferable-token tau_bar entries; non-
-        # transferable tokens kept the v0 zero from initial_state.
-        for tid in state["tau_bar"]:
-            # If the static fallback was 0 (e.g. non-transferable),
-            # leave it alone.
-            if state["tau_bar"][tid] > 0:
-                state["tau_bar"][tid] = live_tau
-
-    # Per-period stochastic resampling (overrides for this period).
     sampler = params.get("_sampler")
     stochastic = params.get("stochastic_rules", [])
     static = params.get("static_rates", {})
-    if stochastic and sampler is not None:
-        # Start each period from the static baseline.
+
+    # Phase-H: realize the events catalog. Each event's per-period
+    # firing count is sampled from its frequency AsymptoticClass (or
+    # 1 when None). Stored in state["events_realized"] so EventOccurrence
+    # conditions + the regime evaluator can see what fired this period.
+    te_events = params.get("te_events") or []
+    te_event_conditions = params.get("te_event_conditions") or {}
+    realized_events = state.setdefault("events_realized", {})
+    if te_events and sampler is not None:
+        from verifier.abm.regimes import is_condition_active
+        for event in te_events:
+            # Event-level conditions gate firing for this period.
+            conds = te_event_conditions.get(event.id, [])
+            if conds and not all(is_condition_active(c, state) for c in conds):
+                realized_events[event.id] = 0.0
+                continue
+            if event.frequency is None:
+                # No frequency declared: treat as fires-once-per-period
+                # for time_based-like events; zero for "none" events.
+                realized_events[event.id] = (
+                    0.0 if event.kind.value == "none" else 1.0
+                )
+            else:
+                realized_events[event.id] = max(0.0, _sample_ac(event.frequency, sampler))
+
+    # Phase-H: non-tokenized asset creation / consumption per period.
+    te_assets = params.get("te_assets") or []
+    if te_assets and sampler is not None:
+        assets_state = state.setdefault("assets", {})
+        for asset in te_assets:
+            entry = assets_state.setdefault(asset.id, {
+                "count": 0.0, "created": 0.0, "consumed": 0.0,
+                "kind": asset.kind.value, "unique": bool(asset.unique),
+            })
+            if asset.creation is not None:
+                created = max(0.0, _sample_ac(asset.creation.asymptotic_class, sampler))
+                if asset.unique and entry["count"] > 0:
+                    created = 0.0  # NFTs spawn once
+                entry["count"] += created
+                entry["created"] += created
+            if asset.consumption is not None and entry["count"] > 0:
+                consumed = min(entry["count"], max(0.0, _sample_ac(asset.consumption.asymptotic_class, sampler)))
+                entry["count"] -= consumed
+                entry["consumed"] += consumed
+
+    # Phase-F: regime switches. Walk every rule that declares ``regimes``
+    # and re-evaluate its predicate against the current state. When a
+    # regime newly activates (or the active regime changes), sample the
+    # replacement function and patch the rule's contribution in
+    # static_rates. Sticky — once a regime fires it stays fired.
+    regime_rules = params.get("regime_rules") or []
+    if regime_rules and sampler is not None:
+        activated = params.setdefault("_regime_active_idx", {})
+        current_contrib = params.setdefault("_regime_current_contrib", {})
+        for token_id, side, rule, _base_rate in regime_rules:
+            rid = id(rule)
+            prior = activated.get(rid)
+            fn = active_function_for_rule(rule, state, activated, rid)
+            new_idx = activated.get(rid)
+            if new_idx != prior:
+                # Regime transition this period — resample.
+                new_rate = max(0.0, _sample_rate_with_function(rule, fn, sampler, te=params.get("_te"), state=state))
+                old_rate = current_contrib.get(rid, 0.0)
+                static[token_id][side] = max(
+                    0.0, static[token_id][side] - old_rate + new_rate
+                )
+                current_contrib[rid] = new_rate
+
+    # Phase C: fire any population events scheduled for this period
+    # *before* the action loop runs, so the same period sees the new
+    # population / utility cache.
+    events = params.get("population_events")
+    if events and sampler is not None:
+        participants_snap = params.get("participants_snapshot")
+        if participants_snap is not None:
+            apply_population_events(
+                state, params, state["t"], events, participants_snap, sampler
+            )
+
+    agents = state.get("agents") or []
+
+    # ------------------------------------------------------------------
+    # Phase A: agent action loop drives realized M, E, B from per-agent
+    # choices instead of rule-level rates. The rule-level rates become
+    # *target pools* agents draw from each period.
+    # ------------------------------------------------------------------
+    if agents and sampler is not None:
+        agent_types_by_id = params.get("agent_types_by_id", {})
+        type_cache_by_id = params.get("type_cache_by_id", {})
+        primary_token_id = params.get("primary_token_id")
+        neighbor_graph = params.get("neighbor_graph")
+        period = state["t"]
+
+        # Build per-period emission/burn pools.
+        pools = prepare_pools(state, static, stochastic, sampler, agent_types_by_id)
+
+        # First pass: each agent picks an action (softmax over
+        # action_set, scored from their UtilityWeights). We separate
+        # the decision from the execution so we know how many EARN /
+        # REDEEM actors share the pool before any of them runs.
+        decisions: list[tuple[dict, ActionKind]] = []
+        earn_count = 0
+        redeem_count = 0
+        for a in agents:
+            cache = type_cache_by_id.get(a["type"])
+            if cache is None:
+                decisions.append((a, ActionKind.HOLD))
+                continue
+            # Locked staked agents skip the action loop.
+            staking_until = a.get("staking_until", 0)
+            if staking_until > period:
+                decisions.append((a, ActionKind.HOLD))
+                continue
+            chosen = pick_action_cached(a, cache, sampler, period)
+            decisions.append((a, chosen))
+            if chosen == ActionKind.EARN:
+                earn_count += 1
+            elif chosen == ActionKind.REDEEM:
+                redeem_count += 1
+
+        compute_pool_shares(pools, earn_count, redeem_count)
+
+        # Reset realized counters and the per-period action histogram.
+        realized = {tid: {"E": 0.0, "B": 0.0} for tid in state["tokens"]}
+        action_counts: dict[str, int] = {}
+        # Per-type action histogram — populated alongside the population-
+        # wide one so /explore can chart per-role behavior.
+        action_counts_by_type: dict[str, dict[str, int]] = {}
+
+        # Index agents by id once so execute_action can look up
+        # neighbor targets in O(1) instead of scanning.
+        agents_by_id = {a["id"]: a for a in agents}
+
+        # Second pass: execute each decision.
+        for a, ak in decisions:
+            action_counts[ak.value] = action_counts.get(ak.value, 0) + 1
+            tbucket = action_counts_by_type.setdefault(a["type"], {})
+            tbucket[ak.value] = tbucket.get(ak.value, 0) + 1
+            execute_action(
+                ak, a, state, pools, sampler,
+                realized=realized, period=period,
+                primary_token_id=primary_token_id,
+                neighbor_graph=neighbor_graph,
+                agents_by_id=agents_by_id,
+            )
+
+        # Overlay realized rates onto the per-period state. Stochastic
+        # rules' samples are still drawn (above, via prepare_pools);
+        # the difference is that pool depletion is now agent-driven.
+        for tid in state["tokens"]:
+            state["tokens"][tid]["E"] = realized[tid]["E"]
+            state["tokens"][tid]["B"] = realized[tid]["B"]
+
+        # Phase-E follow-up: realize cross-token flows in the agent
+        # path. The pre-Phase-E ABM threaded cross_token_flows into
+        # the static rate pool, but no agent type EARNs the target
+        # token, so the pool sat unspent and the secondary token
+        # showed zero growth in trajectories.
+        #
+        # New semantic: each cross_token_flow's contribution per period
+        # is ``realized[source_token].B × flow.amount`` — i.e. tied to
+        # how much of the source token was actually burned this period
+        # by agent actions (REDEEM, STAKE-locks, etc.). Captures the
+        # cascina_roccafranca ROCCA-swap-mints-BUONO pattern, the Axie
+        # SLP-breed-burns-AXS pattern, and the Curve CRV-lock-mints-veCRV
+        # pattern uniformly.
+        #
+        # Known limitation: MakerDAO-style fee flows ("DAI fees accrue,
+        # MKR burned") aren't strictly burn-driven on the source side;
+        # this implementation under-fires them. A future iteration could
+        # tag source_event as emission- vs burn-driven via the source
+        # token's rule event_predicate matches.
+        cross_flows = params.get("cross_token_flows_sampled", [])
+        for src, _evt, tgt, action, amount in cross_flows:
+            if src not in realized or tgt not in realized:
+                continue
+            source_burn = realized[src]["B"]
+            if source_burn <= 0:
+                continue
+            flow_amount = source_burn * amount
+            if action == CrossTokenAction.MINT:
+                realized[tgt]["E"] += flow_amount
+                state["tokens"][tgt]["E"] = realized[tgt]["E"]
+                state["tokens"][tgt]["M"] += flow_amount
+            elif action == CrossTokenAction.BURN:
+                # Cap burn at remaining supply so we never push M below 0.
+                effective = min(flow_amount, state["tokens"][tgt]["M"])
+                if effective > 0:
+                    realized[tgt]["B"] += effective
+                    state["tokens"][tgt]["B"] = realized[tgt]["B"]
+                    state["tokens"][tgt]["M"] -= effective
+
+        # ------------------------------------------------------------------
+        # Phase E1: stochastic exit sweep. Disabled by default — only
+        # fires when at least one agent type sets ``exit_propensity > 0``.
+        # When exits happen we rebuild the neighbor graph (so dropped
+        # agents stop receiving transfers) and scale ``state['N']`` by
+        # the survivor fraction so FM5 sees a shrinking population.
+        # ------------------------------------------------------------------
+        if any_exit_enabled(agent_types_by_id):
+            n_before = len(agents)
+            before_by_type: dict[str, int] = {}
+            for a in agents:
+                before_by_type[a["type"]] = before_by_type.get(a["type"], 0) + 1
+            removed = apply_exit_decisions(state, agent_types_by_id, sampler)
+            state["_exits_this_period"] = removed
+            if removed > 0:
+                agents = state.get("agents") or []
+                after_by_type: dict[str, int] = {}
+                for a in agents:
+                    after_by_type[a["type"]] = after_by_type.get(a["type"], 0) + 1
+                state["_exits_by_type"] = {
+                    t: max(0, before_by_type.get(t, 0) - after_by_type.get(t, 0))
+                    for t in before_by_type
+                }
+                participants_snap = params.get("participants_snapshot")
+                if participants_snap is not None:
+                    params["neighbor_graph"] = build_neighbor_graph(
+                        participants_snap, agents, sampler
+                    )
+                if n_before > 0:
+                    state["N"] = state["N"] * (len(agents) / n_before)
+            else:
+                state["_exits_by_type"] = {}
+        else:
+            state["_exits_this_period"] = 0
+            state["_exits_by_type"] = {}
+
+        # ------------------------------------------------------------------
+        # Live aggregates (Phase A): replace declared/static fallbacks
+        # with values computed from current agent state.
+        # ------------------------------------------------------------------
+        # tau_bar from per-agent holding times.
+        live_tau = tau_bar_from_agents(agents, state["t"], fallback=0.0)
+        for tid in state["tau_bar"]:
+            if state["tau_bar"][tid] > 0:
+                state["tau_bar"][tid] = live_tau
+        # Live effective Gini from agent balances.
+        live_gini = gini([a.get("balance", 0.0) for a in agents])
+        # Only overwrite when the live value is meaningful (some
+        # balance is present); otherwise keep the declared Gini.
+        if any(a.get("balance", 0.0) > 0 for a in agents):
+            state["effective_gini"] = live_gini
+        # Live phi from active agents.
+        state["phi"] = contributor_fraction(agents, state["t"])
+        # Phase E3: surface mean reputation as an analytic. Applied
+        # after action execution so the gains from EARN/VOTE this
+        # period are visible — then decay runs below for next period.
+        state["mean_reputation"] = mean_reputation(agents)
+        apply_reputation_decay(agents, type_cache_by_id)
+        # Stash action_mix for analytics.
+        state["last_action_mix"] = action_mix(agents, action_counts)
+        # Stash per-type action counts so the explore-mode snapshot can
+        # surface them. The Monte-Carlo path also has access but doesn't
+        # currently use them.
+        state["last_action_counts_by_type"] = action_counts_by_type
+        # Live delegate-concentration Gini (Phase B). Always computed
+        # so it is available on the /explore page; defaults to the
+        # token-balance Gini when each agent is its own delegate.
+        state["delegate_gini"] = delegate_concentration_gini(agents)
+    else:
+        # No agents (rule-aggregate fallback) — preserve the v0
+        # per-period evolution. ``static`` may have been patched above
+        # by the regime-switch block, so we always refresh per-token E/B
+        # from it here (not just when stochastic rules are present).
         per_period_E = {tid: static.get(tid, {}).get("E", 0.0) for tid in state["tokens"]}
         per_period_B = {tid: static.get(tid, {}).get("B", 0.0) for tid in state["tokens"]}
-        for token_id, side, rule in stochastic:
-            dist = rule.function.distribution
-            # Sample one value from the declared distribution. Clamp
-            # below 0 — rate-like quantities are non-negative.
-            v = max(0.0, sampler.sample_distribution(dist))
-            # If the rule has an event_frequency, multiply by an
-            # averaged frequency sample (kept static-per-run for now).
-            if rule.trigger.event_frequency is not None:
-                v *= _sample_ac(rule.trigger.event_frequency, sampler)
-            if side == "E":
-                per_period_E[token_id] += v
-            else:
-                per_period_B[token_id] += v
+        if stochastic and sampler is not None:
+            for token_id, side, rule in stochastic:
+                dist = rule.function.distribution
+                v = max(0.0, sampler.sample_distribution(dist))
+                if rule.trigger.event_frequency is not None:
+                    v *= _sample_ac(rule.trigger.event_frequency, sampler)
+                if side == "E":
+                    per_period_E[token_id] += v
+                else:
+                    per_period_B[token_id] += v
         for tid in state["tokens"]:
             state["tokens"][tid]["E"] = per_period_E[tid]
             state["tokens"][tid]["B"] = per_period_B[tid]
 
+        for tid, tok in state["tokens"].items():
+            dM = tok["E"] - tok["B"]
+            tok["M"] = max(0.0, tok["M"] + dM)
+
+    # M update for the agent-driven branch (above already mutated
+    # state["tokens"][tid]["M"] inside execute_action). For the
+    # no-agents branch, we already updated above. Either way, Q and
+    # N are global and evolve here.
     growth = params.get("growth_g", 0.0)
-    for tid, tok in state["tokens"].items():
-        dM = tok["E"] - tok["B"]
-        tok["M"] = max(0.0, tok["M"] + dM)
     state["Q"] = state["Q"] * (1.0 + growth) if growth > -1.0 else 0.0
     state["N"] = state["N"] * (1.0 + growth) if growth > -1.0 else 0.0
     return state
@@ -406,6 +828,7 @@ def _run_once(
     config: VerifierConfig | None,
     fm_predicates: dict[tuple[str, str], list[SafetyPredicate]],
     record_trajectories: bool = False,
+    effective_agent_cap: int | None = None,
 ) -> tuple[
     dict[tuple[str, str], int | None],
     dict[tuple[str, str], list[list[float]]] | None,
@@ -420,9 +843,28 @@ def _run_once(
         values. Each inner list is length (horizon + 1). ``None``
         when recording is off (so the caller pays no per-period cost).
     """
-    state, params = _build_initial_state(te, sampler, config)
-    if any(fm_id == "FM2" for fm_id, _ in fm_predicates):
-        state["agents"] = spawn_agents(te, sampler)
+    state, params = _build_initial_state(
+        te, sampler, config, effective_agent_cap=effective_agent_cap,
+    )
+    # Phase A: spawn agents whenever the TE declares agent_types.
+    # The action loop drives M / E / B / Gini / φ from agent choices.
+    # (Pre-Phase-A this was gated on FM2 alone; now FM4 and FM6 also
+    # benefit from live aggregates.)
+    if te.participants.agent_types:
+        cap = params.get("effective_max_agents")
+        state["agents"] = spawn_agents(te, sampler, max_agents=cap)
+        # Phase B: build the interaction graph once per run; threaded
+        # through params so the action loop's TRANSFER samples a peer
+        # from the agent's neighbors instead of the full population.
+        params["neighbor_graph"] = build_neighbor_graph(
+            te.participants, state["agents"], sampler
+        )
+        # Phase B: assign each agent to a delegate based on the
+        # governance vote_weighting. DELEGATED ⇒ top-K wealthiest
+        # become delegates; everyone else delegates uniformly.
+        assign_delegates(
+            state["agents"], te.governance.vote_weighting, sampler
+        )
     first_violation: dict[tuple[str, str], int | None] = {
         k: None for k in fm_predicates
     }
@@ -604,6 +1046,17 @@ def run_simulation(
     if verdicts is None:
         verdicts = minimal_verdicts(te, config=verifier_config)
 
+    # Resolve the effective per-run agent population cap. Without an
+    # explicit override, scale down from DEFAULT_MAX_AGENTS so the
+    # total inner-loop cost stays bounded across pathologically large
+    # (n_runs × horizon) settings (Phase-A action loop is O(agents) per
+    # period, unlike the v0 aggregate path).
+    effective_agent_cap = effective_max_agents(
+        sim_cfg.n_runs,
+        sim_cfg.horizon_periods,
+        override=sim_cfg.max_agents,
+    )
+
     # Pick which (FM, subject) pairs to simulate.
     fm_predicates: dict[tuple[str, str], list[SafetyPredicate]] = {}
     skipped: dict[tuple[str, str], str] = {}
@@ -666,6 +1119,7 @@ def run_simulation(
             verifier_config,
             fm_predicates,
             record_trajectories=do_record,
+            effective_agent_cap=effective_agent_cap,
         )
         for k, t in result.items():
             if t is None:

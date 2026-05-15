@@ -165,17 +165,31 @@ def _eval_time_window(c: TimeWindow, te: TokenEconomy) -> ConditionStatus:
 def _eval_event_occurrence(
     c: EventOccurrence, te: TokenEconomy
 ) -> ConditionStatus:
-    """A rule fires when its source event exists in the IR."""
+    """Phase-H: route through the events catalog when event_id is set.
+
+    * ``event_id`` set → return ALWAYS if the catalog contains it (the
+      event exists in the IR, so the condition is structurally true).
+      NEVER if the id is dangling.
+    * Legacy ``source_token + source_event`` path: original behavior —
+      check that the named token has an emission rule with a matching
+      event predicate / kind value. EVER (conservative) on partial match.
+    """
+    if c.event_id is not None:
+        return (
+            ConditionStatus.ALWAYS
+            if any(e.id == c.event_id for e in te.events)
+            else ConditionStatus.NEVER
+        )
     src = next((t for t in te.tokens if t.id == c.source_token), None)
     if src is None:
         return ConditionStatus.NEVER
     # Match against any source emission rule's trigger.event_predicate
-    # or kind value.
+    # or kind value (legacy path).
     for r in src.emission_rules:
         if r.trigger.event_predicate == c.source_event:
             return ConditionStatus.ALWAYS
         try:
-            if r.trigger.kind.value == c.source_event:
+            if r.trigger.kind is not None and r.trigger.kind.value == c.source_event:
                 return ConditionStatus.ALWAYS
         except AttributeError:
             pass

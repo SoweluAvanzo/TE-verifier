@@ -15,6 +15,7 @@ import yaml
 from flask import Flask, jsonify, render_template, request
 
 from schema import (
+    ActionKind,
     AsymptoticClass,
     AsymptoticFamily,
     AgentType,
@@ -36,11 +37,14 @@ from schema import (
     NFRs,
     NumberRange,
     ParticipantsSpec,
+    PopulationEventKind,
     RedemptionMechanism,
     Rule,
     RuleTrigger,
     SanctionKind,
     SanctionStructure,
+    ThresholdOp,
+    ThresholdVar,
     Token,
     TokenEarningMechanism,
     TokenEconomy,
@@ -54,6 +58,7 @@ from verifier import verify
 from verifier.abm import (
     SimulationConfig,
     export_cadcad_config,
+    run_explore,
     run_simulation,
 )
 from verifier.minimal import minimal_verdicts
@@ -100,6 +105,16 @@ def index() -> str:
         emission_triggers=[e.value for e in EmissionTriggerKind],
         burn_triggers=[e.value for e in BurnTriggerKind],
         function_signs=[e.value for e in FunctionSign],
+        # Mint rules can only adopt non-negative signs. always_negative is
+        # a burn-side convention; allowing it on a mint dropdown lets the
+        # user describe a mathematically impossible design.
+        mint_signs=[
+            e.value for e in FunctionSign if e.value != "always_negative"
+        ],
+        # Condition predicate enums — used by both Rule.regimes and
+        # RuleTrigger.conditions form blocks.
+        threshold_vars=[e.value for e in ThresholdVar],
+        threshold_ops=[e.value for e in ThresholdOp],
         asymptotic_families=[e.value for e in AsymptoticFamily],
         archetypes=[e.value for e in Archetype],
         circulation_speeds=[e.value for e in CirculationSpeed],
@@ -110,6 +125,8 @@ def index() -> str:
         controlling_actors=[e.value for e in ControllingActor],
         agent_roles=["contributor", "consumer", "governance_only", "observer"],
         vote_weightings=[e.value for e in VoteWeighting],
+        action_kinds=[e.value for e in ActionKind],
+        population_event_kinds=[e.value for e in PopulationEventKind],
         distribution_kinds=[
             "uniform", "normal", "lognormal", "bernoulli", "poisson", "beta",
         ],
@@ -139,6 +156,16 @@ def yaml_editor() -> str:
         emission_triggers=[e.value for e in EmissionTriggerKind],
         burn_triggers=[e.value for e in BurnTriggerKind],
         function_signs=[e.value for e in FunctionSign],
+        # Mint rules can only adopt non-negative signs. always_negative is
+        # a burn-side convention; allowing it on a mint dropdown lets the
+        # user describe a mathematically impossible design.
+        mint_signs=[
+            e.value for e in FunctionSign if e.value != "always_negative"
+        ],
+        # Condition predicate enums — used by both Rule.regimes and
+        # RuleTrigger.conditions form blocks.
+        threshold_vars=[e.value for e in ThresholdVar],
+        threshold_ops=[e.value for e in ThresholdOp],
         asymptotic_families=[e.value for e in AsymptoticFamily],
         archetypes=[e.value for e in Archetype],
         circulation_speeds=[e.value for e in CirculationSpeed],
@@ -330,8 +357,8 @@ def simulate_endpoint() -> dict:
     # arbitrarily-long server-side simulation.
     try:
         cfg = SimulationConfig(
-            n_runs=min(max(1, int(body.get("n_runs", 200))), 5000),
-            horizon_periods=min(max(1, int(body.get("horizon_periods", 260))), 5000),
+            n_runs=min(max(1, int(body.get("n_runs", 200))), 200),
+            horizon_periods=min(max(1, int(body.get("horizon_periods", 260))), 500),
             seed=(int(body["seed"]) if body.get("seed") not in (None, "") else None),
             skip_non_fragile=bool(body.get("skip_non_fragile", True)),
             record_trajectories=bool(body.get("record_trajectories", False)),
@@ -343,6 +370,63 @@ def simulate_endpoint() -> dict:
         report = run_simulation(te, config=cfg)
     except Exception as e:
         return jsonify(error=f"simulation failed: {e}"), 500
+    return jsonify(report.model_dump(mode="json"))
+
+
+@app.route("/explore")
+def explore_page() -> str:
+    """Render the single-trajectory explore page.
+
+    Unlike /simulate (Monte Carlo aggregates), /explore runs one
+    seeded trajectory and renders per-period detail — agent balances,
+    trade graph, action mix, live Gini — with a period scrubber so
+    the user can watch the system evolve.
+    """
+    examples = sorted(p.stem for p in EXAMPLES_DIR.glob("*.yaml"))
+    return render_template("explore.html", examples=examples)
+
+
+@app.route("/api/explore", methods=["POST"])
+def explore_endpoint() -> dict:
+    """Run one trajectory and return the per-period snapshot series.
+
+    Body:
+      - yaml: TE-IR YAML text
+      - horizon_periods (int, default 100, max 300)
+      - seed (int|None)
+      - max_agents (int|None): explicit cap, otherwise auto-scaled
+    """
+    body = request.get_json(force=True)
+    yaml_text = body.get("yaml", "")
+    try:
+        raw = yaml.safe_load(yaml_text)
+        te = TokenEconomy.model_validate(raw)
+    except Exception as e:
+        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
+
+    try:
+        cfg = SimulationConfig(
+            n_runs=1,
+            # Trajectory mode runs ONE seeded simulation — no compute
+            # multiplier from replicates. Cap matches the schema's
+            # SimulationConfig.horizon_periods upper bound (10 000) so
+            # longer-horizon explorations (e.g. Bitcoin's 9000-week
+            # halving curve) aren't silently truncated at 300.
+            horizon_periods=min(max(1, int(body.get("horizon_periods", 100))), 10_000),
+            seed=(int(body["seed"]) if body.get("seed") not in (None, "") else None),
+            max_agents=(
+                min(max(1, int(body["max_agents"])), 200)
+                if body.get("max_agents") not in (None, "")
+                else None
+            ),
+        )
+    except (ValueError, TypeError) as e:
+        return jsonify(error=f"invalid config: {e}"), 400
+
+    try:
+        report = run_explore(te, sim_config=cfg)
+    except Exception as e:
+        return jsonify(error=f"explore failed: {e}"), 500
     return jsonify(report.model_dump(mode="json"))
 
 

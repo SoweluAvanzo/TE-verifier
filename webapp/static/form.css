@@ -374,6 +374,118 @@ button.ghost:hover {
   gap: 0.5em 0.75em;
 }
 
+/* Phase-A: per-AgentType utility + action_set widgets */
+
+.agent-advanced {
+  margin-top: 0.6em;
+  border: 1px dashed #d0d0d6;
+  border-radius: 4px;
+  padding: 0.4em 0.7em;
+  background: #fff;
+}
+
+.agent-advanced summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #444;
+  padding: 2px 0;
+}
+
+.action-set-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em 0.9em;
+  margin-top: 0.4em;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.85rem;
+}
+
+.utility-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 10em), 1fr));
+  gap: 0.4em 0.7em;
+  margin-top: 0.4em;
+}
+
+.utility-grid .field label {
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #555;
+}
+
+.utility-grid .field input {
+  font-size: 0.85rem;
+}
+
+/* Phase-C: population events repeater */
+
+.stage-extras {
+  margin-top: 1em;
+  border-top: 1px dashed #d8d8df;
+  padding-top: 0.6em;
+}
+
+.stage-extras > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #2c2c2e;
+}
+
+.pop-event-row {
+  background: #fafaf7;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.75em 0.9em;
+  margin: 0.6em 0;
+}
+
+.pop-event-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5em;
+}
+
+.pop-event-row-head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.pop-event-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 11em), 1fr));
+  gap: 0.5em 0.75em;
+}
+
+.remove-pop-event {
+  color: var(--color-fail);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.remove-pop-event:hover { text-decoration: underline; }
+
+.pop-event-utility {
+  margin-top: 0.5em;
+  border: 1px dashed #d0d0d6;
+  border-radius: 4px;
+  padding: 0.4em 0.7em;
+}
+
+.pop-event-utility summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
 /* Form actions */
 
 .form-actions {
@@ -665,6 +777,53 @@ button.ghost:hover {
   margin-top: 0.6rem;
 }
 
+/* Legend block above the minimal table — explains V / S / status pills
+   so the user can read the table at a glance without consulting the docs. */
+.legend-box {
+  background: #f8f9fb;
+  border: 1px solid #e2e2e6;
+  border-radius: 6px;
+  padding: 0.5rem 0.8rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.82rem;
+}
+
+.legend-box > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #2c2c2e;
+  list-style: revert;            /* keep the disclosure triangle */
+}
+
+.legend-dl {
+  display: grid;
+  grid-template-columns: 11em 1fr;
+  gap: 0.3rem 0.7rem;
+  margin: 0.5rem 0 0;
+}
+
+.legend-dl dt {
+  margin: 0;
+  color: #444;
+}
+
+.legend-dl dd {
+  margin: 0;
+  color: #333;
+  line-height: 1.45;
+}
+
+.legend-dl code {
+  background: #ececf0;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.2rem;
+  font-size: 0.78rem;
+}
+
+/* Highlight the column headers when the user hovers (they now carry
+   title attributes; the cursor change reinforces that they're informative). */
+.minimal-table th[title] { cursor: help; }
+
 .minimal-table th,
 .minimal-table td {
   border-bottom: 1px solid #e2e2e6;
@@ -726,4 +885,200 @@ button.ghost:hover {
   color: #666;
   font-size: 0.74rem;
   margin-top: 0.2rem;
+}
+
+/* Live agent-fraction-sum indicator (pinned next to the section heading).
+ * Green ✓ when sum is ≈1.0, amber otherwise. Prevents the round-trip
+ * "fractions must sum to 1" Pydantic error. */
+.fraction-pill {
+  display: inline-block;
+  margin-left: 0.7rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  font-family: ui-monospace, monospace;
+  background: #f3f3f6;
+  border: 1px solid #c8c8d0;
+  color: #444;
+}
+.fraction-pill.ok  { background: #e8f4ea; border-color: #82b88a; color: #2d7a3a; }
+.fraction-pill.bad { background: #fbf2dd; border-color: #d2b15a; color: #b88500; }
+
+/* ===========================================================
+ * Conditions + regime switches (Phase F)
+ * =========================================================== */
+
+.rule-conditions,
+.rule-regimes {
+  margin-top: 0.45rem;
+  background: #f8f8fa;
+  border: 1px solid #d8d8d2;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+}
+
+.rule-conditions summary,
+.rule-regimes summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+
+.condition-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0.3rem 0;
+  padding: 0.3rem 0.4rem;
+  background: #fff;
+  border: 1px solid #e0e0e6;
+  border-radius: 5px;
+  flex-wrap: wrap;
+}
+
+.condition-row select,
+.condition-row input[type="number"],
+.condition-row input[type="text"] {
+  padding: 0.15rem 0.4rem;
+  border: 1px solid #c8c8d0;
+  border-radius: 4px;
+  font-size: 0.83rem;
+}
+
+.cond-fields {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.remove-condition,
+.remove-regime {
+  margin-left: auto;
+  font-weight: 700;
+}
+
+.regime-row {
+  background: #fff;
+  border: 1px solid #c8c8d0;
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  margin: 0.3rem 0;
+}
+
+.regime-row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: #555;
+  margin-bottom: 0.3rem;
+}
+
+.regime-predicate {
+  margin-bottom: 0.4rem;
+}
+
+.regime-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+}
+
+@media (max-width: 700px) {
+  .regime-grid { grid-template-columns: 1fr; }
+}
+
+.add-rule-condition,
+.add-rule-regime {
+  margin-top: 0.3rem;
+  font-size: 0.85rem;
+}
+
+/* Phase H4 — Events catalog stage. */
+.event-row {
+  background: #f8f8fa;
+  border: 1px solid #d8d8d2;
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  margin: 0.4rem 0;
+}
+.event-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.3rem;
+}
+.event-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem 0.7rem;
+}
+@media (max-width: 800px) {
+  .event-grid { grid-template-columns: 1fr; }
+}
+.rule-event-id {
+  width: 100%;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.86rem;
+}
+
+/* Phase I1 — Non-tokenized assets stage. */
+.asset-row {
+  background: #f8f8fa;
+  border: 1px solid #d8d8d2;
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  margin: 0.4rem 0;
+}
+.asset-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.3rem;
+}
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.4rem 0.6rem;
+}
+@media (max-width: 800px) { .asset-grid { grid-template-columns: 1fr; } }
+.asset-shapes summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.84rem;
+  margin: 0.3rem 0;
+}
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Phase-K DSL editor inside a rule row */
+.rule-fn-dsl textarea {
+  width: 100%;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.85rem;
+}
+.rule-fn-params {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed #d6dde6;
+}
+.rule-fn-param-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr auto 1fr auto;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.3rem;
+}
+.rule-fn-param-row input {
+  font-size: 0.82rem;
+}
+.remove-rule-fn-param {
+  padding: 0 0.4rem;
+  background: transparent;
+  border: 1px solid #ccd;
+  border-radius: 3px;
 }

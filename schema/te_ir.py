@@ -14,6 +14,16 @@ from typing import Annotated, Any, Literal, Union
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+# Phase K1 — state-dependent expression AST. Imported here so
+# FunctionShape can carry an optional ``expression`` field. The Expr
+# tree is the canonical magnitude representation downstream (Z3 / MC /
+# ABM all consume it through one code path).
+from schema.expr import (
+    Expr as _Expr,
+    ParamDecl as _ParamDecl,
+    EventPayloadField as _EventPayloadField,
+)
+
 
 # ---------------------------------------------------------------------------
 # Primitive types
@@ -126,6 +136,29 @@ class EmissionTriggerKind(str, Enum):
     BEHAVIORAL_EVENT = "behavioral_event"
     PHYSICAL_RESOURCE_FLOW = "physical_resource_flow"
     ALGORITHMIC = "algorithmic"
+
+
+class EventTriggerKind(str, Enum):
+    """Unified kind enum for top-level EventDefinitions (Phase H).
+
+    Supersedes the per-side ``EmissionTriggerKind`` and ``BurnTriggerKind``
+    by absorbing both into a single catalog. A mint rule references an
+    event with kind=BEHAVIORAL / TIME_BASED / etc.; a burn rule references
+    an event with kind=DEMAND_DRIVEN / RULE_DRIVEN / etc. The split into
+    side-specific enums survives in the legacy fields for back-compat,
+    but new YAMLs and the form route through this enum exclusively.
+    """
+
+    NONE = "none"
+    TIME_BASED = "time_based"
+    BEHAVIORAL = "behavioral"
+    PHYSICAL_RESOURCE_FLOW = "physical_resource_flow"
+    ALGORITHMIC = "algorithmic"
+    DEMAND_DRIVEN = "demand_driven"
+    RULE_DRIVEN = "rule_driven"
+    THRESHOLD_DRIVEN = "threshold_driven"
+    EXPIRY = "expiry"
+    COUPON_LAYER_ONLY = "coupon_layer_only"
 
 
 class BurnTriggerKind(str, Enum):
@@ -260,18 +293,32 @@ class TimeWindow(_Frozen):
 
 
 class EventOccurrence(_Frozen):
-    """A rule is active iff a specific source event exists in the IR.
+    """A rule is active iff a specific event exists / fires.
 
-    The verifier looks up `source_token` in `te.tokens` and checks
-    that any of its emission_rules has a matching `source_event`
-    (matched against the rule's free-text trigger.event_predicate or
-    `RuleTrigger.kind.value`). When `source_token` is missing, the
-    condition is NEVER-satisfied.
+    Phase-H preferred: ``event_id`` refers to an entry in
+    ``TokenEconomy.events``. The condition resolves to TRUE for any
+    period where the event has non-zero realized frequency (in ABM) or
+    is statically reachable (in the formal verifier).
+
+    Legacy ``source_token`` + ``source_event`` retained for back-compat;
+    the loader auto-resolves them against the events catalog when
+    ``event_id`` is omitted.
     """
 
     type: Literal["event_occurrence"] = "event_occurrence"
-    source_token: str
-    source_event: str
+    event_id: str | None = None
+    source_token: str | None = None
+    source_event: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_reference(self) -> "EventOccurrence":
+        if self.event_id is None:
+            if self.source_token is None or self.source_event is None:
+                raise ValueError(
+                    "EventOccurrence requires either event_id (preferred) "
+                    "or both source_token + source_event."
+                )
+        return self
 
 
 Condition = Annotated[
@@ -281,15 +328,45 @@ Condition = Annotated[
 
 
 class RuleTrigger(_Frozen):
-    """When a Rule fires."""
+    """When a Rule fires.
 
-    kind: EmissionTriggerKind | BurnTriggerKind
+    Phase-H: preferred path is ``event_id`` — a reference to a top-level
+    :class:`EventDefinition` in ``TokenEconomy.events``. The
+    EventDefinition centralizes ``kind`` + ``frequency`` + event-level
+    conditions, so multiple rules can share one event (e.g. a single
+    "service_delivered" event drives both a mint and a reputation gain).
+
+    Legacy fields (``kind`` / ``event_predicate`` / ``event_frequency``)
+    remain accepted for back-compat. At load time
+    :func:`TokenEconomy.normalize_events` auto-synthesizes an
+    EventDefinition for any rule that supplies the legacy fields, so
+    downstream consumers always read through ``event_id``.
+    """
+
+    # Phase-H preferred: link to a TokenEconomy.events entry by id.
+    event_id: str | None = None
+    # Legacy inline trigger fields — auto-promoted on load.
+    kind: EmissionTriggerKind | BurnTriggerKind | None = None
     event_predicate: str | None = None
     event_frequency: AsymptoticClass | None = None
     # Phase B2 — structured conditions. The rule contributes its rate
     # only when all conditions hold (AND). Static 3-valued evaluation
     # in `verifier.conditions`. Empty list = always active (default).
     conditions: list[Condition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_trigger_source(self) -> "RuleTrigger":
+        if self.event_id is not None and self.kind is not None:
+            raise ValueError(
+                "RuleTrigger: event_id and legacy 'kind' are mutually "
+                "exclusive — pick one. event_id is preferred."
+            )
+        if self.event_id is None and self.kind is None:
+            raise ValueError(
+                "RuleTrigger requires either event_id (preferred) or "
+                "legacy 'kind' field."
+            )
+        return self
 
 
 class DistributionSpec(_Frozen):
@@ -348,24 +425,91 @@ class DistributionSpec(_Frozen):
 
 
 class FunctionShape(_Frozen):
-    """The (sign, asymptotic_class) classification of a Rule's function.
+    """Magnitude specification for a Rule's per-event / per-period rate.
 
-    When ``distribution`` is set, the ABM samples the per-period rate
-    from that distribution each period (turns the rule from a
-    once-per-run static sample into a noisy time-evolving rate). The
-    verifier sees only the support (μ±3σ for Normal, full range for
-    Uniform), so its reasoning is unchanged.
+    Two equivalent author-time forms, both producing the same internal
+    representation downstream:
+
+    * **Legacy** (compact): set ``asymptotic_class`` to one of the
+      built-in shapes (constant, linear, polynomial, log, etc.). The
+      loader auto-synthesizes an equivalent ``expression`` AST so every
+      downstream consumer (Z3, MC, ABM) reads through a single code
+      path.
+    * **Expression** (Phase K1): set ``expression`` to a full
+      state-dependent DSL AST plus ``parameters`` declaring named
+      constants used inside it. Enables function-of-state, event-payload
+      dependent magnitudes that the legacy asymptotic forms cannot
+      express (veCRV lock-amount mint, MakerDAO CDR-driven mint,
+      tiered redemption rewards, etc.).
+
+    Exactly one of ``asymptotic_class`` / ``expression`` may be set
+    (mutual-exclusion validator). Mixing the two in one Rule would be
+    ambiguous: which one drives the rate? The validator rejects.
+
+    Deprecated: ``sign``. Retained for back-compat with existing YAMLs
+    and the trajectory's halving-hint warning. Direction (mint vs burn)
+    is intrinsic — mint rules carry a non-negative rate, burn rules a
+    non-positive one; shape is captured by family + signed coefficients
+    (legacy) or the expression itself (Phase K1).
     """
 
-    sign: FunctionSign
-    asymptotic_class: AsymptoticClass
+    asymptotic_class: AsymptoticClass | None = None
+    expression: _Expr | None = None
+    parameters: list[_ParamDecl] = Field(default_factory=list)
+    sign: FunctionSign = FunctionSign.ALWAYS_POSITIVE
     distribution: DistributionSpec | None = None
+
+    @field_validator("expression", mode="before")
+    @classmethod
+    def _parse_expression_string(cls, v):
+        """Accept either a parsed AST or a surface-syntax string.
+
+        Lets YAML authors write ``expression: "event.amount * event.duration
+        / param.max_lock"`` instead of the full nested AST. The parser
+        is invoked lazily here (avoids a module-level circular import
+        between te_ir and expr_parser)."""
+        if isinstance(v, str):
+            from schema.expr_parser import parse
+            return parse(v)
+        return v
+
+    @model_validator(mode="after")
+    def _shape_mode(self) -> "FunctionShape":
+        if self.asymptotic_class is None and self.expression is None:
+            raise ValueError(
+                "FunctionShape requires one of: asymptotic_class (legacy) "
+                "or expression (Phase K1 DSL)."
+            )
+        if self.asymptotic_class is not None and self.expression is not None:
+            raise ValueError(
+                "FunctionShape: asymptotic_class and expression are "
+                "mutually exclusive — pick one."
+            )
+        if self.parameters and self.expression is None:
+            raise ValueError(
+                "FunctionShape.parameters can only be set when expression is set."
+            )
+        return self
 
 
 class RegimeSwitch(_Frozen):
-    """A piecewise change in function behavior above a threshold."""
+    """A piecewise change in a Rule's function shape once a structured
+    condition becomes true.
 
-    predicate: str
+    The base ``Rule.function`` is the t=0 regime; each `RegimeSwitch`
+    overrides it once the predicate fires. Predicates reuse the
+    ``Condition`` discriminated union (ThresholdCondition, TimeWindow,
+    EventOccurrence) so the verifier can evaluate them statically and
+    the ABM trajectory can switch shapes at the firing period.
+
+    Multiple regimes on one Rule are evaluated in declaration order;
+    the FIRST whose condition status is non-NEVER is the one applied.
+    Once activated, a regime is sticky — the trajectory does not
+    revert to the base shape (mirrors how real-world halvings / supply
+    caps work).
+    """
+
+    predicate: Condition
     function: FunctionShape
 
 
@@ -594,6 +738,161 @@ class HoldingTimeDistribution(_Frozen):
     expected_periods: NumberRange
 
 
+class ActionKind(str, Enum):
+    """Per-period actions an agent can take in the ABM.
+
+    The ABM's action loop (``verifier.abm.actions``) picks one action
+    per agent per period via softmax over their ``UtilityWeights``.
+    Each action mutates agent and/or token state:
+
+    * ``HOLD``      — no state change. Holding-time accumulates.
+    * ``EARN``      — receive tokens from the period's emission pool
+                      (distributed across eligible agents).
+    * ``TRANSFER``  — send a fraction of balance to a neighbor
+                      (peer-to-peer; topology-restricted in Phase B).
+    * ``REDEEM``    — spend balance to acquire a good (decrements
+                      balance, drives demand-driven burn).
+    * ``STAKE``     — lock balance for K periods; counts toward φ.
+    * ``VOTE``      — contribute weight to a governance decision
+                      (drives live Γ + delegate concentration).
+
+    Each ``AgentType`` declares an ``action_set``; when ``None``, a
+    sane default derived from ``AgentRole`` is used.
+    """
+
+    HOLD = "hold"
+    EARN = "earn"
+    TRANSFER = "transfer"
+    REDEEM = "redeem"
+    STAKE = "stake"
+    VOTE = "vote"
+
+
+# Role-based default action_set. Users override via AgentType.action_set
+# for finer control. These defaults preserve the case-study examples'
+# implied behavior under the v0 aggregate ABM.
+DEFAULT_ACTION_SET_BY_ROLE: dict[str, list[ActionKind]] = {
+    AgentRole.CONTRIBUTOR.value: [
+        ActionKind.EARN,
+        ActionKind.HOLD,
+        ActionKind.TRANSFER,
+        ActionKind.STAKE,
+    ],
+    AgentRole.CONSUMER.value: [
+        ActionKind.REDEEM,
+        ActionKind.HOLD,
+        ActionKind.TRANSFER,
+    ],
+    AgentRole.GOVERNANCE_ONLY.value: [
+        ActionKind.VOTE,
+        ActionKind.STAKE,
+        ActionKind.HOLD,
+    ],
+    AgentRole.OBSERVER.value: [
+        ActionKind.HOLD,
+        ActionKind.TRANSFER,
+    ],
+    AgentRole.UNSPECIFIED.value: [
+        ActionKind.HOLD,
+        ActionKind.TRANSFER,
+        ActionKind.EARN,
+        ActionKind.REDEEM,
+    ],
+}
+
+
+class UtilityWeights(_Frozen):
+    """Per-agent-type weights on the fixed action-utility catalog.
+
+    Consumed by the ABM's action selection loop (``verifier.abm.actions``).
+    Each term scales one component of the per-action utility score:
+
+    * ``income_yield``       — favors EARN
+    * ``holding_yield``      — favors HOLD / STAKE
+    * ``redemption_value``   — favors REDEEM
+    * ``governance_payoff``  — favors VOTE
+    * ``social_payoff``      — favors TRANSFER
+    * ``risk_aversion``      — penalizes high-variance actions
+
+    ``action_temperature`` controls softmax sharpness: ``β = 1/T``.
+    T → 0 means deterministic argmax; T → ∞ means uniform.
+
+    All weights default to 0; when both the agent's utility AND role
+    are unset, the action loop uses ``DEFAULT_UTILITY_BY_ROLE`` for
+    ``UNSPECIFIED``. Schema-level mirror of
+    ``schema.te_ir_v2.UtilityWeights``.
+    """
+
+    income_yield: float = 0.0
+    holding_yield: float = 0.0
+    redemption_value: float = 0.0
+    governance_payoff: float = 0.0
+    social_payoff: float = 0.0
+    risk_aversion: float = 0.0
+    action_temperature: float = Field(default=1.0, gt=0.0)
+    # Per-good preference map (optional). Used by REDEEM scoring when
+    # multiple goods are declared. Keys are Good.id; values weight the
+    # agent's preference for that good. Goods not listed default to 0.
+    good_preferences: dict[str, float] = Field(default_factory=dict)
+
+    # ------------------------------------------------------------------
+    # Phase E1 — stochastic exit. When ``exit_propensity == 0`` (default)
+    # an agent never exits; this preserves pre-Phase-E behavior. Positive
+    # values gate a per-period exit roll: p_exit = exit_propensity *
+    # sigmoid(-u_self + social_comparison_delta * max(0, u_mean - u_self)).
+    # Mirrors the ``p_exit`` rule in the sample (Domenicale et al.) but
+    # works against ABM scalar utility derived from balance + reputation +
+    # governance eligibility.
+    # ------------------------------------------------------------------
+    exit_propensity: float = Field(default=0.0, ge=0.0, le=1.0)
+    social_comparison_delta: float = Field(default=0.3, ge=0.0)
+
+    # ------------------------------------------------------------------
+    # Phase E3 — reputation as persistent agent state.
+    #
+    # Reputation accumulates on contribution-style actions (EARN, VOTE)
+    # and decays multiplicatively each period. When ``reputation_yield``
+    # > 0 the per-period score for HOLD and EARN includes a bonus
+    # ``reputation_yield · log(1 + reputation)`` — concave so it doesn't
+    # let a runaway few agents dominate. ``reputation_decay`` ∈ [0, 1]
+    # is the fraction lost per period (0 = permanent, 1 = wiped every
+    # period).
+    #
+    # Both default to 0 (no behavioral effect, no decay). The agent
+    # still carries a ``reputation`` field — useful purely as an
+    # analytic — but it influences nothing.
+    # ------------------------------------------------------------------
+    reputation_yield: float = Field(default=0.0, ge=0.0)
+    reputation_decay: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class UtilityJitter(_Frozen):
+    """Per-component standard deviations for per-agent utility offsets
+    (Phase E2).
+
+    Type-level ``UtilityWeights`` apply identically to every agent of
+    that type — the cache is built once per type. To break population
+    symmetry without giving up the cache, the engine samples a per-agent
+    offset vector ``Δ ~ N(0, sigma)`` (one draw per component) at spawn
+    time. Per-action weight offsets are derived from these and added to
+    the type weights inside ``pick_action_cached``.
+
+    Defaults are 0.0 (no jitter, behavior identical to pre-Phase-E2).
+    Sigmas are interpreted as standard deviations of normal draws on
+    each component independently. Mirrors the per-instance
+    ``alpha/beta/gamma ~ U[lo, hi]`` sampling in the sample
+    ``token_economy_simulation.py`` (Domenicale et al.), but at the
+    fine-grained component level the ABM exposes.
+    """
+
+    income_yield: float = Field(default=0.0, ge=0.0)
+    holding_yield: float = Field(default=0.0, ge=0.0)
+    redemption_value: float = Field(default=0.0, ge=0.0)
+    governance_payoff: float = Field(default=0.0, ge=0.0)
+    social_payoff: float = Field(default=0.0, ge=0.0)
+    risk_aversion: float = Field(default=0.0, ge=0.0)
+
+
 class AgentType(_Frozen):
     id: str
     fraction: float = Field(ge=0.0, le=1.0)
@@ -604,6 +903,88 @@ class AgentType(_Frozen):
     # heuristic. When None, the legacy keyword-match on `id` and
     # `utility_hint` is still used as a fallback (back-compat).
     role: AgentRole | None = None
+    # Phase-A ABM extension: per-period action set this agent can pick
+    # from. ``None`` → derived from ``role`` via
+    # ``DEFAULT_ACTION_SET_BY_ROLE``. Used by the agent action loop
+    # in ``verifier.abm``.
+    action_set: list[ActionKind] | None = None
+    # Phase-A ABM extension: structured utility weights driving
+    # softmax action selection. ``None`` → derived from ``role`` via
+    # ``DEFAULT_UTILITY_BY_ROLE``.
+    utility: UtilityWeights | None = None
+    # Phase-E2 ABM extension: per-agent utility jitter. When None,
+    # every agent of this type uses the type's base utility (no
+    # heterogeneity within the cohort).
+    utility_jitter: UtilityJitter | None = None
+
+
+class PopulationEventKind(str, Enum):
+    """Phase-C population-dynamics events.
+
+    * ``SPAWN_AGENTS``    — at period T, add ``count`` agents of the
+                            given ``agent_type_id`` (the type must
+                            already exist in ``agent_types``).
+    * ``DESPAWN_AGENTS``  — at period T, remove ``count`` agents of the
+                            given type. The lowest-balance agents are
+                            removed first (mirroring real attrition).
+    * ``SHIFT_UTILITY``   — at period T, replace the cached softmax
+                            utility for the named ``agent_type_id``
+                            with ``new_utility``. Models things like
+                            a fee change that incentivizes redemption.
+
+    Events fire deterministically by ``at_period``. Multi-condition
+    triggers (e.g. "when φ < 0.3") are intentionally out of scope for
+    Phase C — they're easy to layer on top later via SafetyPredicate.
+    """
+
+    SPAWN_AGENTS = "spawn_agents"
+    DESPAWN_AGENTS = "despawn_agents"
+    SHIFT_UTILITY = "shift_utility"
+
+
+class PopulationEvent(_Frozen):
+    """An event that mutates the agent population mid-simulation.
+
+    Two firing modes, mutually exclusive:
+
+    * Scheduled — ``at_period`` set, ``conditions`` empty: the engine
+      fires the event at the start of period ``at_period`` (the Phase-C
+      original behavior).
+    * Conditional — ``conditions`` non-empty: the engine evaluates the
+      structured predicates against the current state every period.
+      When all conditions become true for the first time, the event
+      fires once and is then marked complete (sticky — won't re-fire
+      even if the predicates remain true).
+
+    Either ``at_period`` or ``conditions`` must be specified.
+
+    For SHIFT_UTILITY the new utility is applied to the per-type cache so
+    every subsequent action selection uses the updated weights. For
+    SPAWN / DESPAWN, the agent list is mutated and the neighbor graph
+    is rebuilt (so new agents can interact and removed agents stop
+    receiving transfers).
+    """
+
+    kind: PopulationEventKind
+    at_period: int | None = Field(default=None, ge=0)
+    agent_type_id: str
+    # SPAWN / DESPAWN: number of agents to add / remove.
+    count: int | None = Field(default=None, ge=0)
+    # SPAWN: per-agent starting balance.
+    balance_per_agent: float | None = Field(default=None, ge=0.0)
+    # SHIFT_UTILITY: replacement utility weights.
+    new_utility: UtilityWeights | None = None
+    # Phase-F: structured condition triggers. AND-combined.
+    conditions: list[Condition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_trigger(self) -> "PopulationEvent":
+        if self.at_period is None and not self.conditions:
+            raise ValueError(
+                "PopulationEvent requires either at_period or "
+                "at least one condition"
+            )
+        return self
 
 
 class ParticipantsSpec(_Frozen):
@@ -631,6 +1012,10 @@ class ParticipantsSpec(_Frozen):
     # the recognized key is `average_degree` (NumberRange). Used by FM5
     # to apply a degree-corrected critical-mass threshold.
     topology_params: dict[str, NumberRange] = Field(default_factory=dict)
+    # Phase-C ABM extension: population-dynamics events that fire
+    # mid-simulation. Empty list ⇒ static population (the pre-Phase-C
+    # default).
+    population_events: list[PopulationEvent] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _agent_fractions(self) -> "ParticipantsSpec":
@@ -822,12 +1207,125 @@ class Meta(_Frozen):
 # ---------------------------------------------------------------------------
 
 
+class EventDefinition(_Frozen):
+    """A globally-defined event referenced by mint, burn, population, and
+    condition machinery (Phase H).
+
+    Single source of truth for ``kind`` + ``frequency`` + event-level
+    ``conditions``. Rules / conditions / population events reference an
+    EventDefinition by ``id`` instead of inlining the trigger spec.
+    Multiple consumers can share one definition.
+
+    Examples
+    --------
+    Time bank — single service-delivered event drives the HOUR mint:
+
+        - id: service_delivered
+          label: Verified service hour
+          kind: behavioral
+          frequency:
+            family: linear
+            parameter_ranges: { b: { min: 20, max: 180 } }
+
+    Civic pact — pdt_redeemed_for_coupon drives PDT burn and COUPON mint:
+
+        - id: pdt_redeemed_for_coupon
+          label: PDT swapped for COUPON at the municipal counter
+          kind: demand_driven
+          frequency:
+            family: linear
+            parameter_ranges: { b: { min: 15, max: 350 } }
+    """
+
+    id: str
+    label: str
+    kind: EventTriggerKind
+    frequency: AsymptoticClass | None = None
+    conditions: list[Condition] = Field(default_factory=list)
+    # Phase K1 — typed event payload. Each field becomes addressable
+    # as ``event.<name>`` inside any rule expression that references
+    # this event. SCALAR fields require a range so Z3 has something
+    # to constrain; STRING fields support equality checks only.
+    payload: list[_EventPayloadField] = Field(default_factory=list)
+
+
+class AssetKind(str, Enum):
+    SERVICE = "service"     # consumable, fungible (hour, ride, lesson)
+    GOOD = "good"           # consumable, fungible (coupon item, meal)
+    BADGE = "badge"         # non-consumable, fungible-ish (achievement marker)
+    NFT = "nft"             # unique, non-consumable (artwork, physical item)
+
+
+_LIKERT_TO_VARIETY: dict[int, int] = {
+    # Likert → number of distinct redemption sub-offers the record
+    # stands in for. Calibrated so each step roughly doubles the
+    # offer breadth (saturates at the "very broad" end without
+    # exploding K). Mapping is intentionally swappable — change here
+    # if a calibration study suggests a different curve.
+    1: 1,    # one homogeneous good
+    2: 3,    # narrow variety
+    3: 5,    # moderate variety
+    4: 10,   # broad variety
+    5: 20,   # very broad variety
+}
+
+
+def likert_to_variety_contribution(likert: int) -> int:
+    """Translate a 1..5 Likert variety score to an integer
+    ``variety_contribution`` suitable for :class:`NonTokenizedAsset`.
+
+    Outside the 1..5 range the value is clamped first, then mapped.
+    Form UIs are the primary caller; YAML authors can also write the
+    numeric value directly.
+    """
+    k = max(1, min(5, int(likert)))
+    return _LIKERT_TO_VARIETY[k]
+
+
+class NonTokenizedAsset(_Frozen):
+    """A good / service / badge / NFT that participates in the economy
+    but isn't a fungible token in this TE's schema (Phase H).
+
+    The verifier and ABM track per-asset creation + consumption flows
+    just like tokens; redemption rules can target an asset (spending
+    token X to acquire one unit of asset Y). ``unique=True`` flags
+    non-fungible assets — each instance is distinct (NFTs, art); the
+    ABM enforces single-spawn semantics on them.
+
+    The creation / consumption ``FunctionShape`` fields mirror token
+    emission / burn rules. ``referenced_tokens`` lists the token ids
+    that can be spent on this asset (drives FM3 burn-pathway feasibility
+    when the asset acts as a redemption sink).
+    """
+
+    id: str
+    label: str
+    kind: AssetKind
+    unique: bool = False
+    creation: FunctionShape | None = None
+    consumption: FunctionShape | None = None
+    redemption_cost: NumberRange | None = None
+    referenced_tokens: list[str] = Field(default_factory=list)
+    # How many distinct K-units this asset contributes to its
+    # referenced tokens' ``offer_variety_K``. Default 1: the asset is
+    # one homogeneous redemption opportunity. Set higher when the
+    # asset record stands in for a *category* of distinct sub-offers
+    # (e.g. ``local_goods`` representing 8 retailer types → set 8).
+    # Form UIs translate a 1..5 Likert into this integer via
+    # :func:`likert_to_variety_contribution`.
+    variety_contribution: int = Field(default=1, ge=1)
+
+
 class TokenEconomy(_Frozen):
     meta: Meta
     tokens: list[Token]
     participants: ParticipantsSpec
     governance: GovernanceSpec
     cross_token_flows: list[CrossTokenFlow] = Field(default_factory=list)
+    # Phase-H additions. Empty by default — legacy YAMLs are auto-promoted
+    # via the loader so internal consumers always see a populated catalog.
+    events: list[EventDefinition] = Field(default_factory=list)
+    non_tokenized_assets: list[NonTokenizedAsset] = Field(default_factory=list)
 
     @field_validator("tokens")
     @classmethod
@@ -839,11 +1337,123 @@ class TokenEconomy(_Frozen):
             raise ValueError("token ids must be unique")
         return v
 
+    @field_validator("events")
+    @classmethod
+    def _unique_event_ids(cls, v: list[EventDefinition]) -> list[EventDefinition]:
+        ids = [e.id for e in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError("EventDefinition ids must be unique")
+        return v
+
+    @field_validator("non_tokenized_assets")
+    @classmethod
+    def _unique_asset_ids(cls, v: list[NonTokenizedAsset]) -> list[NonTokenizedAsset]:
+        ids = [a.id for a in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError("NonTokenizedAsset ids must be unique")
+        return v
+
+    @model_validator(mode="after")
+    def _validate_event_refs(self) -> "TokenEconomy":
+        """Every event_id referenced by a rule / condition must resolve."""
+        known = {e.id for e in self.events}
+        # Rule triggers.
+        for token in self.tokens:
+            for rule_list, side in ((token.emission_rules, "emission"), (token.burn_rules, "burn")):
+                for i, rule in enumerate(rule_list):
+                    eid = rule.trigger.event_id
+                    if eid is not None and eid not in known:
+                        raise ValueError(
+                            f"Token '{token.id}' {side} rule #{i} references "
+                            f"unknown event_id '{eid}'. Define it in te.events."
+                        )
+                    for cond in rule.trigger.conditions:
+                        ceid = getattr(cond, "event_id", None)
+                        if ceid is not None and ceid not in known:
+                            raise ValueError(
+                                f"Condition in token '{token.id}' {side} rule #{i} "
+                                f"references unknown event_id '{ceid}'."
+                            )
+        # Population event conditions.
+        for j, ev in enumerate(self.participants.population_events):
+            for cond in ev.conditions:
+                ceid = getattr(cond, "event_id", None)
+                if ceid is not None and ceid not in known:
+                    raise ValueError(
+                        f"Population event #{j} condition references "
+                        f"unknown event_id '{ceid}'."
+                    )
+        # Asset referenced_tokens must resolve.
+        token_ids = {t.id for t in self.tokens}
+        for asset in self.non_tokenized_assets:
+            for tid in asset.referenced_tokens:
+                if tid not in token_ids:
+                    raise ValueError(
+                        f"Asset '{asset.id}' references unknown token '{tid}'."
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _derive_K_from_assets(self) -> "TokenEconomy":
+        """Auto-derive ``Token.offer_variety_K`` from the non-tokenized
+        asset catalog.
+
+        Each :class:`NonTokenizedAsset` that lists a token in its
+        ``referenced_tokens`` contributes ``variety_contribution`` units
+        (default 1) to that token's K — paper §3.4: "K = number of
+        distinct redemption opportunities". Assets can stand in for a
+        category of distinct sub-offers by bumping
+        ``variety_contribution`` (or by the form layer mapping a Likert
+        score through :func:`likert_to_variety_contribution`).
+
+        K(token) = Σ asset.variety_contribution for assets referencing
+        token. Tokens that no asset references keep their declared K.
+        """
+        # Sum variety contributions per token.
+        counts: dict[str, int] = {}
+        for asset in self.non_tokenized_assets:
+            for tid in asset.referenced_tokens:
+                counts[tid] = counts.get(tid, 0) + int(asset.variety_contribution)
+        if not counts:
+            return self
+        # Rebuild any token whose K is overridden (Token is frozen, so
+        # use ``model_copy`` with ``update``).
+        new_tokens: list[Token] = []
+        changed = False
+        for token in self.tokens:
+            n = counts.get(token.id)
+            if n is None or n <= 0:
+                new_tokens.append(token)
+                continue
+            new_K = NumberRange(min=n, max=n)
+            if (token.offer_variety_K is not None
+                    and token.offer_variety_K.min == n
+                    and token.offer_variety_K.max == n):
+                new_tokens.append(token)
+                continue
+            new_tokens.append(token.model_copy(update={"offer_variety_K": new_K}))
+            changed = True
+        if changed:
+            object.__setattr__(self, "tokens", new_tokens)
+        return self
+
     def get_token(self, token_id: str) -> Token:
         for t in self.tokens:
             if t.id == token_id:
                 return t
         raise KeyError(token_id)
+
+    def get_event(self, event_id: str) -> EventDefinition:
+        for e in self.events:
+            if e.id == event_id:
+                return e
+        raise KeyError(event_id)
+
+    def get_asset(self, asset_id: str) -> NonTokenizedAsset:
+        for a in self.non_tokenized_assets:
+            if a.id == asset_id:
+                return a
+        raise KeyError(asset_id)
 
 
 # ---------------------------------------------------------------------------

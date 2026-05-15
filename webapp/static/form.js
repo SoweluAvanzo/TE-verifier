@@ -13,6 +13,8 @@ const form = document.getElementById("te-form");
 const verifyBtn = document.getElementById("verify-btn");
 const verifyStatus = document.getElementById("verify-status");
 const downloadBtn = document.getElementById("download-btn");
+const simulateDirectBtn = document.getElementById("simulate-direct-btn");
+const exploreDirectBtn = document.getElementById("explore-direct-btn");
 const resetBtn = document.getElementById("reset-btn");
 const uploadBtn = document.getElementById("upload-btn");
 const uploadInput = document.getElementById("upload-yaml");
@@ -20,6 +22,8 @@ const verdictEmpty = document.getElementById("verdict-empty");
 const verdictContent = document.getElementById("verdict-content");
 const agentContainer = document.getElementById("agent-types-container");
 const addAgentBtn = document.getElementById("add-agent-btn");
+const popEventsContainer = document.getElementById("pop-events-container");
+const addPopEventBtn = document.getElementById("add-pop-event-btn");
 const topologyDegree = document.getElementById("topology-degree");
 const tokensContainer = document.getElementById("tokens-container");
 const addTokenBtn = document.getElementById("add-token-btn");
@@ -30,8 +34,17 @@ const TOKEN_TPL = document.getElementById("token-card-tpl");
 const MINT_TPL = document.getElementById("mint-rule-tpl");
 const BURN_TPL = document.getElementById("burn-rule-tpl");
 const XTFLOW_TPL = document.getElementById("xtflow-card-tpl");
+const EVENT_TPL = document.getElementById("event-row-tpl");
+const ASSET_TPL = document.getElementById("asset-row-tpl");
+
+const eventsContainer = document.getElementById("events-container");
+const addEventBtn = document.getElementById("add-event-btn");
+const assetsContainer = document.getElementById("assets-container");
+const addAssetBtn = document.getElementById("add-asset-btn");
 
 let lastVerifiedYaml = "";
+let eventCounter = 0;
+let assetCounter = 0;
 
 // =====================================================================
 // Cloning helpers
@@ -150,11 +163,24 @@ function addRuleRow(container, side, prefill) {
   wireDistributionToggle(row);
 
   if (prefill) {
-    const triggerKind = prefill.trigger?.kind;
-    if (triggerKind) row.querySelector(".rule-trigger").value = triggerKind;
+    // Phase-H: prefer event_id; fall back silently when missing so
+    // legacy IRs (with inline kind) still hydrate fields gracefully.
+    if (prefill.trigger?.event_id) {
+      const sel = row.querySelector(".rule-event-id");
+      if (sel) {
+        // Dropdown may not yet contain the option if events haven't
+        // been hydrated; we'll re-sync after the events stage populates.
+        const opt = document.createElement("option");
+        opt.value = prefill.trigger.event_id;
+        opt.textContent = prefill.trigger.event_id;
+        opt.selected = true;
+        sel.appendChild(opt);
+      }
+    }
     if (side === "mint") {
-      const sign = prefill.function?.sign;
-      if (sign) row.querySelector(".rule-sign").value = sign;
+      // Mint sign is intrinsic (always_positive); the dropdown was
+      // removed but the prefill payload may still carry the legacy
+      // field — silently accept and ignore.
       // Schedule prefill (only meaningful for mint rules at the moment).
       if (prefill.schedule) {
         applySchedulePrefill(row, prefill.schedule);
@@ -165,8 +191,8 @@ function addRuleRow(container, side, prefill) {
     }
     const ef = prefill.trigger?.event_frequency;
     if (ef) {
-      row.querySelector(".rule-freq-family").value = ef.family;
-      const r = ef.bounds || ef.parameter_ranges?.c || ef.parameter_ranges?.a || ef.parameter_ranges?.value;
+      row.querySelector(".rule-freq-family").value = encodeFamilyValue(ef);
+      const r = _preferredRange(ef);
       if (r) {
         row.querySelector(".rule-freq-min").value = r.min ?? "";
         row.querySelector(".rule-freq-max").value = r.max ?? "";
@@ -174,51 +200,352 @@ function addRuleRow(container, side, prefill) {
     }
     const ac = prefill.function?.asymptotic_class;
     if (ac) {
-      row.querySelector(".rule-fn-family").value = ac.family;
-      const r = ac.bounds || ac.parameter_ranges?.c || ac.parameter_ranges?.a || ac.parameter_ranges?.value;
+      row.querySelector(".rule-fn-family").value = encodeFamilyValue(ac);
+      const r = _preferredRange(ac);
       if (r) {
         row.querySelector(".rule-fn-min").value = r.min ?? "";
         row.querySelector(".rule-fn-max").value = r.max ?? "";
       }
     }
+    // Phase-K: DSL expression prefill. When the rule's FunctionShape
+    // carries an ``expression`` (either as a parsed AST or the original
+    // source string echoed back by the round-trip), surface it in the
+    // textarea + parameter list and switch the family dropdown to
+    // ``expression`` so visibility flips correctly.
+    const expr = prefill.function?.expression;
+    if (expr !== undefined && expr !== null) {
+      row.querySelector(".rule-fn-family").value = "expression";
+      const ta = row.querySelector(".rule-fn-expression");
+      if (ta) {
+        // Round-tripped from server: an AST object. Author-edited form
+        // preserves the source verbatim (textarea content). When we
+        // receive only the AST, show a placeholder pointing the user
+        // to /yaml for verbatim editing.
+        if (typeof expr === "string") {
+          ta.value = expr;
+        } else {
+          ta.value = (prefill.function._expression_source || "");
+          if (!ta.value) {
+            ta.placeholder = "(DSL AST — edit in /yaml for verbatim source)";
+          }
+        }
+      }
+      const params = prefill.function?.parameters || [];
+      const list = row.querySelector(".rule-fn-params-list");
+      for (const p of params) {
+        appendDslParamRow(list, p);
+      }
+    }
+    // Sync DSL block visibility now that family value is set.
+    syncDslVisibility(row);
+    // Phase-F prefill: event_predicate label + structured conditions
+    // + regime switches. All three are optional.
+    const ep = prefill.trigger?.event_predicate;
+    if (ep) row.querySelector(".rule-event-predicate").value = ep;
+    const conds = prefill.trigger?.conditions || [];
+    const condList = row.querySelector(".rule-conditions-list");
+    for (const c of conds) appendConditionRow(condList, c);
+    const regimes = prefill.regimes || [];
+    const regimeList = row.querySelector(".rule-regimes-list");
+    for (const r of regimes) appendRegimeRow(regimeList, r);
   }
+
+  // Wire the "+ Add condition" + "+ Add regime" buttons each row carries.
+  row.querySelector(".add-rule-condition")?.addEventListener("click", () => {
+    appendConditionRow(row.querySelector(".rule-conditions-list"));
+  });
+  row.querySelector(".add-rule-regime")?.addEventListener("click", () => {
+    appendRegimeRow(row.querySelector(".rule-regimes-list"));
+  });
+  // Phase-K: DSL visibility — toggled by the family dropdown.
+  row.querySelector(".rule-fn-family")?.addEventListener("change", () => {
+    syncDslVisibility(row);
+  });
+  row.querySelector(".add-rule-fn-param")?.addEventListener("click", () => {
+    appendDslParamRow(row.querySelector(".rule-fn-params-list"));
+  });
+  syncDslVisibility(row);
+
+  // Phase-H: rules link to a top-level event by id (Stage 4 catalog).
+  // Per-rule frequency block + trigger-based label tuning are obsolete —
+  // the event carries kind + frequency; the rule only carries the
+  // tokens-per-event function shape. The .rule-freq-block markup is
+  // hidden by default and left in place for back-compat (read paths
+  // skip it). Make sure the dropdown gets current event options.
+  populateAllEventDropdowns();
+  const fnFamilyUnit = row.querySelector(".rule-fn-family-unit");
+  if (fnFamilyUnit) fnFamilyUnit.textContent = "(tokens per event)";
+  const fnRangeLabel = row.querySelector(".rule-fn-range-label");
+  if (fnRangeLabel) fnRangeLabel.textContent = "Tokens-per-event range";
 
   return row;
 }
 
 function readRuleRow(row, side) {
   const family = row.querySelector(".rule-fn-family").value || "constant";
-  const fnMin = parseFloat(row.querySelector(".rule-fn-min").value);
-  const fnMax = parseFloat(row.querySelector(".rule-fn-max").value);
-  const ac = makeAsymptoticClass(family, fnMin, fnMax);
-  const trigger = { kind: row.querySelector(".rule-trigger").value };
-
-  const freqFamily = row.querySelector(".rule-freq-family").value || "constant";
-  const freqMin = parseFloat(row.querySelector(".rule-freq-min").value);
-  const freqMax = parseFloat(row.querySelector(".rule-freq-max").value);
-  if (!Number.isNaN(freqMin) || freqFamily === "unspecified") {
-    const freqClass = makeAsymptoticClass(freqFamily, freqMin, freqMax);
-    if (freqClass) trigger.event_frequency = freqClass;
+  // Phase-H: rules link to a top-level event by id. Kind + frequency
+  // are carried by the EventDefinition, not the rule. The form omits
+  // kind / event_frequency entirely.
+  const eventId = row.querySelector(".rule-event-id")?.value || "";
+  const trigger = {};
+  if (eventId) {
+    trigger.event_id = eventId;
+  } else {
+    // Fallback for partially-filled rules: keep a legacy time_based
+    // trigger so Pydantic doesn't reject the schema. The verifier will
+    // ignore the rate when no event_id is set anyway.
+    trigger.kind = side === "mint" ? "time_based" : "rule_driven";
   }
 
-  const sign = side === "mint"
-    ? row.querySelector(".rule-sign").value || "always_positive"
-    : "always_negative";
+  // Mint sign is intrinsic — rate ≥ 0 by construction. Burn sign is
+  // its dual. The schema retains a FunctionSign enum for backward
+  // compatibility but the form no longer surfaces it as a user choice.
+  const sign = side === "mint" ? "always_positive" : "always_negative";
 
-  const rule = {
-    trigger,
-    function: {
+  // Phase-K: DSL branch — emit ``expression`` + ``parameters`` instead
+  // of ``asymptotic_class``. Server-side validators reject mixed forms.
+  let fn;
+  if (family === "expression") {
+    const expr = (row.querySelector(".rule-fn-expression")?.value || "").trim();
+    const params = readDslParamList(row.querySelector(".rule-fn-params-list"));
+    fn = { sign, expression: expr, parameters: params };
+  } else {
+    const fnMin = parseFloat(row.querySelector(".rule-fn-min").value);
+    const fnMax = parseFloat(row.querySelector(".rule-fn-max").value);
+    const ac = makeAsymptoticClass(family, fnMin, fnMax);
+    fn = {
       sign,
       asymptotic_class: ac || { family: "constant", parameter_ranges: { c: { min: 0, max: 0 } } },
-    },
-  };
+    };
+  }
+
+  const rule = { trigger, function: fn };
   if (side === "mint") {
     const schedule = readScheduleFromRow(row);
     if (schedule) rule.schedule = schedule;
   }
   const distribution = readDistributionFromRow(row);
   if (distribution) rule.function.distribution = distribution;
+
+  // Phase-F: event_predicate label, structured conditions, regime
+  // switches. All optional — only emit when the user supplied them.
+  const ep = row.querySelector(".rule-event-predicate")?.value.trim();
+  if (ep) trigger.event_predicate = ep;
+  const conditions = readConditionList(row.querySelector(".rule-conditions-list"));
+  if (conditions.length) trigger.conditions = conditions;
+  const regimes = readRegimeList(row.querySelector(".rule-regimes-list"));
+  if (regimes.length) rule.regimes = regimes;
   return rule;
+}
+
+// =====================================================================
+// Phase-K DSL helpers — visibility toggle + parameter list
+// =====================================================================
+
+function syncDslVisibility(row) {
+  const family = row.querySelector(".rule-fn-family")?.value;
+  const isDsl = family === "expression";
+  const dsl = row.querySelector(".rule-fn-dsl");
+  // Target the FN-side range field specifically — the freq-side range
+  // lives inside .rule-freq-block (Phase-H hides it by default).
+  const range = row.querySelector(
+    ".range-field:not(.rule-freq-block)"
+  );
+  if (dsl) dsl.hidden = !isDsl;
+  if (range) range.hidden = isDsl;
+}
+
+function appendDslParamRow(listEl, prefill) {
+  if (!listEl) return;
+  const node = document.createElement("div");
+  node.className = "rule-fn-param-row";
+  node.innerHTML = `
+    <input type="text" class="rule-fn-param-name" placeholder="param name" />
+    <input type="number" class="rule-fn-param-min" step="any" placeholder="min" />
+    <span>to</span>
+    <input type="number" class="rule-fn-param-max" step="any" placeholder="max" />
+    <button type="button" class="remove-rule-fn-param ghost" aria-label="remove">×</button>
+  `;
+  if (prefill) {
+    node.querySelector(".rule-fn-param-name").value = prefill.name ?? "";
+    node.querySelector(".rule-fn-param-min").value = prefill.range?.min ?? "";
+    node.querySelector(".rule-fn-param-max").value = prefill.range?.max ?? "";
+  }
+  node.querySelector(".remove-rule-fn-param").addEventListener("click", () => node.remove());
+  listEl.appendChild(node);
+}
+
+function readDslParamList(listEl) {
+  if (!listEl) return [];
+  const rows = listEl.querySelectorAll(".rule-fn-param-row");
+  const out = [];
+  for (const r of rows) {
+    const name = r.querySelector(".rule-fn-param-name").value.trim();
+    if (!name) continue;
+    const min = parseFloat(r.querySelector(".rule-fn-param-min").value);
+    const max = parseFloat(r.querySelector(".rule-fn-param-max").value);
+    if (Number.isNaN(min) || Number.isNaN(max)) continue;
+    out.push({ name, range: { min, max } });
+  }
+  return out;
+}
+
+// =====================================================================
+// Structured conditions + regime switches (Phase F)
+// =====================================================================
+
+function appendConditionRow(listEl, prefill) {
+  if (!listEl) return;
+  const tpl = document.getElementById("condition-row-tpl");
+  const node = tpl.content.firstElementChild.cloneNode(true);
+  const kindSel = node.querySelector(".cond-kind");
+  const thrBlock = node.querySelector(".cond-threshold");
+  const timeBlock = node.querySelector(".cond-time");
+  const eventBlock = node.querySelector(".cond-event");
+  function syncVisibility() {
+    const v = kindSel.value;
+    thrBlock.hidden   = v !== "threshold";
+    timeBlock.hidden  = v !== "time_window";
+    eventBlock.hidden = v !== "event_occurrence";
+  }
+  kindSel.addEventListener("change", syncVisibility);
+  node.querySelector(".remove-condition").addEventListener("click", () => node.remove());
+  if (prefill && prefill.type) {
+    kindSel.value = prefill.type;
+    if (prefill.type === "threshold") {
+      node.querySelector(".cond-thr-var").value = prefill.var ?? "t";
+      node.querySelector(".cond-thr-op").value = prefill.op ?? ">=";
+      node.querySelector(".cond-thr-value").value = prefill.value ?? "";
+    } else if (prefill.type === "time_window") {
+      node.querySelector(".cond-time-start").value = prefill.start_period ?? "";
+      node.querySelector(".cond-time-end").value = prefill.end_period ?? "";
+    } else if (prefill.type === "event_occurrence") {
+      // Phase-I2 preferred: event_id dropdown. Fall back to legacy
+      // source_token/source_event inputs only when event_id is absent.
+      if (prefill.event_id) {
+        const sel = node.querySelector(".cond-event-id");
+        if (sel) {
+          // Append the id as a stub option if not yet hydrated.
+          const opt = document.createElement("option");
+          opt.value = prefill.event_id;
+          opt.textContent = prefill.event_id;
+          opt.selected = true;
+          sel.appendChild(opt);
+        }
+      } else if (prefill.source_token || prefill.source_event) {
+        const tok = node.querySelector(".cond-event-token");
+        const evt = node.querySelector(".cond-event-evt");
+        tok.hidden = false;
+        evt.hidden = false;
+        tok.value = prefill.source_token ?? "";
+        evt.value = prefill.source_event ?? "";
+      }
+    }
+  }
+  syncVisibility();
+  // Re-sync event dropdown so newly added condition rows see current events.
+  populateAllEventDropdowns();
+  listEl.appendChild(node);
+  return node;
+}
+
+function readConditionRow(rowEl) {
+  const kind = rowEl.querySelector(".cond-kind").value;
+  if (kind === "threshold") {
+    const valueRaw = rowEl.querySelector(".cond-thr-value").value;
+    if (valueRaw === "") return null;
+    const v = parseFloat(valueRaw);
+    if (!Number.isFinite(v)) return null;
+    return {
+      type: "threshold",
+      var: rowEl.querySelector(".cond-thr-var").value,
+      op: rowEl.querySelector(".cond-thr-op").value,
+      value: v,
+    };
+  }
+  if (kind === "time_window") {
+    const start = parseFloat(rowEl.querySelector(".cond-time-start").value);
+    if (!Number.isFinite(start)) return null;
+    const endRaw = rowEl.querySelector(".cond-time-end").value;
+    const out = { type: "time_window", start_period: start };
+    if (endRaw !== "") {
+      const e = parseFloat(endRaw);
+      if (Number.isFinite(e)) out.end_period = e;
+    }
+    return out;
+  }
+  if (kind === "event_occurrence") {
+    // Phase-I2 preferred: event_id dropdown. Falls back to legacy
+    // source_token + source_event when both inputs are populated.
+    const eid = rowEl.querySelector(".cond-event-id")?.value.trim();
+    if (eid) return { type: "event_occurrence", event_id: eid };
+    const tok = rowEl.querySelector(".cond-event-token").value.trim();
+    const evt = rowEl.querySelector(".cond-event-evt").value.trim();
+    if (!tok || !evt) return null;
+    return { type: "event_occurrence", source_token: tok, source_event: evt };
+  }
+  return null;
+}
+
+function readConditionList(listEl) {
+  if (!listEl) return [];
+  const out = [];
+  listEl.querySelectorAll(".condition-row").forEach((row) => {
+    const c = readConditionRow(row);
+    if (c) out.push(c);
+  });
+  return out;
+}
+
+function appendRegimeRow(listEl, prefill) {
+  if (!listEl) return;
+  const tpl = document.getElementById("regime-row-tpl");
+  const node = tpl.content.firstElementChild.cloneNode(true);
+  node.querySelector(".remove-regime").addEventListener("click", () => node.remove());
+  // Each regime carries a SINGLE predicate condition (matches schema
+  // RegimeSwitch.predicate: Condition).
+  const predicateContainer = node.querySelector(".regime-predicate");
+  const predicateRow = appendConditionRow(predicateContainer, prefill?.predicate);
+  // No remove button on the embedded predicate row — it's required.
+  predicateRow?.querySelector(".remove-condition")?.remove();
+  if (prefill?.function) {
+    // Regime sign inherits parent rule's sign convention; not user-pickable.
+    const ac = prefill.function.asymptotic_class;
+    if (ac) {
+      node.querySelector(".regime-fn-family").value = encodeFamilyValue(ac);
+      const r = ac.bounds || ac.parameter_ranges?.c || ac.parameter_ranges?.a || ac.parameter_ranges?.value;
+      if (r) {
+        node.querySelector(".regime-fn-min").value = r.min ?? "";
+        node.querySelector(".regime-fn-max").value = r.max ?? "";
+      }
+    }
+  }
+  listEl.appendChild(node);
+  return node;
+}
+
+function readRegimeList(listEl) {
+  if (!listEl) return [];
+  const out = [];
+  listEl.querySelectorAll(".regime-row").forEach((row) => {
+    const condRow = row.querySelector(".regime-predicate .condition-row");
+    const predicate = condRow ? readConditionRow(condRow) : null;
+    if (!predicate) return;
+    const family = row.querySelector(".regime-fn-family").value || "constant";
+    const min = parseFloat(row.querySelector(".regime-fn-min").value);
+    const max = parseFloat(row.querySelector(".regime-fn-max").value);
+    const ac = makeAsymptoticClass(family, min, max);
+    if (!ac) return;
+    out.push({
+      predicate,
+      function: {
+        // Schema defaults sign to always_positive; regimes inherit the
+        // parent rule's direction conceptually. No user input needed.
+        asymptotic_class: ac,
+      },
+    });
+  });
+  return out;
 }
 
 // =====================================================================
@@ -368,18 +695,279 @@ function readScheduleFromRow(row) {
   return Object.keys(out).length > 0 ? out : null;
 }
 
-function makeAsymptoticClass(family, min, max) {
+// =====================================================================
+// Events catalog (Phase H4)
+// =====================================================================
+//
+// One row per EventDefinition. Mint / burn / regime / condition
+// dropdowns all source their event-id options from this list. Whenever
+// the list mutates (add / remove / id change), we re-populate every
+// ``.rule-event-id`` and ``.cond-event-id`` select on the page so the
+// dropdown options stay in sync.
+
+function addEventRow(prefill = {}) {
+  eventCounter++;
+  const node = EVENT_TPL.content.firstElementChild.cloneNode(true);
+  node.dataset.eidx = String(eventCounter);
+  node.querySelector(".event-row-head h4").textContent = `Event #${eventCounter}`;
+  if (prefill.id) node.querySelector(".event-id").value = prefill.id;
+  if (prefill.label) node.querySelector(".event-label").value = prefill.label;
+  if (prefill.kind) node.querySelector(".event-kind").value = prefill.kind;
+  if (prefill.frequency) {
+    node.querySelector(".event-freq-family").value = encodeFamilyValue(prefill.frequency);
+    const r = _preferredRange(prefill.frequency);
+    if (r) {
+      node.querySelector(".event-freq-min").value = r.min ?? "";
+      node.querySelector(".event-freq-max").value = r.max ?? "";
+    }
+  }
+  node.querySelector(".remove-event").addEventListener("click", () => {
+    node.remove();
+    populateAllEventDropdowns();
+  });
+  // Re-sync dropdowns whenever id/label changes so users see updates.
+  node.querySelector(".event-id").addEventListener("input", populateAllEventDropdowns);
+  node.querySelector(".event-label").addEventListener("input", populateAllEventDropdowns);
+  eventsContainer.appendChild(node);
+  populateAllEventDropdowns();
+  return node;
+}
+
+function readEventsList() {
+  if (!eventsContainer) return [];
+  const out = [];
+  eventsContainer.querySelectorAll(".event-row").forEach((row) => {
+    const id = row.querySelector(".event-id").value.trim();
+    if (!id) return;
+    const label = row.querySelector(".event-label").value.trim() || id;
+    const kind = row.querySelector(".event-kind").value || "time_based";
+    const ev = { id, label, kind };
+    const famRaw = row.querySelector(".event-freq-family").value;
+    if (famRaw) {
+      const min = parseFloat(row.querySelector(".event-freq-min").value);
+      const max = parseFloat(row.querySelector(".event-freq-max").value);
+      const ac = makeAsymptoticClass(famRaw, min, max);
+      if (ac) ev.frequency = ac;
+    }
+    out.push(ev);
+  });
+  return out;
+}
+
+function currentEventOptions() {
+  return readEventsList().map((e) => ({
+    value: e.id,
+    label: `${e.id} — ${e.label} (${e.kind})`,
+  }));
+}
+
+function populateAllEventDropdowns() {
+  const options = currentEventOptions();
+  const apply = (sel) => {
+    if (!sel) return;
+    const prior = sel.value;
+    sel.innerHTML = '<option value="">— pick an event —</option>'
+      + options.map((o) =>
+        `<option value="${escapeAttr(o.value)}">${escapeAttr(o.label)}</option>`
+      ).join("");
+    if (options.some((o) => o.value === prior)) sel.value = prior;
+  };
+  document.querySelectorAll(".rule-event-id").forEach(apply);
+  document.querySelectorAll(".cond-event-id").forEach(apply);
+}
+
+if (addEventBtn) {
+  addEventBtn.addEventListener("click", () => addEventRow());
+}
+
+// =====================================================================
+// Non-tokenized assets (Phase I1)
+// =====================================================================
+
+function addAssetRow(prefill = {}) {
+  if (!ASSET_TPL || !assetsContainer) return null;
+  assetCounter++;
+  const node = ASSET_TPL.content.firstElementChild.cloneNode(true);
+  node.dataset.aidx = String(assetCounter);
+  node.querySelector(".asset-row-head h4").textContent = `Asset #${assetCounter}`;
+  if (prefill.id) node.querySelector(".asset-id").value = prefill.id;
+  if (prefill.label) node.querySelector(".asset-label").value = prefill.label;
+  if (prefill.kind) node.querySelector(".asset-kind").value = prefill.kind;
+  if (prefill.unique) node.querySelector(".asset-unique").checked = true;
+  if (prefill.creation) {
+    const fn = prefill.creation;
+    node.querySelector(".asset-create-family").value = encodeFamilyValue(fn.asymptotic_class);
+    const r = _preferredRange(fn.asymptotic_class);
+    if (r) {
+      node.querySelector(".asset-create-min").value = r.min ?? "";
+      node.querySelector(".asset-create-max").value = r.max ?? "";
+    }
+  }
+  if (prefill.consumption) {
+    const fn = prefill.consumption;
+    node.querySelector(".asset-consume-family").value = encodeFamilyValue(fn.asymptotic_class);
+    const r = _preferredRange(fn.asymptotic_class);
+    if (r) {
+      node.querySelector(".asset-consume-min").value = r.min ?? "";
+      node.querySelector(".asset-consume-max").value = r.max ?? "";
+    }
+  }
+  if (prefill.redemption_cost) {
+    node.querySelector(".asset-cost-min").value = prefill.redemption_cost.min ?? "";
+    node.querySelector(".asset-cost-max").value = prefill.redemption_cost.max ?? "";
+  }
+  if (prefill.referenced_tokens?.length) {
+    node.querySelector(".asset-referenced-tokens").value = prefill.referenced_tokens.join(", ");
+  }
+  // Phase-I3: Likert variety contribution. Invert the schema-side
+  // mapping so the dropdown lands on the same step a YAML author wrote
+  // (or schema default 1 → Likert 1).
+  const likertSel = node.querySelector(".asset-variety-likert");
+  if (likertSel) {
+    const VARIETY_TO_LIKERT = { 1: 1, 3: 2, 5: 3, 10: 4, 20: 5 };
+    const vc = prefill.variety_contribution ?? 1;
+    likertSel.value = String(VARIETY_TO_LIKERT[vc] ?? 1);
+  }
+  node.querySelector(".remove-asset").addEventListener("click", () => node.remove());
+  assetsContainer.appendChild(node);
+  return node;
+}
+
+function _readAssetFunctionShape(row, prefix) {
+  const fam = row.querySelector(`.asset-${prefix}-family`).value;
+  if (!fam) return null;
+  const min = parseFloat(row.querySelector(`.asset-${prefix}-min`).value);
+  const max = parseFloat(row.querySelector(`.asset-${prefix}-max`).value);
+  const ac = makeAsymptoticClass(fam, min, max);
+  if (!ac) return null;
+  return { asymptotic_class: ac };
+}
+
+function readAssetsList() {
+  if (!assetsContainer) return [];
+  const out = [];
+  assetsContainer.querySelectorAll(".asset-row").forEach((row) => {
+    const id = row.querySelector(".asset-id").value.trim();
+    if (!id) return;
+    const asset = {
+      id,
+      label: row.querySelector(".asset-label").value.trim() || id,
+      kind: row.querySelector(".asset-kind").value || "good",
+      unique: row.querySelector(".asset-unique").checked,
+    };
+    const create = _readAssetFunctionShape(row, "create");
+    if (create) asset.creation = create;
+    const consume = _readAssetFunctionShape(row, "consume");
+    if (consume) asset.consumption = consume;
+    const costMin = parseFloat(row.querySelector(".asset-cost-min").value);
+    const costMax = parseFloat(row.querySelector(".asset-cost-max").value);
+    if (Number.isFinite(costMin) && Number.isFinite(costMax)) {
+      asset.redemption_cost = { min: costMin, max: costMax };
+    }
+    const tokRaw = row.querySelector(".asset-referenced-tokens").value.trim();
+    if (tokRaw) {
+      asset.referenced_tokens = tokRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    // Phase-I3: Likert → variety_contribution. Keep the table in sync
+    // with schema.te_ir._LIKERT_TO_VARIETY.
+    const LIKERT_TO_VARIETY = { 1: 1, 2: 3, 3: 5, 4: 10, 5: 20 };
+    const likert = parseInt(row.querySelector(".asset-variety-likert")?.value || "1", 10);
+    asset.variety_contribution = LIKERT_TO_VARIETY[likert] ?? 1;
+    out.push(asset);
+  });
+  return out;
+}
+
+if (addAssetBtn) {
+  addAssetBtn.addEventListener("click", () => addAssetRow());
+}
+
+/** Decode a select value of shape ``family`` or ``family:degree`` into
+ *  a {family, degree} pair. Used by every asymptotic-class dropdown
+ *  (rule fn, rule freq, cross-token amount, participants growth). The
+ *  ``family:degree`` encoding lets the form expose user-friendly names
+ *  ("quadratic", "√t") without separate degree inputs.
+ */
+function parseFamilyValue(raw) {
+  const value = raw || "constant";
+  const [family, degreeStr] = value.split(":");
+  const degree = degreeStr ? parseInt(degreeStr, 10) : null;
+  return { family, degree: Number.isNaN(degree) ? null : degree };
+}
+
+/** Pick the coefficient range that best represents the user-visible
+ *  "min/max" field given an AsymptoticClass. Mirrors makeAsymptoticClass:
+ *
+ *  - constant → c
+ *  - exponential → a (per-period multiplier)
+ *  - bounded_range → bounds
+ *  - linear / polynomial / sublinear_root / log → b (base rate /
+ *    constant offset). Fallback to ``a`` then ``value`` for older
+ *    YAMLs that used the previous convention.
+ *
+ *  The preference order keeps round-trips faithful while still
+ *  hydrating legacy IRs (e.g. axie's ``a={20, 100}`` slope encoding)
+ *  with sensible defaults. */
+function _preferredRange(ac) {
+  if (!ac) return null;
+  if (ac.bounds) return ac.bounds;
+  const pr = ac.parameter_ranges || {};
+  if (ac.family === "constant") return pr.c || pr.b || pr.a || pr.value;
+  if (ac.family === "exponential") return pr.a || pr.b || pr.value;
+  if (ac.family === "unspecified") return pr.value || pr.a || pr.b;
+  // linear / polynomial / sublinear_root / log — prefer ``b`` (base
+  // rate); fall back to ``a`` (legacy slope encoding) and ``value``.
+  return pr.b || pr.a || pr.c || pr.value;
+}
+
+/** Inverse of parseFamilyValue — encode an AsymptoticClass back into
+ *  the dropdown value, so prefilling existing IRs / examples preserves
+ *  the user's polynomial degree. */
+function encodeFamilyValue(ac) {
+  if (!ac) return "constant";
+  if ((ac.family === "polynomial" || ac.family === "sublinear_root") && ac.degree != null) {
+    return `${ac.family}:${ac.degree}`;
+  }
+  return ac.family;
+}
+
+function makeAsymptoticClass(rawFamily, min, max) {
+  const { family, degree } = parseFamilyValue(rawFamily);
+
   if (family === "unspecified") {
     const lo = Number.isNaN(min) ? 0 : min;
     const hi = Number.isNaN(max) ? 1e9 : max;
     return { family: "unspecified", parameter_ranges: { value: { min: lo, max: hi } } };
   }
   if (Number.isNaN(min) || Number.isNaN(max)) return null;
+
   if (family === "bounded_range") {
     return { family, bounds: { min, max } };
   }
-  const paramKey = family === "linear" ? "a" : "c";
-  return { family, parameter_ranges: { [paramKey]: { min, max } } };
+  if (family === "constant") {
+    return { family, parameter_ranges: { c: { min, max } } };
+  }
+  if (family === "exponential") {
+    // exponential rate = a · b^t; ``a`` is the natural per-period
+    // multiplier the user types. ``b`` defaults to 1 (no compounding)
+    // via the verifier's parameter_var fallback.
+    return { family, parameter_ranges: { a: { min, max } } };
+  }
+  // linear / polynomial / sublinear_root / log: the single user-supplied
+  // range maps to ``b`` (the constant offset / base rate). ``a`` (the
+  // time-dependent leading coefficient) is implicitly 0 — meaning "X
+  // per period, no time growth". This matches what users intuitively
+  // mean when they type "20 events per period" with family=linear.
+  //
+  // To express time growth, declare a polynomial / sublinear_root /
+  // log family explicitly with an ``a`` override via raw YAML (the
+  // form's single range field is intentionally low-friction). All
+  // shipped example YAMLs adopt this convention.
+  const ac = { family, parameter_ranges: { b: { min, max } } };
+  if (family === "polynomial" || family === "sublinear_root") {
+    ac.degree = degree ?? 2;
+  }
+  return ac;
 }
 
 // =====================================================================
@@ -418,7 +1006,7 @@ function addXtflowCard(prefill = {}) {
     card.querySelector(".xt-ratio-max").value = prefill.coupling_ratio.max ?? "";
   }
   if (prefill.amount) {
-    card.querySelector(".xt-amount-family").value = prefill.amount.family || "constant";
+    card.querySelector(".xt-amount-family").value = encodeFamilyValue(prefill.amount);
     const r = prefill.amount.bounds || prefill.amount.parameter_ranges?.c || prefill.amount.parameter_ranges?.a;
     if (r) {
       card.querySelector(".xt-amount-min").value = r.min ?? "";
@@ -501,6 +1089,9 @@ function addAgentRow(prefill = {}) {
   const div = document.createElement("div");
   div.className = "agent-row";
   div.dataset.idx = idx;
+  const utility = prefill.utility || {};
+  const jitter = prefill.utility_jitter || {};
+  const checkedActions = new Set(prefill.action_set || []);
   div.innerHTML = `
     <div class="agent-row-head">
       <h4>Agent type #${idx}</h4>
@@ -542,6 +1133,124 @@ function addAgentRow(prefill = {}) {
                value="${prefill.expected_holding_time?.expected_periods?.max ?? ""}" />
       </div>
     </div>
+
+    <details class="agent-advanced">
+      <summary>Action set (override role-based defaults)</summary>
+      <p class="hint">Which actions this agent type can pick from each
+        period in the ABM. Leave empty to inherit the role default.</p>
+      <div class="action-set-grid">
+        ${ENUMS.action_kinds.map(
+          (a) => `<label class="checkbox-inline">
+            <input type="checkbox" name="agent-${idx}-action" value="${a}"
+              ${checkedActions.has(a) ? "checked" : ""} /> ${a}
+          </label>`
+        ).join("")}
+      </div>
+    </details>
+
+    <details class="agent-advanced">
+      <summary>Utility weights (ABM softmax — leave empty to use role defaults)</summary>
+      <p class="hint">Per-action drivers used by softmax action selection.
+        Higher = more attractive. <code>action_temperature</code> controls
+        sharpness: &lt;1 nearly-deterministic, &gt;1 nearly-uniform.</p>
+      <div class="utility-grid">
+        <div class="field">
+          <label>income_yield</label>
+          <input type="number" name="agent-${idx}-u-income" step="0.05"
+                 value="${utility.income_yield ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>holding_yield</label>
+          <input type="number" name="agent-${idx}-u-holding" step="0.05"
+                 value="${utility.holding_yield ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>redemption_value</label>
+          <input type="number" name="agent-${idx}-u-redemption" step="0.05"
+                 value="${utility.redemption_value ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>governance_payoff</label>
+          <input type="number" name="agent-${idx}-u-governance" step="0.05"
+                 value="${utility.governance_payoff ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>social_payoff</label>
+          <input type="number" name="agent-${idx}-u-social" step="0.05"
+                 value="${utility.social_payoff ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>risk_aversion</label>
+          <input type="number" name="agent-${idx}-u-risk" step="0.05"
+                 value="${utility.risk_aversion ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>action_temperature</label>
+          <input type="number" name="agent-${idx}-u-temp" step="0.05" min="0.01"
+                 value="${utility.action_temperature ?? ""}" placeholder="1.0" />
+        </div>
+        <div class="field">
+          <label>exit_propensity (0–1)</label>
+          <input type="number" name="agent-${idx}-u-exit-prop" step="0.01" min="0" max="1"
+                 value="${utility.exit_propensity ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>social_comparison_delta</label>
+          <input type="number" name="agent-${idx}-u-exit-delta" step="0.05" min="0"
+                 value="${utility.social_comparison_delta ?? ""}" placeholder="0.3" />
+        </div>
+        <div class="field">
+          <label>reputation_yield</label>
+          <input type="number" name="agent-${idx}-u-rep-yield" step="0.05" min="0"
+                 value="${utility.reputation_yield ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>reputation_decay (0–1)</label>
+          <input type="number" name="agent-${idx}-u-rep-decay" step="0.01" min="0" max="1"
+                 value="${utility.reputation_decay ?? ""}" placeholder="0.0" />
+        </div>
+      </div>
+    </details>
+
+    <details class="agent-advanced">
+      <summary>Per-agent utility jitter (Phase E2 — leave empty for homogeneous cohort)</summary>
+      <p class="hint">Standard deviations for per-agent Gaussian offsets
+        on each utility component. At spawn time every agent draws
+        <code>N(0, σ)</code> per field; cache stays per-type but agents
+        differ within a role. Defaults to 0 (no jitter).</p>
+      <div class="utility-grid">
+        <div class="field">
+          <label>σ income_yield</label>
+          <input type="number" name="agent-${idx}-j-income" step="0.05" min="0"
+                 value="${jitter.income_yield ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>σ holding_yield</label>
+          <input type="number" name="agent-${idx}-j-holding" step="0.05" min="0"
+                 value="${jitter.holding_yield ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>σ redemption_value</label>
+          <input type="number" name="agent-${idx}-j-redemption" step="0.05" min="0"
+                 value="${jitter.redemption_value ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>σ governance_payoff</label>
+          <input type="number" name="agent-${idx}-j-governance" step="0.05" min="0"
+                 value="${jitter.governance_payoff ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>σ social_payoff</label>
+          <input type="number" name="agent-${idx}-j-social" step="0.05" min="0"
+                 value="${jitter.social_payoff ?? ""}" placeholder="0.0" />
+        </div>
+        <div class="field">
+          <label>σ risk_aversion</label>
+          <input type="number" name="agent-${idx}-j-risk" step="0.05" min="0"
+                 value="${jitter.risk_aversion ?? ""}" placeholder="0.0" />
+        </div>
+      </div>
+    </details>
   `;
   div.querySelector(".remove-agent").addEventListener("click", () => div.remove());
   agentContainer.appendChild(div);
@@ -549,6 +1258,106 @@ function addAgentRow(prefill = {}) {
 
 addAgentBtn.addEventListener("click", () => addAgentRow());
 addAgentRow({ id: "user", fraction: 1.0, expected_holding_time: { expected_periods: { min: 5, max: 5 } } });
+
+let popEventCounter = 0;
+
+function addPopEventRow(prefill = {}) {
+  popEventCounter++;
+  const idx = popEventCounter;
+  const div = document.createElement("div");
+  div.className = "pop-event-row";
+  div.dataset.idx = idx;
+  const utility = prefill.new_utility || {};
+  div.innerHTML = `
+    <div class="pop-event-row-head">
+      <h4>Event #${idx}</h4>
+      <button type="button" class="remove-pop-event ghost-danger">remove</button>
+    </div>
+    <div class="pop-event-grid">
+      <div class="field">
+        <label>Kind</label>
+        <select name="popev-${idx}-kind" class="pop-event-kind">
+          ${ENUMS.population_event_kinds.map(
+            (k) => `<option value="${k}" ${prefill.kind === k ? "selected" : ""}>${k}</option>`
+          ).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>At period</label>
+        <input type="number" name="popev-${idx}-at" min="0" step="1"
+               value="${prefill.at_period ?? ""}" placeholder="e.g. 50" />
+      </div>
+      <div class="field">
+        <label>Agent type id</label>
+        <input type="text" name="popev-${idx}-type"
+               value="${escapeAttr(prefill.agent_type_id || "")}" placeholder="must match an agent_type" />
+      </div>
+      <div class="field pop-event-count">
+        <label>Count (spawn/despawn)</label>
+        <input type="number" name="popev-${idx}-count" min="0" step="1"
+               value="${prefill.count ?? ""}" placeholder="e.g. 20" />
+      </div>
+      <div class="field pop-event-balance">
+        <label>Balance per agent (spawn)</label>
+        <input type="number" name="popev-${idx}-balance" min="0" step="any"
+               value="${prefill.balance_per_agent ?? ""}" placeholder="0.0" />
+      </div>
+    </div>
+    <details class="pop-event-utility" ${prefill.kind === "shift_utility" ? "open" : ""}>
+      <summary>New utility (shift_utility)</summary>
+      <div class="utility-grid">
+        ${[
+          ["income_yield", "u-income"],
+          ["holding_yield", "u-holding"],
+          ["redemption_value", "u-redemption"],
+          ["governance_payoff", "u-governance"],
+          ["social_payoff", "u-social"],
+          ["risk_aversion", "u-risk"],
+          ["action_temperature", "u-temp"],
+          ["exit_propensity", "u-exit-prop"],
+          ["social_comparison_delta", "u-exit-delta"],
+          ["reputation_yield", "u-rep-yield"],
+          ["reputation_decay", "u-rep-decay"],
+        ].map(([key, slug]) => `
+          <div class="field">
+            <label>${key}</label>
+            <input type="number" name="popev-${idx}-${slug}" step="0.05"
+                   value="${utility[key] ?? ""}" placeholder="" />
+          </div>
+        `).join("")}
+      </div>
+    </details>
+    <details class="rule-conditions">
+      <summary>Conditional trigger (instead of / in addition to "at period")</summary>
+      <p class="hint">
+        Fire this event the first period these conditions all hold.
+        Leaves "at period" blank ⇒ pure condition-driven. Both supplied ⇒
+        condition path takes precedence; ``at period`` ignored.
+      </p>
+      <div class="pop-event-conditions-list rule-conditions-list"></div>
+      <button type="button" class="add-pop-event-condition ghost">+ Add condition</button>
+    </details>
+  `;
+  div.querySelector(".remove-pop-event").addEventListener("click", () => div.remove());
+  const kindSel = div.querySelector(".pop-event-kind");
+  const utilityBlock = div.querySelector(".pop-event-utility");
+  kindSel.addEventListener("change", () => {
+    if (kindSel.value === "shift_utility") {
+      utilityBlock.open = true;
+    } else {
+      utilityBlock.open = false;
+    }
+  });
+  // Pop-event conditions: prefill + add-button.
+  const condList = div.querySelector(".pop-event-conditions-list");
+  (prefill.conditions || []).forEach((c) => appendConditionRow(condList, c));
+  div.querySelector(".add-pop-event-condition").addEventListener("click", () => {
+    appendConditionRow(condList);
+  });
+  popEventsContainer.appendChild(div);
+}
+
+addPopEventBtn.addEventListener("click", () => addPopEventRow());
 
 // Topology degree visibility toggle
 const topologySelect = document.getElementById("part-topology");
@@ -569,6 +1378,13 @@ addTokenCard({
 function buildIR() {
   const fd = new FormData(form);
   const ir = { meta: {}, tokens: [], participants: {}, governance: {}, cross_token_flows: [] };
+  // Phase-H: events catalog. Emitted only when at least one event row
+  // has a non-empty id, so legacy YAMLs without events stay schema-valid.
+  const events = readEventsList();
+  if (events.length) ir.events = events;
+  // Phase-I1: non-tokenized assets.
+  const assets = readAssetsList();
+  if (assets.length) ir.non_tokenized_assets = assets;
 
   // Meta
   ir.meta.name = fd.get("meta-name") || "Untitled";
@@ -635,12 +1451,14 @@ function buildIR() {
   ir.participants.count_N = readRange(fd, "part-N-min", "part-N-max") || { min: 1, max: 1 };
   ir.participants.expected_Q = readRange(fd, "part-Q-min", "part-Q-max") || { min: 0, max: 0 };
   ir.participants.average_demand_d = readRange(fd, "part-d-min", "part-d-max") || { min: 0, max: 0 };
-  const growthFamily = fd.get("part-growth") || "constant";
+  const { family: growthFamily, degree: growthDegree } =
+    parseFamilyValue(fd.get("part-growth") || "constant");
   const growthRange = readRange(fd, "part-growth-min", "part-growth-max");
   ir.participants.growth_g = {
     family: growthFamily,
     parameter_ranges: growthRange ? { value: growthRange } : {},
   };
+  if (growthDegree != null) ir.participants.growth_g.degree = growthDegree;
   ir.participants.topology = fd.get("part-topology") || "well_mixed";
   if (ir.participants.topology === "network") {
     const deg = readRange(fd, "part-degree-min", "part-degree-max");
@@ -666,9 +1484,65 @@ function buildIR() {
     if (role) ag.role = role;
     const bal = fd.get(`agent-${idx}-balance`);
     if (bal && bal !== "") ag.balance_share = parseFloat(bal);
+    // Phase-A: action_set — only emit when at least one checkbox is
+    // ticked, otherwise let the schema's role-based default apply.
+    const actions = fd.getAll(`agent-${idx}-action`);
+    if (actions.length) ag.action_set = actions;
+    // Phase-A: utility weights — only emit fields the user actually
+    // populated. action_temperature defaults to 1.0 if other fields
+    // are set but it isn't.
+    const utility = readUtility(fd, idx);
+    if (utility) ag.utility = utility;
+    // Phase E2 — per-agent utility jitter. Only emitted when at least
+    // one sigma is positive; otherwise the schema default (None) keeps
+    // the cohort homogeneous.
+    const jitter = readJitter(fd, idx);
+    if (jitter) ag.utility_jitter = jitter;
     agents.push(ag);
   });
   if (agents.length) ir.participants.agent_types = agents;
+
+  // Phase-C + Phase-F: population_events
+  const popEvents = [];
+  popEventsContainer.querySelectorAll(".pop-event-row").forEach((row) => {
+    const idx = row.dataset.idx;
+    const kind = fd.get(`popev-${idx}-kind`);
+    const typeId = fd.get(`popev-${idx}-type`);
+    if (!kind || !typeId) return;
+    const ev = { kind, agent_type_id: typeId };
+    // Optional at_period — Phase-F lets the user drop it in favor of
+    // condition-driven triggers.
+    const periodRaw = fd.get(`popev-${idx}-at`);
+    if (periodRaw != null && periodRaw !== "") {
+      const at_period = parseInt(periodRaw, 10);
+      if (!Number.isNaN(at_period)) ev.at_period = at_period;
+    }
+    const countRaw = fd.get(`popev-${idx}-count`);
+    if (countRaw != null && countRaw !== "") {
+      const c = parseInt(countRaw, 10);
+      if (!Number.isNaN(c)) ev.count = c;
+    }
+    const balRaw = fd.get(`popev-${idx}-balance`);
+    if (balRaw != null && balRaw !== "") {
+      const b = parseFloat(balRaw);
+      if (!Number.isNaN(b)) ev.balance_per_agent = b;
+    }
+    if (kind === "shift_utility") {
+      const newUtil = readPopEventUtility(fd, idx);
+      if (newUtil) ev.new_utility = newUtil;
+    }
+    const conds = readConditionList(row.querySelector(".pop-event-conditions-list"));
+    if (conds.length) ev.conditions = conds;
+    // Skip events with no trigger at all — server-side pydantic
+    // validator would reject them with a less actionable error.
+    if (ev.at_period === undefined && (!ev.conditions || !ev.conditions.length)) {
+      return;
+    }
+    popEvents.push(ev);
+  });
+  if (popEvents.length) {
+    ir.participants.population_events = popEvents;
+  }
 
   // Governance
   ir.governance.type = fd.get("gov-type") || "dao";
@@ -723,6 +1597,88 @@ function buildIR() {
   return ir;
 }
 
+function readUtility(fd, idx) {
+  const FIELDS = {
+    income_yield: `agent-${idx}-u-income`,
+    holding_yield: `agent-${idx}-u-holding`,
+    redemption_value: `agent-${idx}-u-redemption`,
+    governance_payoff: `agent-${idx}-u-governance`,
+    social_payoff: `agent-${idx}-u-social`,
+    risk_aversion: `agent-${idx}-u-risk`,
+    action_temperature: `agent-${idx}-u-temp`,
+    exit_propensity: `agent-${idx}-u-exit-prop`,
+    social_comparison_delta: `agent-${idx}-u-exit-delta`,
+    reputation_yield: `agent-${idx}-u-rep-yield`,
+    reputation_decay: `agent-${idx}-u-rep-decay`,
+  };
+  const out = {};
+  let any = false;
+  for (const [key, name] of Object.entries(FIELDS)) {
+    const raw = fd.get(name);
+    if (raw == null || raw === "") continue;
+    const v = parseFloat(raw);
+    if (Number.isNaN(v)) continue;
+    out[key] = v;
+    any = true;
+  }
+  if (!any) return null;
+  // Schema requires action_temperature > 0; default to 1.0 if the
+  // user didn't set it but did set other weights.
+  if (out.action_temperature === undefined) out.action_temperature = 1.0;
+  return out;
+}
+
+function readJitter(fd, idx) {
+  const FIELDS = {
+    income_yield: `agent-${idx}-j-income`,
+    holding_yield: `agent-${idx}-j-holding`,
+    redemption_value: `agent-${idx}-j-redemption`,
+    governance_payoff: `agent-${idx}-j-governance`,
+    social_payoff: `agent-${idx}-j-social`,
+    risk_aversion: `agent-${idx}-j-risk`,
+  };
+  const out = {};
+  let any = false;
+  for (const [key, name] of Object.entries(FIELDS)) {
+    const raw = fd.get(name);
+    if (raw == null || raw === "") continue;
+    const v = parseFloat(raw);
+    if (Number.isNaN(v) || v <= 0) continue;
+    out[key] = v;
+    any = true;
+  }
+  return any ? out : null;
+}
+
+function readPopEventUtility(fd, idx) {
+  const FIELDS = {
+    income_yield: `popev-${idx}-u-income`,
+    holding_yield: `popev-${idx}-u-holding`,
+    redemption_value: `popev-${idx}-u-redemption`,
+    governance_payoff: `popev-${idx}-u-governance`,
+    social_payoff: `popev-${idx}-u-social`,
+    risk_aversion: `popev-${idx}-u-risk`,
+    action_temperature: `popev-${idx}-u-temp`,
+    exit_propensity: `popev-${idx}-u-exit-prop`,
+    social_comparison_delta: `popev-${idx}-u-exit-delta`,
+    reputation_yield: `popev-${idx}-u-rep-yield`,
+    reputation_decay: `popev-${idx}-u-rep-decay`,
+  };
+  const out = {};
+  let any = false;
+  for (const [key, name] of Object.entries(FIELDS)) {
+    const raw = fd.get(name);
+    if (raw == null || raw === "") continue;
+    const v = parseFloat(raw);
+    if (Number.isNaN(v)) continue;
+    out[key] = v;
+    any = true;
+  }
+  if (!any) return null;
+  if (out.action_temperature === undefined) out.action_temperature = 1.0;
+  return out;
+}
+
 function readRange(fd, minKey, maxKey) {
   const minRaw = fd.get(minKey);
   const maxRaw = fd.get(maxKey);
@@ -758,12 +1714,22 @@ function hydrateForm(ir) {
   tokensContainer.innerHTML = "";
   tokenCounter = 0;
   ruleCounter = 0;
+  // Phase-H: rehydrate the events catalog BEFORE tokens so rule
+  // dropdowns find their referenced ids.
+  if (eventsContainer) eventsContainer.innerHTML = "";
+  eventCounter = 0;
+  for (const e of ir.events || []) addEventRow(e);
+  // Phase-I1: assets.
+  if (assetsContainer) assetsContainer.innerHTML = "";
+  assetCounter = 0;
+  for (const a of ir.non_tokenized_assets || []) addAssetRow(a);
   const tokens = ir.tokens || [];
   if (tokens.length === 0) {
     addTokenCard({ id: "T", function: ["medium_of_exchange"] });
   } else {
     for (const t of tokens) addTokenCard(t);
   }
+  populateAllEventDropdowns();
 
   // Cross-token flows — clear and rebuild
   xtflowsContainer.innerHTML = "";
@@ -776,7 +1742,7 @@ function hydrateForm(ir) {
   setRange("part-d-min", "part-d-max", ir.participants?.average_demand_d);
   const g = ir.participants?.growth_g;
   if (g) {
-    setVal("part-growth", g.family);
+    setVal("part-growth", encodeFamilyValue(g));
     setRange("part-growth-min", "part-growth-max", g.parameter_ranges?.value);
   }
   setVal("part-topology", ir.participants?.topology);
@@ -789,6 +1755,11 @@ function hydrateForm(ir) {
   agentContainer.innerHTML = "";
   agentCounter = 0;
   for (const ag of ir.participants?.agent_types || []) addAgentRow(ag);
+
+  // Population events — clear and rebuild
+  popEventsContainer.innerHTML = "";
+  popEventCounter = 0;
+  for (const ev of ir.participants?.population_events || []) addPopEventRow(ev);
 
   // Governance
   setVal("gov-type", ir.governance?.type);
@@ -893,11 +1864,136 @@ function escapeAttr(s) {
 }
 
 // =====================================================================
+// Pre-flight validation
+// =====================================================================
+//
+// Pydantic catches structural errors on the server, but the round-trip
+// surfaces them as opaque "validation error" blobs. We catch the most
+// common UI-level mistakes (min > max, agent fractions ≠ 1.0, negative
+// magnitudes) locally so the user sees precise error messages.
+
+/** Walk every {min, max} number-input pair on the form and confirm
+ *  min ≤ max. Returns null on success or a human-readable error. */
+function validateRanges() {
+  const minInputs = document.querySelectorAll('input[type="number"]');
+  // Group by "stem" — i.e. the name/class with -min/-max stripped — so
+  // we can pair the two inputs.
+  const pairs = new Map();
+  minInputs.forEach((el) => {
+    const key = (el.name || el.className).trim();
+    if (!key) return;
+    let stem = null;
+    let side = null;
+    if (key.endsWith("-min")) { stem = key.slice(0, -4); side = "min"; }
+    else if (key.endsWith("-max")) { stem = key.slice(0, -4); side = "max"; }
+    else if (key.endsWith("min")) { stem = key.slice(0, -3); side = "min"; }
+    else if (key.endsWith("max")) { stem = key.slice(0, -3); side = "max"; }
+    if (!stem) return;
+    const bucket = pairs.get(stem) || {};
+    bucket[side] = el;
+    pairs.set(stem, bucket);
+  });
+  for (const [stem, { min, max }] of pairs.entries()) {
+    if (!min || !max) continue;
+    if (min.value === "" || max.value === "") continue;
+    const lo = parseFloat(min.value);
+    const hi = parseFloat(max.value);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+    if (lo > hi) {
+      min.focus();
+      return `Range ${prettyStem(stem)} has min (${lo}) greater than max (${hi}).`;
+    }
+  }
+  return null;
+}
+
+function prettyStem(stem) {
+  return stem
+    .replace(/^vw-/, "")
+    .replace(/^gov-/, "")
+    .replace(/^part-/, "")
+    .replace(/^agent-\d+-/, "agent.")
+    .replace(/^popev-\d+-/, "event.")
+    .replace(/^tok-[^-]+-/, "token.")
+    .replace(/^xt-/, "cross-token.")
+    .replace(/^rule-/, "rule.")
+    .replace(/[-_]/g, " ")
+    .trim();
+}
+
+/** Sum agent_type fractions across all rendered rows. Pydantic enforces
+ *  sum ≈ 1.0 at validation time; we surface the same check live so the
+ *  user can correct it without round-tripping. */
+function agentFractionSum() {
+  let sum = 0;
+  agentContainer.querySelectorAll(".agent-row").forEach((row) => {
+    const idx = row.dataset.idx;
+    const el = row.querySelector(`[name="agent-${idx}-fraction"]`);
+    const v = parseFloat(el?.value || "0");
+    if (Number.isFinite(v)) sum += v;
+  });
+  return sum;
+}
+
+/** Render a status pill next to the agent-types header showing the
+ *  live fraction sum. Green when ≈1.0, amber otherwise. */
+function updateAgentFractionIndicator() {
+  let pill = document.getElementById("agent-fraction-pill");
+  if (!pill) {
+    const heading = document.querySelector("#stage-pop .agent-types-header") ||
+      agentContainer?.parentElement?.querySelector("h3, h4");
+    if (!heading) return;
+    pill = document.createElement("span");
+    pill.id = "agent-fraction-pill";
+    pill.className = "fraction-pill";
+    heading.appendChild(pill);
+  }
+  const sum = agentFractionSum();
+  const ok = sum >= 0.99 && sum <= 1.01;
+  pill.textContent = `Σ fractions = ${sum.toFixed(2)}${ok ? " ✓" : " (must ≈ 1.0)"}`;
+  pill.classList.toggle("ok", ok);
+  pill.classList.toggle("bad", !ok);
+}
+
+// Re-run the indicator whenever an agent fraction changes or rows are
+// added/removed.
+agentContainer?.addEventListener("input", (e) => {
+  if (e.target.matches('input[name^="agent-"][name$="-fraction"]')) {
+    updateAgentFractionIndicator();
+  }
+});
+new MutationObserver(updateAgentFractionIndicator).observe(
+  agentContainer || document.body, { childList: true, subtree: false },
+);
+
+/** Top-level validator. Returns null when the form is ready to submit,
+ *  or a precise error message naming the offending field. */
+function validateForm() {
+  const rangeErr = validateRanges();
+  if (rangeErr) return rangeErr;
+  if (agentContainer.querySelectorAll(".agent-row").length) {
+    const sum = agentFractionSum();
+    if (sum < 0.99 || sum > 1.01) {
+      return `Agent-type fractions sum to ${sum.toFixed(2)} but must total ~1.0.`;
+    }
+  }
+  return null;
+}
+
+// =====================================================================
 // Verify
 // =====================================================================
 
 verifyBtn.addEventListener("click", async () => {
   verifyStatus.classList.remove("error");
+  // Front-load sanity checks the server would also catch, but with
+  // line-of-sight error messages so the user knows which input is bad.
+  const formError = validateForm();
+  if (formError) {
+    verifyStatus.classList.add("error");
+    verifyStatus.textContent = `Form error: ${formError}`;
+    return;
+  }
   verifyStatus.textContent = "Verifying…";
   let ir;
   try {
@@ -922,12 +2018,15 @@ verifyBtn.addEventListener("click", async () => {
     lastVerifiedYaml = data.yaml || "";
     verdictEmpty.hidden = true;
     verdictContent.hidden = false;
+    // Populate the hidden rich containers (coherence-issues lives there
+    // and is still surfaced; report-summary + verdict-cards are kept as
+    // hidden stubs so renderReport can populate them without erroring).
     renderReport(data.report);
-    // Reset to Rich view on every fresh Verify; the minimal view is
-    // fetched lazily on click so the cost of a verify roundtrip is
-    // unchanged.
-    showRichView();
+    // Minimal reachability table is now the only verdict surface. Fetch
+    // it eagerly on every verify so the user sees a populated table
+    // straight away.
     invalidateMinimalCache();
+    showMinimalView();
     verifyStatus.textContent = `Done — severity: ${data.report.severity}`;
   } catch (e) {
     verifyStatus.classList.add("error");
@@ -936,33 +2035,79 @@ verifyBtn.addEventListener("click", async () => {
 });
 
 // =====================================================================
-// Verdict view toggle (rich ↔ minimal/reachability)
+// Direct simulate / explore (skip the manual paste step)
 // =====================================================================
 //
-// The Rich view is the default — it shows the existing per-FM cards
-// with NFR reframings, recommendations, etc. The Minimal view fetches
-// the reachability-only output from /api/minimal-verdicts and renders
-// a compact table. Same JSON shape the ABM and cadCAD export consume.
+// Both buttons:
+//   1. Build the IR from form state.
+//   2. Round-trip through /api/yaml-to-ir to canonicalize as YAML.
+//   3. Hand off to /simulate or /explore via sessionStorage — the
+//      target page reads it on load and pre-fills its YAML textarea.
+//
+// The sessionStorage handoff lets us cross page boundaries without
+// shoving the entire YAML through the URL.
 
-const richView = document.getElementById("rich-view");
+async function buildAndStashYaml() {
+  let ir;
+  try {
+    ir = buildIR();
+  } catch (e) {
+    verifyStatus.classList.add("error");
+    verifyStatus.textContent = `Form error: ${e.message}`;
+    return null;
+  }
+  const res = await fetch("/api/build-and-verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ir }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    verifyStatus.classList.add("error");
+    verifyStatus.textContent = `Error: ${data.error || res.statusText}`;
+    return null;
+  }
+  return data.yaml || "";
+}
+
+if (simulateDirectBtn) {
+  simulateDirectBtn.addEventListener("click", async () => {
+    verifyStatus.classList.remove("error");
+    verifyStatus.textContent = "Preparing simulator…";
+    const yamlText = await buildAndStashYaml();
+    if (yamlText == null) return;
+    sessionStorage.setItem("te_form_yaml", yamlText);
+    verifyStatus.textContent = "Done — opening simulator.";
+    window.location.href = "/simulate";
+  });
+}
+
+if (exploreDirectBtn) {
+  exploreDirectBtn.addEventListener("click", async () => {
+    verifyStatus.classList.remove("error");
+    verifyStatus.textContent = "Preparing explorer…";
+    const yamlText = await buildAndStashYaml();
+    if (yamlText == null) return;
+    sessionStorage.setItem("te_form_yaml", yamlText);
+    verifyStatus.textContent = "Done — opening explorer.";
+    window.location.href = "/explore";
+  });
+}
+
+// =====================================================================
+// Verdict view (minimal reachability — only mode after the Rich/Minimal
+// toggle was removed; same JSON shape the ABM and cadCAD export consume).
+// =====================================================================
+
 const minimalView = document.getElementById("minimal-view");
 const minimalTable = document.getElementById("minimal-table");
-const viewToggleBtns = document.querySelectorAll(".view-toggle-btn");
 
 let minimalCache = null;  // cached minimal verdicts for the most recent verify
 
 function invalidateMinimalCache() { minimalCache = null; }
 
-function showRichView() {
-  richView.hidden = false;
-  if (minimalView) minimalView.hidden = true;
-  viewToggleBtns.forEach((b) => b.classList.toggle("active", b.dataset.view === "rich"));
-}
-
 async function showMinimalView() {
-  if (richView) richView.hidden = true;
   if (minimalView) minimalView.hidden = false;
-  viewToggleBtns.forEach((b) => b.classList.toggle("active", b.dataset.view === "minimal"));
 
   if (minimalCache) {
     renderMinimalTable(minimalCache);
@@ -972,7 +2117,7 @@ async function showMinimalView() {
     minimalTable.innerHTML = '<p class="hint">Run Verify first.</p>';
     return;
   }
-  minimalTable.innerHTML = '<p class="hint">Loading minimal reachability…</p>';
+  minimalTable.innerHTML = '<p class="hint">Loading reachability summary…</p>';
   try {
     const r = await fetch("/api/minimal-verdicts", {
       method: "POST",
@@ -1014,10 +2159,71 @@ function renderMinimalTable(verdicts) {
     `;
   }).join("");
   minimalTable.innerHTML = `
+    <details class="legend-box" open>
+      <summary>Legend (what the columns and symbols mean)</summary>
+      <dl class="legend-dl">
+        <dt><strong>FM</strong></dt>
+        <dd>The failure mode being checked (FM1 oversupply, FM2 velocity
+            trap, FM3 burn/emission imbalance, FM4 free-rider, FM5 critical
+            mass, FM6 governance capture).</dd>
+        <dt><strong>Subject</strong></dt>
+        <dd>What the verdict is about — a specific token id for per-token
+            FMs (FM1, FM2, FM3) or <code>system</code> for whole-spec FMs
+            (FM4, FM5, FM6).</dd>
+        <dt><strong>Status</strong></dt>
+        <dd>
+          <span class="status-pill status-sound">sound</span> — predicate
+              holds across the entire declared parameter box (safe by
+              construction).<br/>
+          <span class="status-pill status-fragile">fragile</span> — both
+              safe and unsafe assignments exist in the box (the spec
+              straddles the cliff). Run the ABM to estimate likelihood.<br/>
+          <span class="status-pill status-broken">broken</span> — no
+              assignment in the box satisfies the predicate. Structurally
+              unsafe; redesign needed (the ABM cannot rescue it).<br/>
+          <span class="status-pill status-not_applicable">not_applicable</span>
+              — this FM does not apply (e.g. FM4 for a time-based emission).<br/>
+          <span class="status-pill status-inconclusive">inconclusive</span>
+              — solver couldn't decide; usually means a parameter is
+              under-specified (range too wide, asymptotic class unset).
+        </dd>
+        <dt><strong>V — violation reachable</strong></dt>
+        <dd>Is there at least one parameter assignment in the declared box
+            for which the FM fires?
+            <span class="tri-yes">yes</span> = reachable;
+            <span class="tri-no">no</span> = not reachable;
+            <span class="tri-unk">?</span> = unknown (skipped /
+            inconclusive / not applicable).</dd>
+        <dt><strong>S — satisfaction reachable</strong></dt>
+        <dd>Is there at least one parameter assignment in the box for
+            which the safety predicate <em>holds</em>?
+            Together with V it determines the status:
+            <code>V=no, S=yes ⇒ sound</code>,
+            <code>V=yes, S=yes ⇒ fragile</code>,
+            <code>V=yes, S=no ⇒ broken</code>.</dd>
+        <dt><strong>Threshold</strong></dt>
+        <dd>The minimum parameter shift needed to move a
+            <em>fragile</em> verdict to <em>sound</em> — the closest
+            point on the cliff. Empty for sound / not-applicable rows
+            where no shift is required.</dd>
+        <dt><strong>Safety predicates</strong></dt>
+        <dd>The formal property the ABM evaluates per period and uses to
+            count violations. Written as
+            <code>variable operator threshold</code>; same JSON shape the
+            cadCAD export consumes.</dd>
+        <dt><strong>—</strong></dt>
+        <dd>No value emitted (e.g. no threshold needed, FM not simulable).</dd>
+      </dl>
+    </details>
     <table class="minimal-table">
       <thead><tr>
-        <th>FM</th><th>Subject</th><th>Status</th>
-        <th>V</th><th>S</th><th>Threshold</th><th>Safety predicates</th>
+        <th title="Failure mode (FM1–FM6 from the DLT2026 paper)">FM</th>
+        <th title="Token id for per-token FMs; 'system' for whole-spec FMs">Subject</th>
+        <th title="sound / fragile / broken / not_applicable / inconclusive">Status</th>
+        <th title="Violation reachable in the declared parameter box?">V</th>
+        <th title="Satisfaction (safety predicate holds) reachable in the box?">S</th>
+        <th title="Minimum parameter shift to move fragile→sound">Threshold</th>
+        <th title="Formal predicate evaluated by the ABM each period">Safety predicates</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -1041,13 +2247,6 @@ function escapeHTML(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[c]);
 }
-
-viewToggleBtns.forEach((btn) => {
-  btn.addEventListener("click", () => {
-    if (btn.dataset.view === "minimal") showMinimalView();
-    else showRichView();
-  });
-});
 
 // =====================================================================
 // Examples

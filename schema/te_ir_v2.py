@@ -424,10 +424,15 @@ class FunctionSign(str, Enum):
 
 
 class FunctionShape(_Frozen):
-    """(sign, class) + optional stochastic envelope on the magnitude."""
+    """Asymptotic class + optional stochastic envelope on the magnitude.
 
-    sign: FunctionSign
+    Deprecated: ``sign``. Retained for back-compat; defaults to
+    ``always_positive``. Mint = non-negative rate intrinsically; the
+    shape of the curve is captured by family + signed coefficients.
+    """
+
     asymptotic_class: AsymptoticClass
+    sign: FunctionSign = FunctionSign.ALWAYS_POSITIVE
     # Stochastic noise around the class's deterministic value. Verifier
     # reasons over support; simulator samples.
     distribution: DistributionSpec | None = None
@@ -975,6 +980,12 @@ class UtilityWeights(_Frozen):
     # Softmax temperature for stochastic action selection. β = 1/T;
     # higher T → more random, lower T → more deterministic.
     action_temperature: float = 1.0
+    # Phase E1 — stochastic exit (mirror of v1 UtilityWeights).
+    exit_propensity: float = Field(default=0.0, ge=0.0, le=1.0)
+    social_comparison_delta: float = Field(default=0.3, ge=0.0)
+    # Phase E3 — reputation feedback.
+    reputation_yield: float = Field(default=0.0, ge=0.0)
+    reputation_decay: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class AgentType(_Frozen):

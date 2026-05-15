@@ -105,6 +105,17 @@ participants:
           min: 50
           max: 200
       balance_share: 0.85
+      # Holds long-term store-of-value; rarely trades. Softmax favors
+      # HOLD strongly so the realized τ̄ approaches the declared
+      # holding-time range. A bit of social_payoff lets the occasional
+      # transfer (DCA, charity, exchange-deposit) still happen.
+      role: observer
+      action_set: [hold, transfer]
+      utility:
+        holding_yield: 3.0
+        risk_aversion: 1.0
+        social_payoff: 0.15
+        action_temperature: 0.8
     - id: trader
       fraction: 0.25
       expected_holding_time:
@@ -112,6 +123,16 @@ participants:
           min: 1
           max: 8
       balance_share: 0.10
+      # Active in spot markets — transfers and (in a redemption-via-
+      # market-exchange sense) redeems for fiat / other assets. Low
+      # holding yield means they don't sit on balance.
+      role: consumer
+      action_set: [transfer, redeem, hold]
+      utility:
+        social_payoff: 2.0
+        redemption_value: 1.5
+        holding_yield: 0.3
+        action_temperature: 0.7
     - id: miner
       fraction: 0.05
       expected_holding_time:
@@ -119,6 +140,15 @@ participants:
           min: 1
           max: 4
       balance_share: 0.05
+      # Receives block rewards (EARN) and sells most of them to cover
+      # electricity (TRANSFER → exchanges). Keeps a small treasury.
+      role: contributor
+      action_set: [earn, transfer, hold]
+      utility:
+        income_yield: 3.0
+        social_payoff: 1.5
+        holding_yield: 0.3
+        action_temperature: 0.5
 
 governance:
   type: hybrid

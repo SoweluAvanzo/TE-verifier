@@ -8,6 +8,17 @@
   "use strict";
 
   const yamlInput     = document.getElementById("spec-yaml");
+
+  // Pre-fill from sessionStorage when the user came from the form via
+  // the "Monte Carlo" direct button. One-shot — clear after read so
+  // returning to /simulate from elsewhere doesn't re-inject stale yaml.
+  try {
+    const stashed = sessionStorage.getItem("te_form_yaml");
+    if (stashed) {
+      yamlInput.value = stashed;
+      sessionStorage.removeItem("te_form_yaml");
+    }
+  } catch (_) { /* sessionStorage may be unavailable; just skip */ }
   const runBtn        = document.getElementById("run-btn");
   const exportBtn     = document.getElementById("export-btn");
   const statusLine    = document.getElementById("status");
@@ -16,6 +27,11 @@
   const headlineList  = document.getElementById("headline-list");
   const cardsPane     = document.getElementById("per-fm-cards");
   const emptyMsg      = document.getElementById("empty-msg");
+  const severityBanner = document.getElementById("severity-banner");
+  const severityIcon   = document.getElementById("severity-icon");
+  const severityTitle  = document.getElementById("severity-title");
+  const severitySub    = document.getElementById("severity-sub");
+  const severityCounts = document.getElementById("severity-counts");
 
   /** Chart instances — kept so we can destroy them on rerun. */
   const charts = [];
@@ -117,50 +133,150 @@
     emptyMsg.classList.add("hidden");
     summaryPane.classList.remove("hidden");
     cardsPane.classList.remove("hidden");
+    severityBanner.classList.remove("hidden");
 
     // Destroy prior charts.
     while (charts.length) charts.pop().destroy();
 
+    renderSeverityBanner(report);
     renderSummaryTable(report);
     renderHeadlines(report);
     renderPerFMCards(report);
   }
 
+  /** Order rows: violations first (high → low P(violation)), then
+   *  simulated-clean, then SOUND, then BROKEN/NA. So the user sees the
+   *  most actionable rows at the top.
+   */
+  function sortedResults(report) {
+    const score = (r) => {
+      if (!r.simulated) {
+        if (r.structural_status === "broken") return -2;
+        if (r.structural_status === "sound")  return -1;
+        return -3;
+      }
+      // Simulated: higher P(violation) ranks first.
+      return 1 + r.p_violation;
+    };
+    return [...report.per_fm_results].sort((a, b) => score(b) - score(a));
+  }
+
+  function renderSeverityBanner(report) {
+    const rs = report.per_fm_results;
+    const simulated = rs.filter((r) => r.simulated);
+    const broken = rs.filter((r) => !r.simulated && r.structural_status === "broken");
+    const sound  = rs.filter((r) => !r.simulated && r.structural_status === "sound");
+    const passed = simulated.filter((r) => r.p_violation === 0);
+    const fragile = simulated.filter((r) => r.p_violation > 0 && r.p_violation < 0.5);
+    const failing = simulated.filter((r) => r.p_violation >= 0.5);
+
+    severityBanner.classList.remove("sev-fail", "sev-warn", "sev-pass", "sev-inconc");
+    let cls = "sev-pass";
+    let title = "All simulated FMs cleared.";
+    let sub = `${simulated.length} simulated, ${sound.length} skipped (sound), ${broken.length} skipped (broken).`;
+    let icon = "✓";
+    if (broken.length > 0) {
+      cls = "sev-fail";
+      icon = "✕";
+      title = `${broken.length} structurally broken failure mode${broken.length === 1 ? "" : "s"}.`;
+      sub = "No parameter assignment in the declared box satisfies the FM. Redesign required — the ABM cannot rescue it.";
+    } else if (failing.length > 0) {
+      cls = "sev-fail";
+      icon = "!";
+      title = `${failing.length} failure mode${failing.length === 1 ? " violates" : "s violate"} in ≥ 50 % of runs.`;
+      sub = `${fragile.length} additional FM(s) violate occasionally; ${passed.length} cleared. Open the affected cards below for counter-cases and recommendations.`;
+    } else if (fragile.length > 0) {
+      cls = "sev-warn";
+      icon = "△";
+      title = `${fragile.length} failure mode${fragile.length === 1 ? " violates" : "s violate"} in < 50 % of runs.`;
+      sub = `Edge-case risk — review the affected cards. ${passed.length} cleared, ${sound.length + broken.length} skipped by the verifier.`;
+    } else if (simulated.length === 0) {
+      cls = "sev-inconc";
+      icon = "?";
+      title = "Nothing simulated.";
+      sub = "Verifier ruled every FM out (SOUND / BROKEN / NA). No probabilistic data to report.";
+    }
+    severityBanner.classList.add(cls);
+    severityIcon.textContent = icon;
+    severityTitle.textContent = title;
+    severitySub.textContent = sub;
+
+    severityCounts.innerHTML = `
+      <span class="severity-pill sp-fail"><span class="pill-n">${failing.length}</span><span class="pill-lbl">≥ 50 % violate</span></span>
+      <span class="severity-pill sp-fail"><span class="pill-n">${fragile.length}</span><span class="pill-lbl">edge-case</span></span>
+      <span class="severity-pill sp-pass"><span class="pill-n">${passed.length}</span><span class="pill-lbl">cleared</span></span>
+      <span class="severity-pill sp-skip"><span class="pill-n">${sound.length}</span><span class="pill-lbl">sound (skip)</span></span>
+      <span class="severity-pill sp-skip"><span class="pill-n">${broken.length}</span><span class="pill-lbl">broken (skip)</span></span>
+    `;
+  }
+
   function renderSummaryTable(report) {
-    const rows = report.per_fm_results.map((r) => {
+    const sorted = sortedResults(report);
+    const rows = sorted.map((r) => {
       const status = r.structural_status;
-      const pDeploy = r.simulated && r.n_runs > 0
+      const pAll = (r.simulated && r.n_runs > 0)
+        ? pct(r.p_violation) : "—";
+      const pDeploy = (r.simulated && r.n_runs > 0)
         ? pct(r.n_violations_at_deployment / r.n_runs) : "—";
-      const pDyn = r.simulated && r.n_runs > 0
+      const pDyn = (r.simulated && r.n_runs > 0)
         ? pct(r.n_violations_dynamic / r.n_runs) : "—";
       const tMed = (r.simulated && r.time_to_violation_median != null && r.time_to_violation_median > 0)
         ? r.time_to_violation_median.toFixed(0) : "—";
-      return `<tr>
+      const ci = (r.simulated && r.p_violation_ci)
+        ? `${pct(r.p_violation_ci[0])}–${pct(r.p_violation_ci[1])}` : "—";
+      const runs = r.simulated ? `${r.n_violations}/${r.n_runs}` : "—";
+      const anchor = cardAnchor(r);
+      return `<tr data-anchor="${anchor}">
         <td>${r.failure_mode}</td>
         <td>${escape(r.subject)}</td>
         <td><span class="status-cell status-${status}">${status}</span></td>
+        <td>${pAll}</td>
+        <td class="col-ci">${ci}</td>
         <td>${pDeploy}</td>
         <td>${pDyn}</td>
         <td>${tMed}</td>
+        <td class="col-runs">${runs}</td>
       </tr>`;
     }).join("");
     summaryTableW.innerHTML = `
       <table class="summary-table">
         <thead><tr>
           <th>FM</th><th>Subject</th><th>Status</th>
-          <th>P(deploy)</th><th>P(dynamic)</th><th>t_med</th>
+          <th>P(violation)</th><th>95 % CI</th>
+          <th>P(deploy)</th><th>P(dynamic)</th><th>t<sub>med</sub></th>
+          <th>runs</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     `;
+    // Wire row-click → jump to card anchor.
+    summaryTableW.querySelectorAll("tbody tr").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        const target = document.getElementById(tr.dataset.anchor);
+        if (target) {
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+          target.classList.add("flash");
+          setTimeout(() => target.classList.remove("flash"), 1200);
+        }
+      });
+    });
+  }
+
+  /** Stable card anchor: fm-FM<n>-<subject>. */
+  function cardAnchor(r) {
+    const fm = String(r.failure_mode).match(/FM\d+/i);
+    const fmId = fm ? fm[0].toUpperCase() : "FM";
+    const subj = String(r.subject).replace(/[^a-z0-9]+/gi, "_").toLowerCase();
+    return `card-${fmId}-${subj}`;
   }
 
   function renderHeadlines(report) {
     /* Reproduce the engine's narrative client-side from structured
      * report fields. Same logic as report.py _narrative — kept here
-     * so the HTML output matches what te-simulate prints. */
+     * so the HTML output matches what te-simulate prints.
+     * Ordered the same way as the summary table: highest-risk first. */
     headlineList.innerHTML = "";
-    report.per_fm_results.forEach((r) => {
+    sortedResults(report).forEach((r) => {
       const text = narrativeFor(r);
       if (text) {
         const li = document.createElement("li");
@@ -202,8 +318,10 @@
 
   function renderPerFMCards(report) {
     cardsPane.innerHTML = "";
-    report.per_fm_results.forEach((r) => {
+    const sorted = sortedResults(report);
+    sorted.forEach((r) => {
       const card = document.createElement("div");
+      card.id = cardAnchor(r);
       card.className = "fm-card" + (r.simulated ? "" : " skipped");
 
       const title = document.createElement("h4");

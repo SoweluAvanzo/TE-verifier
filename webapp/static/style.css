@@ -721,3 +721,132 @@ textarea {
   color: #5b8bb5;
   font-size: 0.8rem;
 }
+
+/* =====================================================================
+ * Stepwise verification navigator — shown at top of every primary page.
+ * Highlights the current step + reveals each step's area of competence
+ * on hover/focus so the user knows what the pipeline does at each stage.
+ * ===================================================================== */
+
+.step-nav {
+  margin: 0.4rem 0 1rem 0;
+  padding: 0.6rem 0.8rem;
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.step-nav-list {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: stepnav;
+}
+
+.step-nav-item {
+  position: relative;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.step-nav-item.is-current {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(31, 93, 140, 0.18);
+  background: #fff;
+}
+
+.step-nav-item.is-done .step-num {
+  background: var(--color-pass);
+  color: #fff;
+}
+
+.step-nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.step-num {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 50%;
+  background: var(--color-muted);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.step-nav-item.is-current .step-num {
+  background: var(--color-accent);
+}
+
+.step-body {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.step-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--color-fg);
+}
+
+.step-sub {
+  font-size: 0.78rem;
+  color: var(--color-muted);
+}
+
+.step-scope {
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px dashed var(--color-border);
+  font-size: 0.78rem;
+  color: #2a2a2a;
+  display: none;
+  line-height: 1.45;
+}
+
+.step-nav-item.is-current .step-scope,
+.step-nav-item:hover .step-scope,
+.step-nav-item:focus-within .step-scope {
+  display: block;
+}
+
+.step-scope strong {
+  color: var(--color-accent);
+}
+
+@media (max-width: 900px) {
+  .step-nav-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Task 3 — derived function-shape list under the coherence panel. */
+.shape-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0 0 0;
+}
+.shape-list li {
+  background: #fafafd;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  padding: 0.35rem 0.6rem;
+  margin: 0.25rem 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.shape-list li code { font-size: 0.82rem; }

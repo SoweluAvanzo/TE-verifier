@@ -117,6 +117,16 @@ participants:
           min: 50
           max: 150
       balance_share: 0.5
+      # Cold-wallet HODLer: dominant action HOLD, occasional VOTE on
+      # protocol-change governance signals.
+      role: observer
+      action_set: [hold, vote, transfer]
+      utility:
+        holding_yield: 3.0
+        risk_aversion: 1.0
+        governance_payoff: 0.3
+        social_payoff: 0.15
+        action_temperature: 0.8
     - id: defi_user
       fraction: 0.3
       expected_holding_time:
@@ -124,6 +134,16 @@ participants:
           min: 4
           max: 30
       balance_share: 0.2
+      # Uses ETH to pay gas + swap into DeFi protocols. High redeem
+      # (gas burn = realized B in the ABM), high transfer (sending
+      # to LPs, marketplaces, bridges).
+      role: consumer
+      action_set: [transfer, redeem, hold]
+      utility:
+        redemption_value: 2.0
+        social_payoff: 2.0
+        holding_yield: 0.5
+        action_temperature: 0.6
     - id: validator
       # ~33M ETH staked at ~32 ETH/validator ≈ 1M validators; share of
       # total holders is small but their balance share is large.
@@ -133,6 +153,16 @@ participants:
           min: 50
           max: 200
       balance_share: 0.3
+      # Earns staking rewards (≈3-4% APR) ⇒ EARN. Stake itself is
+      # locked, modeled by occasional STAKE action that flags the
+      # agent locked. Validators don't sell off rewards much.
+      role: contributor
+      action_set: [earn, stake, hold, vote]
+      utility:
+        income_yield: 3.0
+        holding_yield: 1.5
+        governance_payoff: 0.4
+        action_temperature: 0.4
 
 governance:
   type: hybrid

@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Economy Verifier — Trajectory Explorer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='form.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='simulate.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='explore.css') }}" />
+</head>
+<body>
+  {% set current_step = 3 %}{% include '_step_nav.html' %}
+  <header class="page-header compact">
+    <div class="header-row">
+      <h1>Trajectory Explorer</h1>
+      <nav>
+        <a href="/" class="nav-link">← Questionnaire</a>
+        <a href="/yaml" class="nav-link">YAML editor</a>
+        <a href="/simulate" class="nav-link">Monte Carlo</a>
+      </nav>
+    </div>
+    <p class="subtitle">
+      One seeded trajectory, period-by-period. Run, then read the
+      <strong>Results synthesis</strong> below for the key findings,
+      and scrub the timeline to inspect the network at any period.
+      Every chart has a caption explaining what it proves.
+    </p>
+  </header>
+
+  <main class="explore-layout">
+    <aside class="explore-controls">
+      <h2>Spec</h2>
+      <div class="quick-actions">
+        <span class="qa-label">Load example:</span>
+        {% for ex in examples %}
+        <button type="button" class="example-btn" data-example="{{ ex }}">{{ ex }}</button>
+        {% endfor %}
+      </div>
+      <label class="block-label" for="spec-yaml">YAML spec</label>
+      <textarea id="spec-yaml" class="spec-textarea" rows="9" placeholder="Paste TE-IR YAML or load an example..."></textarea>
+
+      <h2>Run config</h2>
+      <div class="config-grid">
+        <label>Horizon
+          <input type="number" id="cfg-horizon" min="10" max="10000" step="10" value="120" />
+        </label>
+        <label>Seed
+          <input type="number" id="cfg-seed" step="1" value="42" />
+        </label>
+        <label>Max agents
+          <input type="number" id="cfg-max-agents" min="5" max="200" step="5" value="60" placeholder="auto" />
+        </label>
+      </div>
+      <button type="button" class="primary-btn" id="run-btn">Run trajectory</button>
+      <p class="status-line" id="status">Idle.</p>
+    </aside>
+
+    <section class="explore-main">
+
+      <!-- ====================== Results synthesis ====================== -->
+      <article class="explore-card synth-card" id="synth-card" hidden>
+        <header class="card-header">
+          <h3>Results synthesis</h3>
+          <p class="card-caption">
+            A Summary of what happened during this
+            trajectory simulation. Headlines describe supply changes, concentration
+            drift, participation, and trade activity. Tiles below break
+            out the final state per agent role.
+          </p>
+        </header>
+        <div class="synth-grid">
+          <div class="synth-tile" id="synth-supply">
+            <span class="tile-label">Final supply</span>
+            <span class="tile-value" id="tile-supply">—</span>
+          </div>
+          <div class="synth-tile" id="synth-emit">
+            <span class="tile-label">Cumulative emission</span>
+            <span class="tile-value" id="tile-emit">—</span>
+          </div>
+          <div class="synth-tile" id="synth-burn">
+            <span class="tile-label">Cumulative burn</span>
+            <span class="tile-value" id="tile-burn">—</span>
+          </div>
+          <div class="synth-tile">
+            <span class="tile-label">Trades total</span>
+            <span class="tile-value" id="tile-trades">—</span>
+          </div>
+          <div class="synth-tile">
+            <span class="tile-label">Final Gini (balance)</span>
+            <span class="tile-value" id="tile-gini">—</span>
+          </div>
+          <div class="synth-tile">
+            <span class="tile-label">Delegate-power Gini</span>
+            <span class="tile-value" id="tile-delgini">—</span>
+          </div>
+          <div class="synth-tile">
+            <span class="tile-label">Final φ</span>
+            <span class="tile-value" id="tile-phi">—</span>
+          </div>
+          <div class="synth-tile">
+            <span class="tile-label">Final τ̄</span>
+            <span class="tile-value" id="tile-tau">—</span>
+          </div>
+          <div class="synth-tile">
+            <span class="tile-label">Live agents (start → end)</span>
+            <span class="tile-value" id="tile-pop">—</span>
+          </div>
+          <div class="synth-tile">
+            <span class="tile-label">Agents exited</span>
+            <span class="tile-value" id="tile-exited">—</span>
+          </div>
+          <div class="synth-tile">
+            <span class="tile-label">Mean reputation (peak / final)</span>
+            <span class="tile-value" id="tile-rep">—</span>
+          </div>
+        </div>
+
+        <h4 class="synth-h">Headlines</h4>
+        <ul class="headline-list" id="headline-list"></ul>
+
+        <h4 class="synth-h">Per-role final standing</h4>
+        <p class="card-caption">
+          One row per <code>agent_type</code>. Tells you which roles
+          ended up dominant, what fraction of total balance they hold,
+          and how active they were on the trade graph.
+        </p>
+        <table class="role-table" id="role-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Count</th>
+              <th>Avg balance</th>
+              <th>Median</th>
+              <th>Balance share</th>
+              <th>Avg periods<br />since action</th>
+              <th>Avg degree</th>
+              <th>Avg reputation</th>
+              <th>Dominant action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <h4 class="synth-h">Top hubs (most-connected agents)</h4>
+        <p class="card-caption">
+          Agents with the largest <em>cumulative</em> trade-flow
+          (incoming + outgoing transfers, by token weight). Useful for
+          spotting de-facto market-makers or whale routes — they are
+          the agents whose removal would most disrupt the trade graph.
+        </p>
+        <table class="hub-table" id="hub-table">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Type</th>
+              <th>Total flow</th>
+              <th>Final balance</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </article>
+
+      <!-- ====================== Time scrubber ====================== -->
+      <div class="scrubber-row" id="scrubber-row" hidden>
+        <label for="scrubber">Period</label>
+        <input type="range" id="scrubber" min="0" max="0" step="1" value="0" />
+        <span id="scrubber-label">t = 0 / 0</span>
+        <button type="button" id="play-btn" class="secondary-btn">▶ Play</button>
+      </div>
+
+      <!-- ====================== Per-role time series ====================== -->
+      <div class="explore-grid two-cols" id="per-role-grid" hidden>
+        <article class="explore-card">
+          <header class="card-header">
+            <h3>Average balance per role over time</h3>
+            <p class="card-caption">
+              One line per <code>agent_type</code>. Tells you which
+              roles accumulated balance and which gave it up; useful
+              for spotting wealth flow from one role to another.
+            </p>
+          </header>
+          <canvas id="role-balance-chart"></canvas>
+        </article>
+        <article class="explore-card">
+          <header class="card-header">
+            <h3>Balance-share per role over time</h3>
+            <p class="card-caption">
+              Each role's fraction of total tokens at every period.
+              Aggregates to 1.0. If one line steadily climbs, that role
+              is consolidating wealth at the expense of the others.
+            </p>
+          </header>
+          <canvas id="role-share-chart"></canvas>
+        </article>
+        <article class="explore-card">
+          <header class="card-header">
+            <h3>Population aggregates (Gini, φ)</h3>
+            <p class="card-caption">
+              Balance Gini and delegate-power Gini diverge under
+              <code>DELEGATED</code> voting; <code>φ</code> tracks the
+              fraction of agents that acted recently.
+              <strong>Higher Gini = more concentration; higher φ = healthier participation.</strong>
+            </p>
+          </header>
+          <canvas id="aggregates-chart"></canvas>
+        </article>
+        <article class="explore-card">
+          <header class="card-header">
+            <h3>Action mix per period (population-wide)</h3>
+            <p class="card-caption">
+              Stacked area: what fraction of all agents picked each
+              action this period. Surfaces behavioral regime shifts
+              (e.g. "everyone stopped earning at t≈50").
+            </p>
+          </header>
+          <canvas id="action-mix-chart"></canvas>
+        </article>
+        <article class="explore-card">
+          <header class="card-header">
+            <h3>Live population over time (Phase E1)</h3>
+            <p class="card-caption">
+              Active agent count per period. Flat line when exit is
+              disabled; downward slope means
+              <code>UtilityWeights.exit_propensity &gt; 0</code> is
+              firing — agents whose scalar utility falls below the
+              population mean are leaving.
+            </p>
+          </header>
+          <canvas id="population-chart"></canvas>
+        </article>
+        <article class="explore-card">
+          <header class="card-header">
+            <h3>Reputation over time (Phase E3)</h3>
+            <p class="card-caption">
+              Mean reputation across the population, plus per-role
+              breakdown when distinct. Reputation accrues on EARN/VOTE
+              and decays each period by
+              <code>UtilityWeights.reputation_decay</code>. Zero line
+              means no type opted into reputation tracking.
+            </p>
+          </header>
+          <canvas id="reputation-chart"></canvas>
+        </article>
+        <article class="explore-card" id="events-card" hidden>
+          <header class="card-header">
+            <h3>Event occurrences over time</h3>
+            <p class="card-caption">
+              Per-period firing count of every event declared in
+              <code>te.events</code>. Spikes signal demand surges; flat
+              lines indicate stationary frequency. Cross-reference with
+              the supply chart above to spot mint/burn drift.
+            </p>
+          </header>
+          <canvas id="events-chart"></canvas>
+        </article>
+        <article class="explore-card" id="assets-card" hidden>
+          <header class="card-header">
+            <h3>Non-tokenized asset flows</h3>
+            <p class="card-caption">
+              Per-asset inventory <code>count</code>, cumulative
+              <code>created</code> and cumulative <code>consumed</code>.
+              Tracks good/service purchases driven by token redemption.
+              One line per (asset · metric).
+            </p>
+          </header>
+          <canvas id="assets-chart"></canvas>
+        </article>
+      </div>
+
+      <!-- ====================== Network + balance histogram at current scrubber position ====================== -->
+      <div class="explore-grid two-cols" id="snapshot-grid" hidden>
+        <article class="explore-card span-2">
+          <header class="card-header">
+            <h3>Trade network at period <span id="net-period">0</span></h3>
+            <div class="card-controls">
+              <label class="inline-ctl">Edges:
+                <select id="edge-mode">
+                  <option value="topk">Top-K by weight</option>
+                  <option value="window">Last N periods</option>
+                  <option value="all">All cumulative</option>
+                </select>
+              </label>
+              <label class="inline-ctl">Limit:
+                <input type="number" id="edge-limit" min="5" max="500" step="5" value="60" />
+              </label>
+              <label class="inline-ctl">Color by:
+                <select id="node-color-mode">
+                  <option value="role">Role (type)</option>
+                  <option value="delegate">Delegate / non-delegate</option>
+                </select>
+              </label>
+            </div>
+            <p class="card-caption">
+              Nodes are agents (size ∝ balance, colored as above);
+              edges are <em>realized</em> transfers between agents up
+              to this period. Force-directed: clusters indicate frequent
+              trading partners. Use the controls to declutter — top-K
+              shows only the heaviest edges; window shows only edges
+              created in the last N periods.
+            </p>
+          </header>
+          <div id="net-legend" class="net-legend"></div>
+          <div id="network-canvas" class="network-canvas"></div>
+        </article>
+        <article class="explore-card">
+          <header class="card-header">
+            <h3>Balance histogram at this period</h3>
+            <p class="card-caption">
+              Distribution of agent balances right now. A right-skewed
+              tail indicates wealth concentration (high Gini).
+            </p>
+          </header>
+          <canvas id="balance-chart"></canvas>
+        </article>
+        <article class="explore-card">
+          <header class="card-header">
+            <h3>Action choice this period</h3>
+            <p class="card-caption">
+              What every active agent did <em>this</em> period (vs the
+              over-time stacked chart). Use the scrubber to see the
+              shift period-by-period.
+            </p>
+          </header>
+          <canvas id="actions-chart"></canvas>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  <script src="{{ url_for('static', filename='explore.js') }}"></script>
+</body>
+</html>

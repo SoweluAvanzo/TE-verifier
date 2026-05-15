@@ -224,6 +224,7 @@ def rule_rate_per_period(
     rule,  # schema.Rule, untyped here to avoid circular imports
     *,
     periods_horizon: float = 52.0,
+    te=None,
 ) -> z3.ArithRef:
     """Compute the per-period rate produced (or destroyed) by a Rule.
 
@@ -232,19 +233,142 @@ def rule_rate_per_period(
     *per event* multiplied by the event frequency averaged over the horizon.
     This is the natural rate-of-mint or rate-of-burn that FM1 and FM3 reason
     about.
+
+    Phase-F: when ``rule.regimes`` is non-empty, the effective rate is
+    a Z3 disjunction over {base_function, regime_1.function, ...}. Z3
+    picks whichever candidate makes the failure condition reachable
+    (worst-case reasoning across regimes). Regimes whose predicate is
+    statically NEVER are excluded from the disjunction so we don't
+    spuriously include unreachable rate values.
+
+    ``te`` is needed for predicate evaluation; when omitted, regimes are
+    skipped (preserves pre-Phase-F behavior for callers that don't pass
+    it).
     """
-    fn_value = average_rate_per_period(
-        solver,
-        f"{name_prefix}_fn",
-        rule.function.asymptotic_class,
-        periods_horizon=periods_horizon,
-    )
-    if rule.trigger.event_frequency is not None:
-        frequency = average_rate_per_period(
-            solver,
-            f"{name_prefix}_freq",
-            rule.trigger.event_frequency,
+    # Resolve frequency through the events catalog when ``te`` is
+    # supplied (Phase-H preferred path). Falls back to the rule's
+    # legacy inline ``trigger.event_frequency`` for back-compat.
+    if te is not None:
+        from verifier.events_resolver import resolve_trigger
+        resolved_frequency = resolve_trigger(rule, te).event_frequency
+    else:
+        resolved_frequency = rule.trigger.event_frequency
+
+    # Phase K5: if the rule's function carries a DSL expression
+    # (Phase K1+), encode that into Z3 directly rather than going
+    # through the legacy AsymptoticClass path. Falls back when the
+    # expression is non-decidable (log/exp/etc. of variables) — caller
+    # sees the resulting NotImplementedError and marks inconclusive.
+    fs = rule.function
+    if getattr(fs, "expression", None) is not None:
+        from verifier.expr_eval import encode_z3, Z3Env, Z3EncodingError, bind_param
+        from schema.expr_parser import is_decidable
+        ok, _reasons = is_decidable(fs.expression)
+        if ok:
+            try:
+                # Bind ParamDecl parameters as Z3 reals constrained by
+                # their declared range. Same convention the engine uses.
+                param_vars: dict[str, "z3.ArithRef"] = {}
+                for p in (fs.parameters or []):
+                    param_vars[p.name] = bind_param(solver, p.name, p.range)
+                # Bind event payload variables from the resolved
+                # EventDefinition so the encoder can resolve event.X.
+                event_payload_vars: dict[str, "z3.ArithRef"] = {}
+                if te is not None and rule.trigger.event_id is not None:
+                    try:
+                        event_def = te.get_event(rule.trigger.event_id)
+                    except KeyError:
+                        event_def = None
+                    if event_def is not None:
+                        for field in (event_def.payload or []):
+                            if field.type.value != "scalar" or field.range is None:
+                                continue
+                            v = z3.Real(f"{name_prefix}__event_{field.name}")
+                            solver.add(v >= field.range.min)
+                            solver.add(v <= field.range.max)
+                            event_payload_vars[field.name] = v
+                env = Z3Env(
+                    solver=solver,
+                    state_vars={
+                        "t": z3.Real(f"{name_prefix}__state_t"),
+                    },
+                    param_vars=param_vars,
+                    event_payload_vars=event_payload_vars,
+                    const_values={"horizon": float(periods_horizon)},
+                    agents=[], tokens=[], events=[], assets=[],
+                )
+                solver.add(env.state_vars["t"] >= 0)
+                solver.add(env.state_vars["t"] <= periods_horizon)
+                base_rate = encode_z3(fs.expression, env)
+                if resolved_frequency is not None:
+                    freq = average_rate_per_period(
+                        solver, f"{name_prefix}_freq", resolved_frequency,
+                        periods_horizon=periods_horizon,
+                    )
+                    return base_rate * freq
+                return base_rate
+            except Z3EncodingError:
+                # Fall through to legacy path; caller still produces
+                # a verdict, just less precise.
+                pass
+        # Expression present but non-decidable, OR Z3 encoding failed.
+        # Legacy path would crash because ``asymptotic_class`` is None
+        # when ``expression`` is set. Return a free non-negative real so
+        # the FM check becomes Inconclusive rather than crashing.
+        free = z3.Real(f"{name_prefix}__expr_free")
+        solver.add(free >= 0)
+        if resolved_frequency is not None:
+            freq = average_rate_per_period(
+                solver, f"{name_prefix}_freq", resolved_frequency,
+                periods_horizon=periods_horizon,
+            )
+            return free * freq
+        return free
+
+    def _function_to_rate(prefix: str, fn) -> z3.ArithRef:
+        if fn.asymptotic_class is None:
+            # Same defensive path for regime functions: free var.
+            free = z3.Real(f"{prefix}__expr_free")
+            solver.add(free >= 0)
+            if resolved_frequency is not None:
+                frequency = average_rate_per_period(
+                    solver, f"{prefix}_freq", resolved_frequency,
+                    periods_horizon=periods_horizon,
+                )
+                return free * frequency
+            return free
+        fn_value = average_rate_per_period(
+            solver, f"{prefix}_fn", fn.asymptotic_class,
             periods_horizon=periods_horizon,
         )
-        return fn_value * frequency
-    return fn_value
+        if resolved_frequency is not None:
+            frequency = average_rate_per_period(
+                solver, f"{prefix}_freq", resolved_frequency,
+                periods_horizon=periods_horizon,
+            )
+            return fn_value * frequency
+        return fn_value
+
+    base_rate = _function_to_rate(name_prefix, rule.function)
+
+    regimes = getattr(rule, "regimes", None) or []
+    if not regimes or te is None:
+        return base_rate
+
+    # Phase-F — include reachable regimes as Z3 candidates.
+    from verifier.conditions import ConditionStatus, evaluate_condition  # local to avoid import cycle
+    candidates: list[z3.ArithRef] = [base_rate]
+    for idx, regime in enumerate(regimes):
+        status = evaluate_condition(regime.predicate, te)
+        if status == ConditionStatus.NEVER:
+            continue
+        candidates.append(
+            _function_to_rate(f"{name_prefix}_regime{idx}", regime.function)
+        )
+
+    if len(candidates) == 1:
+        return base_rate
+
+    effective = z3.Real(f"{name_prefix}_effective")
+    solver.add(z3.Or(*[effective == c for c in candidates]))
+    return effective
