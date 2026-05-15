@@ -705,6 +705,13 @@ class CrossTokenFlow(_Frozen):
     # multiplier `r` such that flow_rate = r × E_own(source). Otherwise
     # ignored (kept None).
     coupling_ratio: NumberRange | None = None
+    # Phase L3 — for ``target_action = transfer`` only: agent_type id
+    # of the recipient role. When set, transferred tokens are routed
+    # exclusively to agents of that type (e.g. "transferred BUONO goes
+    # to mirafiori_merchant agents"). When None, transfers are spread
+    # across all eligible holders proportionally. Ignored for mint /
+    # burn since those don't move tokens between agents.
+    recipient_type: str | None = None
 
     @model_validator(mode="after")
     def _validate_coupling(self) -> "CrossTokenFlow":
@@ -713,6 +720,15 @@ class CrossTokenFlow(_Frozen):
                 raise ValueError(
                     "coupling=proportional_to_source requires coupling_ratio"
                 )
+        # recipient_type only meaningful for transfer flows; flag the
+        # combination clearly rather than silently ignoring.
+        if (self.recipient_type is not None
+                and self.target_action != CrossTokenAction.TRANSFER):
+            raise ValueError(
+                f"recipient_type is only valid for target_action=transfer; "
+                f"got target_action={self.target_action.value} with "
+                f"recipient_type={self.recipient_type!r}."
+            )
         return self
 
 
@@ -1241,12 +1257,80 @@ class EventDefinition(_Frozen):
     label: str
     kind: EventTriggerKind
     frequency: AsymptoticClass | None = None
+    # Phase L2 — stochastic per-period firings. When ``frequency_distribution``
+    # is set the ABM samples per-period event count from the named
+    # distribution (normal / lognormal / bernoulli / poisson) instead of
+    # using the horizon-midpoint of ``frequency``. Useful for modelling
+    # shocks ("economic_shock ~ Normal(μ=0.05, σ=0.02)" firings/period)
+    # and bursty arrival processes. When both are set, the distribution
+    # takes precedence (frequency stays as the static-analysis surface
+    # for the Z3 verifier — see docs/proofs/coupled_flows.md).
+    frequency_distribution: DistributionSpec | None = None
     conditions: list[Condition] = Field(default_factory=list)
     # Phase K1 — typed event payload. Each field becomes addressable
     # as ``event.<name>`` inside any rule expression that references
     # this event. SCALAR fields require a range so Z3 has something
     # to constrain; STRING fields support equality checks only.
     payload: list[_EventPayloadField] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_frequency_consistency(self) -> "EventDefinition":
+        """Mathematical + structural consistency for the frequency spec.
+
+        Phase L3: ``frequency`` (deterministic AsymptoticClass) and
+        ``frequency_distribution`` (stochastic) are **mutually exclusive**.
+        The user picks one mode of arrival per event; mixing the two
+        creates ambiguity at the ABM/verifier boundary.
+
+        Distribution-param sanity:
+
+        * Bernoulli: 0 ≤ p ≤ 1 (DistributionSpec already enforces this
+          on construction; re-checked here for the error message).
+        * Poisson: lambda ≥ 0.
+        * Normal / lognormal: σ ≥ 0.
+
+        Event ``kind = "none"`` MUST omit both fields — a never-firing
+        event has no rate.
+        """
+        if self.frequency is not None and self.frequency_distribution is not None:
+            raise ValueError(
+                f"EventDefinition '{self.id}': specify EITHER 'frequency' "
+                f"(deterministic AsymptoticClass) OR "
+                f"'frequency_distribution' (stochastic DistributionSpec), "
+                f"not both. Pick the arrival model that matches the event."
+            )
+        if self.kind == EventTriggerKind.NONE:
+            if self.frequency is not None or self.frequency_distribution is not None:
+                raise ValueError(
+                    f"EventDefinition '{self.id}': kind=none means the "
+                    f"event never fires; remove the frequency / "
+                    f"frequency_distribution field."
+                )
+        d = self.frequency_distribution
+        if d is None:
+            return self
+        params = d.parameters or {}
+        if d.kind == "poisson":
+            if float(params.get("lambda", 0.0)) < 0.0:
+                raise ValueError(
+                    f"EventDefinition '{self.id}': Poisson lambda must "
+                    f"be ≥ 0 (got {params.get('lambda')})."
+                )
+        elif d.kind in ("normal", "lognormal"):
+            sigma = float(params.get("sigma", 0.0))
+            if sigma < 0.0:
+                raise ValueError(
+                    f"EventDefinition '{self.id}': {d.kind} σ must be "
+                    f"≥ 0 (got {sigma})."
+                )
+        elif d.kind == "bernoulli":
+            p = float(params.get("p", 0.0))
+            if not (0.0 <= p <= 1.0):
+                raise ValueError(
+                    f"EventDefinition '{self.id}': Bernoulli p must "
+                    f"be in [0, 1] (got {p})."
+                )
+        return self
 
 
 class AssetKind(str, Enum):

@@ -526,6 +526,12 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
     # firing count is sampled from its frequency AsymptoticClass (or
     # 1 when None). Stored in state["events_realized"] so EventOccurrence
     # conditions + the regime evaluator can see what fired this period.
+    #
+    # Phase-L2: when ``frequency_distribution`` is set, the per-period
+    # count is drawn from the named distribution (normal / lognormal /
+    # bernoulli / poisson) instead of the horizon-midpoint AC. Models
+    # economic shocks, bursty arrivals, gated events. Distribution
+    # always takes precedence over the AC when both are declared.
     te_events = params.get("te_events") or []
     te_event_conditions = params.get("te_event_conditions") or {}
     realized_events = state.setdefault("events_realized", {})
@@ -537,12 +543,23 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
             if conds and not all(is_condition_active(c, state) for c in conds):
                 realized_events[event.id] = 0.0
                 continue
-            if event.frequency is None:
-                # No frequency declared: treat as fires-once-per-period
-                # for time_based-like events; zero for "none" events.
-                realized_events[event.id] = (
-                    0.0 if event.kind.value == "none" else 1.0
+            dist = getattr(event, "frequency_distribution", None)
+            if dist is not None:
+                # Stochastic per-period firings.
+                realized_events[event.id] = max(
+                    0.0, float(sampler.sample_distribution(dist))
                 )
+                continue
+            if event.kind.value == "none":
+                # Sentinel kind: the event never fires.
+                realized_events[event.id] = 0.0
+                continue
+            if event.frequency is None:
+                # No frequency declared (and kind != none): treat as
+                # fires-once-per-period (e.g. time_based with implicit
+                # rate 1). The user can switch to a stochastic
+                # distribution for non-deterministic arrivals.
+                realized_events[event.id] = 1.0
             else:
                 realized_events[event.id] = max(0.0, _sample_ac(event.frequency, sampler))
 

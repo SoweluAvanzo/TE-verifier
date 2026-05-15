@@ -80,9 +80,13 @@ class PeriodSnapshot(BaseModel):
     M_by_token: dict[str, float] = Field(default_factory=dict)
     E_by_token: dict[str, float] = Field(default_factory=dict)
     B_by_token: dict[str, float] = Field(default_factory=dict)
+    # Per-token τ̄ — the coherence panel needs the dict, not just the
+    # population-weighted scalar.
+    tau_bar_by_token: dict[str, float] = Field(default_factory=dict)
     # Demand / population.
     N: float = 0.0
     Q: float = 0.0
+    average_degree: float = 0.0
     # Live participation / concentration.
     phi: float = 0.0
     tau_bar: float = 0.0
@@ -206,6 +210,17 @@ class ExploreReport(BaseModel):
     # Synthesized run-level findings — populated at the end of
     # ``run_explore``.
     summary: ExploreSummary | None = None
+    # Phase L1 — network analytics (centralities, correlations, null-model
+    # z-scores). Populated post-trajectory by
+    # :func:`verifier.abm.network_metrics.compute_network_metrics`.
+    network_metrics: Any | None = None
+    # Phase L1 — coherence panel: verifier verdicts × ABM-realized
+    # trajectories per FM.
+    fm_coherence: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase M.18 — flow-graph payload (spec + realised overlay).
+    # Built post-trajectory so /explore can render the visualisation
+    # directly from the report without a second round-trip.
+    flow_graph: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +299,7 @@ def run_explore(
 
     summary = _build_summary(snapshots, agent_infos)
 
-    return ExploreReport(
+    report = ExploreReport(
         te_name=te.meta.name,
         config=cfg,
         n_agents=n_agents,
@@ -296,6 +311,32 @@ def run_explore(
         type_ids=[at.id for at in te.participants.agent_types],
         summary=summary,
     )
+    # Phase L1: post-trajectory analytics. Wrapped in a try/except so a
+    # downstream library hiccup never breaks the page — a missing
+    # network_metrics block is benign for the existing charts.
+    try:
+        from verifier.abm.network_metrics import compute_network_metrics
+        report = report.model_copy(update={
+            "network_metrics": compute_network_metrics(report),
+        })
+    except Exception:
+        pass
+    try:
+        from verifier.abm.coherence import compute_fm_coherence
+        report = report.model_copy(update={
+            "fm_coherence": compute_fm_coherence(te, report, verifier_config),
+        })
+    except Exception:
+        pass
+    # Phase M.18 — flow-graph spec + realised overlay.
+    try:
+        from verifier.abm.flow_graph import build_flow_graph, annotate_with_realised
+        spec_graph = build_flow_graph(te)
+        flow_payload = annotate_with_realised(spec_graph, report)
+        report = report.model_copy(update={"flow_graph": flow_payload})
+    except Exception:
+        pass
+    return report
 
 
 def _snapshot(
@@ -371,8 +412,12 @@ def _snapshot(
         M_by_token=M_by_token,
         E_by_token=E_by_token,
         B_by_token=B_by_token,
+        tau_bar_by_token={
+            str(k): float(v) for k, v in tau_per_token.items()
+        },
         N=float(state.get("N", 0.0)),
         Q=float(state.get("Q", 0.0)),
+        average_degree=float(state.get("average_degree", 0.0)),
         phi=float(state.get("phi", contributor_fraction(agents, t))),
         tau_bar=float(tau_bar_value),
         effective_gini=float(state.get("effective_gini", 0.0)),

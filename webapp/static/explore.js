@@ -55,6 +55,10 @@
     eventsCard:      document.getElementById("events-card"),
     assetsChart:     document.getElementById("assets-chart"),
     assetsCard:      document.getElementById("assets-card"),
+    coherenceCard:   document.getElementById("coherence-card"),
+    coherenceWrap:   document.getElementById("coherence-table-wrap"),
+    netMetricsCard:  document.getElementById("network-metrics-card"),
+    netMetricsWrap:  document.getElementById("network-metrics-wrap"),
     balanceChart:    document.getElementById("balance-chart"),
     actionsChart:    document.getElementById("actions-chart"),
 
@@ -341,8 +345,18 @@
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: true, position: "top" },
-                   tooltip: { mode: "index", intersect: false } },
+        plugins: {
+          legend: { display: true, position: "top" },
+          tooltip: { mode: "index", intersect: false },
+          thresholdLines: {
+            lines: [
+              // FM6 secondary signal threshold (paper §3.6).
+              { y: 0.6, color: "#d0524a", label: "Gini = 0.6 (FM6 secondary)" },
+              // FM6 primary centralization threshold (Γ ≤ 0.5).
+              { y: 0.5, color: "#b07f1f", label: "Γ = 0.5 (FM6 primary)" },
+            ],
+          },
+        },
         scales: { y: { min: 0, max: 1 } },
       },
     });
@@ -383,6 +397,18 @@
       s.live_agent_count != null ? s.live_agent_count : (s.balances?.length ?? 0)
     );
     if (populationChartObj) populationChartObj.destroy();
+    // FM5 threshold N_crit = 2·K·d + 1 (well-mixed Kandori bound).
+    // K is per-token offer variety; conservatively pick the MAX K across
+    // tokens — that's the most binding constraint. ``d`` is sampled into
+    // state["d"] at run-time; carried in snapshot's optional 'd' or
+    // 'demand_d' field if present.
+    const fmCoh = report.fm_coherence || [];
+    const fm5Pred = ((fmCoh.find((c) => c.failure_mode === "FM5") || {}).predicates || [])
+      .find((p) => p.variable === "N" || p.variable === "live_agent_count");
+    const popThresholds = fm5Pred && Number.isFinite(fm5Pred.threshold)
+      ? [{ y: fm5Pred.threshold, color: "#d0524a",
+           label: `N_crit = ${fm5Pred.threshold} (FM5: N ≥ 2Kd+1)` }]
+      : [];
     populationChartObj = new Chart(dom.populationChart, {
       type: "line",
       data: {
@@ -398,8 +424,11 @@
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: true, position: "top" },
-                   tooltip: { mode: "index", intersect: false } },
+        plugins: {
+          legend: { display: true, position: "top" },
+          tooltip: { mode: "index", intersect: false },
+          thresholdLines: { lines: popThresholds },
+        },
         scales: {
           x: { title: { display: true, text: "period" } },
           y: { title: { display: true, text: "agents" }, beginAtZero: true },
@@ -459,6 +488,335 @@
     // (8) Non-tokenized asset flows — count / created / consumed per
     // asset over time. Hidden when the TE has no assets declared.
     drawAssetsChart(report, labels);
+    // (9) FM-coherence panel — verifier verdicts vs ABM-realized.
+    drawCoherenceTable(report);
+    // (10) Network analytics — centralities, correlations, null-model
+    // z-scores.
+    drawNetworkMetrics(report);
+    // (11) Declared flow graph — Phase M + M.18 realised overlay.
+    // The report carries both the spec graph and the realised
+    // annotations on its edges; the view selector swaps the label /
+    // colour scheme without a second round-trip.
+    drawFlowGraphFromReport(report);
+  }
+
+  function drawFlowGraphFromReport(report) {
+    const payload = report.flow_graph;
+    const card = document.getElementById("flow-graph-card");
+    const canvas = document.getElementById("flow-graph-canvas");
+    const legend = document.getElementById("flow-graph-legend");
+    const summary = document.getElementById("flow-graph-summary");
+    const diag = document.getElementById("flow-graph-diagnostics");
+    if (!card || !canvas || !payload) {
+      if (card) card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const layoutSel = document.getElementById("flow-graph-layout");
+    const viewSel = document.getElementById("flow-graph-view");
+    function render() {
+      if (typeof window.renderFlowGraph !== "function") return;
+      window.renderFlowGraph(
+        canvas, legend, summary, diag, payload,
+        layoutSel?.value || "cose",
+        viewSel?.value || "spec",
+      );
+    }
+    if (layoutSel) layoutSel.onchange = render;
+    if (viewSel)   viewSel.onchange   = render;
+    render();
+  }
+
+  // =====================================================================
+  // FM-coherence rendering
+  // =====================================================================
+  function drawCoherenceTable(report) {
+    const rows = report.fm_coherence || [];
+    if (!rows.length || !dom.coherenceWrap) {
+      if (dom.coherenceCard) dom.coherenceCard.hidden = true;
+      return;
+    }
+    dom.coherenceCard.hidden = false;
+    const wrap = dom.coherenceWrap;
+    wrap.innerHTML = "";
+    // Legend explaining the consistency colour scheme.
+    const legend = document.createElement("p");
+    legend.className = "muted";
+    legend.innerHTML = `
+      <strong>How to read:</strong>
+      <span class="consistency-ok">✓ consistent</span> — ABM agrees with the verifier
+      (both safe, or both surface the same violation).
+      <span class="consistency-warn">◐ partial</span> — verifier was conservative
+      or ABM stayed in the safe subset of a fragile box.
+      <span class="consistency-bad">⚠ inconsistent</span> — ABM violated where the
+      verifier proved safety; investigate.`;
+    wrap.appendChild(legend);
+
+    const tbl = document.createElement("table");
+    tbl.className = "metrics-table coherence-table";
+    const head = document.createElement("thead");
+    head.innerHTML = `
+      <tr>
+        <th>FM</th><th>subject</th><th>verifier</th>
+        <th>consistent?</th><th>coherence</th>
+        <th>predicate (var op threshold)</th>
+        <th>ABM min · median · max</th>
+        <th>violations / periods</th>
+      </tr>`;
+    tbl.appendChild(head);
+    const body = document.createElement("tbody");
+    for (const r of rows) {
+      const preds = r.predicates || [];
+      const note = (r.notes || "").trim();
+      const consistency = classifyConsistency(r.coherence);
+      const consBadge =
+        `<span class="${consistency.cls}" title="${escapeHTML(consistency.tip)}">${consistency.icon} ${consistency.label}</span>`;
+      if (preds.length === 0) {
+        const tr = document.createElement("tr");
+        tr.className = `coherence-row coherence-${r.coherence}`;
+        tr.innerHTML = `
+          <td>${r.failure_mode}</td><td>${r.subject}</td>
+          <td>${r.structural_status}</td>
+          <td>${consBadge}</td>
+          <td><span class="cohbadge cohbadge-${r.coherence}">${r.coherence}</span></td>
+          <td colspan="3" class="muted">${escapeHTML(note || "(no predicates emitted)")}</td>`;
+        body.appendChild(tr);
+        continue;
+      }
+      preds.forEach((p, i) => {
+        const tr = document.createElement("tr");
+        tr.className = `coherence-row coherence-${r.coherence}`;
+        const fmCell    = i === 0 ? `<td rowspan="${preds.length}">${r.failure_mode}</td>` : "";
+        const subCell   = i === 0 ? `<td rowspan="${preds.length}">${r.subject}</td>` : "";
+        const vCell     = i === 0 ? `<td rowspan="${preds.length}">${r.structural_status}</td>` : "";
+        const cnsCell   = i === 0 ? `<td rowspan="${preds.length}">${consBadge}</td>` : "";
+        const cCell     = i === 0 ? `<td rowspan="${preds.length}"><span class="cohbadge cohbadge-${r.coherence}">${r.coherence}</span></td>` : "";
+        const obsCell = (p.observed_min == null)
+          ? `<td class="muted">(no data)</td>`
+          : `<td>${fmtNum(p.observed_min)} · ${fmtNum(p.observed_median)} · ${fmtNum(p.observed_max)}</td>`;
+        tr.innerHTML = `${fmCell}${subCell}${vCell}${cnsCell}${cCell}
+          <td><code>${escapeHTML(p.variable)} ${escapeHTML(p.operator)} ${fmtNum(p.threshold)}</code></td>
+          ${obsCell}
+          <td>${p.violation_periods ?? 0}</td>`;
+        body.appendChild(tr);
+      });
+      if (note) {
+        const tr = document.createElement("tr");
+        tr.className = `coherence-row-note coherence-${r.coherence}`;
+        tr.innerHTML = `<td colspan="8" class="muted">${escapeHTML(note)}</td>`;
+        body.appendChild(tr);
+      }
+    }
+    tbl.appendChild(body);
+    wrap.appendChild(tbl);
+  }
+
+  /** Map a coherence verdict to a consistency badge.
+   *  - consistent: verifier prediction matches ABM observation
+   *    (aligned / confirmed / fragile_realised).
+   *  - partial:    verifier was conservative or ABM stayed in the
+   *    safe subset of a fragile box (verifier_pessimistic /
+   *    fragile_avoided).
+   *  - inconsistent: ABM violated inside a region the verifier
+   *    proved safe (abm_drift).
+   *  - muted: nothing to compare (inconclusive). */
+  function classifyConsistency(coh) {
+    if (coh === "aligned" || coh === "confirmed" || coh === "fragile_realised") {
+      return {
+        cls: "consistency-ok", icon: "✓", label: "consistent",
+        tip: "Verifier prediction agrees with ABM observation."
+      };
+    }
+    if (coh === "fragile_avoided" || coh === "verifier_pessimistic") {
+      return {
+        cls: "consistency-warn", icon: "◐", label: "partial",
+        tip: "Verifier and ABM partially agree — investigate the box."
+      };
+    }
+    if (coh === "abm_drift") {
+      return {
+        cls: "consistency-bad", icon: "⚠", label: "inconsistent",
+        tip: "ABM violated where the verifier proved safety. Investigate."
+      };
+    }
+    return {
+      cls: "consistency-muted", icon: "—", label: "n/a",
+      tip: "No comparison possible (inconclusive)."
+    };
+  }
+
+  // =====================================================================
+  // Network analytics rendering
+  // =====================================================================
+  function drawNetworkMetrics(report) {
+    const nm = report.network_metrics;
+    if (!nm || !dom.netMetricsWrap) {
+      if (dom.netMetricsCard) dom.netMetricsCard.hidden = true;
+      return;
+    }
+    dom.netMetricsCard.hidden = false;
+    const wrap = dom.netMetricsWrap;
+    wrap.innerHTML = "";
+
+    // (a) Summary line.
+    const summary = document.createElement("p");
+    summary.className = "muted";
+    summary.innerHTML = `
+      <strong>n = ${nm.n_nodes}</strong> nodes ·
+      <strong>m = ${nm.n_edges}</strong> edges ·
+      ${nm.components} component(s) ·
+      giant-component fraction ${fmtNum(nm.giant_component_frac)}
+    `;
+    wrap.appendChild(summary);
+
+    // (b) Network-level table with null-model comparison.
+    const h1 = document.createElement("h4");
+    h1.textContent = "Network-level statistics + null-model z-scores";
+    wrap.appendChild(h1);
+    const nlt = document.createElement("table");
+    nlt.className = "metrics-table";
+    nlt.innerHTML = `
+      <thead><tr>
+        <th>statistic</th><th>observed</th>
+        <th>Erdős–Rényi μ ± σ</th><th>z<sub>ER</sub></th>
+        <th>configuration model μ ± σ</th><th>z<sub>cfg</sub></th>
+        <th>interpretation</th>
+      </tr></thead>
+      <tbody>
+        ${nm.network_level.map((s) => `
+          <tr>
+            <td><code>${escapeHTML(s.name)}</code></td>
+            <td>${fmtNum(s.observed, 4)}</td>
+            <td>${fmtNum(s.er_mean, 4)} ± ${fmtNum(s.er_std, 4)}</td>
+            <td class="${zClass(s.er_z)}">${fmtZ(s.er_z)}</td>
+            <td>${fmtNum(s.config_mean, 4)} ± ${fmtNum(s.config_std, 4)}</td>
+            <td class="${zClass(s.config_z)}">${fmtZ(s.config_z)}</td>
+            <td class="muted">${escapeHTML(s.interpretation)}</td>
+          </tr>`).join("")}
+      </tbody>`;
+    wrap.appendChild(nlt);
+
+    // (c) Per-type aggregates.
+    const h2 = document.createElement("h4");
+    h2.textContent = "Per-type aggregates";
+    wrap.appendChild(h2);
+    const ptt = document.createElement("table");
+    ptt.className = "metrics-table";
+    ptt.innerHTML = `
+      <thead><tr>
+        <th>type</th><th>n</th><th>mean degree</th>
+        <th>mean betweenness</th><th>mean closeness</th>
+        <th>mean balance</th><th>mean reputation</th>
+        <th>Gini (balance within type)</th>
+      </tr></thead>
+      <tbody>
+        ${nm.per_type.map((pt) => `
+          <tr>
+            <td>${escapeHTML(pt.type)}</td>
+            <td>${pt.n_agents}</td>
+            <td>${fmtNum(pt.mean_degree, 2)}</td>
+            <td>${fmtNum(pt.mean_betweenness, 4)}</td>
+            <td>${fmtNum(pt.mean_closeness, 4)}</td>
+            <td>${fmtNum(pt.mean_balance, 2)}</td>
+            <td>${fmtNum(pt.mean_reputation, 2)}</td>
+            <td>${fmtNum(pt.balance_gini_within_type, 3)}</td>
+          </tr>`).join("")}
+      </tbody>`;
+    wrap.appendChild(ptt);
+
+    // (d) Correlation heatmap (Pearson r between numeric attributes).
+    const h3 = document.createElement("h4");
+    h3.textContent = "Pearson correlations (r [p-value · n])";
+    wrap.appendChild(h3);
+    const corrKeys = [
+      "balance", "reputation",
+      "degree", "betweenness", "closeness", "eigenvector",
+    ];
+    const lookup = {};
+    for (const c of nm.correlations) {
+      lookup[`${c.a}|${c.b}`] = c;
+      lookup[`${c.b}|${c.a}`] = c;
+    }
+    const ctab = document.createElement("table");
+    ctab.className = "metrics-table correlation-table";
+    const header =
+      `<tr><th></th>${corrKeys.map((k) => `<th>${k}</th>`).join("")}</tr>`;
+    const bodyRows = corrKeys.map((a) => {
+      const cells = corrKeys.map((b) => {
+        const cell = lookup[`${a}|${b}`];
+        if (!cell) return `<td class="muted">—</td>`;
+        const r = cell.r;
+        const sig = cell.p < 0.001 ? "***"
+                  : cell.p < 0.01  ? "**"
+                  : cell.p < 0.05  ? "*"  : "";
+        const bg = corrBg(r);
+        return `<td style="background:${bg}" title="r=${r.toFixed(3)} p=${cell.p.toExponential(2)} n=${cell.n}">${r.toFixed(2)}<sup>${sig}</sup></td>`;
+      }).join("");
+      return `<tr><th>${a}</th>${cells}</tr>`;
+    }).join("");
+    ctab.innerHTML = `<thead>${header}</thead><tbody>${bodyRows}</tbody>`;
+    wrap.appendChild(ctab);
+
+    // (e) Per-agent table (paginated to top 50 by degree to stay tractable).
+    const h4 = document.createElement("h4");
+    h4.textContent = `Top agents by degree (showing ${Math.min(50, nm.per_agent.length)} of ${nm.per_agent.length})`;
+    wrap.appendChild(h4);
+    const sorted = [...nm.per_agent].sort((a, b) => b.degree - a.degree).slice(0, 50);
+    const pat = document.createElement("table");
+    pat.className = "metrics-table";
+    pat.innerHTML = `
+      <thead><tr>
+        <th>id</th><th>type</th><th>balance</th><th>reputation</th>
+        <th>degree</th><th>degree_centrality</th>
+        <th>betweenness</th><th>closeness</th>
+        <th>eigenvector</th><th>clustering</th>
+      </tr></thead>
+      <tbody>
+        ${sorted.map((a) => `
+          <tr>
+            <td>${a.agent_id}</td><td>${escapeHTML(a.type)}</td>
+            <td>${fmtNum(a.balance, 2)}</td>
+            <td>${fmtNum(a.reputation, 2)}</td>
+            <td>${a.degree}</td>
+            <td>${fmtNum(a.degree_centrality, 3)}</td>
+            <td>${a.betweenness == null ? "—" : fmtNum(a.betweenness, 4)}</td>
+            <td>${a.closeness == null ? "—" : fmtNum(a.closeness, 4)}</td>
+            <td>${a.eigenvector == null ? "—" : fmtNum(a.eigenvector, 4)}</td>
+            <td>${fmtNum(a.clustering, 3)}</td>
+          </tr>`).join("")}
+      </tbody>`;
+    wrap.appendChild(pat);
+  }
+
+  function fmtNum(x, d = 3) {
+    if (x == null || Number.isNaN(x)) return "—";
+    return Number(x).toFixed(d);
+  }
+  function fmtZ(z) {
+    if (z == null) return "—";
+    return (z >= 0 ? "+" : "") + z.toFixed(2);
+  }
+  function zClass(z) {
+    if (z == null) return "muted";
+    if (Math.abs(z) >= 2.0) return "z-significant";
+    return "";
+  }
+  function corrBg(r) {
+    // Blue for negative, red for positive, white for ~0.
+    const v = Math.max(-1, Math.min(1, r));
+    if (v > 0) {
+      const a = (v * 0.75).toFixed(2);
+      return `rgba(208,82,74,${a})`;
+    }
+    const a = (-v * 0.75).toFixed(2);
+    return `rgba(48,94,211,${a})`;
+  }
+  function escapeHTML(s) {
+    if (s == null) return "";
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;",
+      '"': "&quot;", "'": "&#39;",
+    }[c]));
   }
 
   function drawEventsChart(report, labels) {
@@ -697,6 +1055,103 @@
     updateNetwork(t, snap);
     updateBalanceHist(snap);
     updateActionsDonut(snap);
+    // Phase-L1: redraw the period-cursor on every time-series chart.
+    // Single source of truth for "current period" — the scrubber.
+    syncCursorOnAllCharts(t);
+  }
+
+  // ---------------------------------------------------------------------
+  // Period-cursor plugin (Phase L1)
+  //
+  // Draws a vertical line at the current scrubber index on every
+  // time-series chart so the user can read the same period across
+  // all charts without re-aligning by eye.
+  // ---------------------------------------------------------------------
+  const periodCursorPlugin = {
+    id: "periodCursor",
+    afterDraw(chart) {
+      const t = chart.options.plugins?.periodCursor?.tIndex;
+      if (t == null || t < 0) return;
+      const xScale = chart.scales.x;
+      if (!xScale) return;
+      const labels = chart.data.labels || [];
+      if (!labels.length) return;
+      // Use category index → pixel.
+      const xPx = xScale.getPixelForValue(t);
+      const { top, bottom } = chart.chartArea;
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.strokeStyle = "#d0524a";
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(xPx, top);
+      ctx.lineTo(xPx, bottom);
+      ctx.stroke();
+      // Label.
+      ctx.fillStyle = "#d0524a";
+      ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(`t=${t}`, xPx + 3, top + 10);
+      ctx.restore();
+    },
+  };
+
+  // Register once.
+  if (window.Chart && !Chart.registry.plugins.get("periodCursor")) {
+    Chart.register(periodCursorPlugin);
+  }
+
+  // ---------------------------------------------------------------------
+  // Threshold reference-line plugin
+  //
+  // Draws horizontal reference lines (paper thresholds, e.g.
+  // Gini ≤ 0.6 for FM6 secondary). Lines: [{y, color, label}].
+  // ---------------------------------------------------------------------
+  const thresholdLinesPlugin = {
+    id: "thresholdLines",
+    afterDraw(chart) {
+      const lines = chart.options.plugins?.thresholdLines?.lines || [];
+      if (!lines.length) return;
+      const yScale = chart.scales.y;
+      if (!yScale) return;
+      const { left, right } = chart.chartArea;
+      const ctx = chart.ctx;
+      for (const ln of lines) {
+        const yPx = yScale.getPixelForValue(ln.y);
+        if (Number.isNaN(yPx)) continue;
+        ctx.save();
+        ctx.strokeStyle = ln.color || "#888";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(left, yPx);
+        ctx.lineTo(right, yPx);
+        ctx.stroke();
+        if (ln.label) {
+          ctx.fillStyle = ln.color || "#888";
+          ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+          ctx.fillText(ln.label, left + 6, yPx - 3);
+        }
+        ctx.restore();
+      }
+    },
+  };
+  if (window.Chart && !Chart.registry.plugins.get("thresholdLines")) {
+    Chart.register(thresholdLinesPlugin);
+  }
+
+  function syncCursorOnAllCharts(t) {
+    const all = [
+      roleBalChartObj, roleShareChartObj, actionMixChartObj,
+      aggregatesChartObj, populationChartObj, reputationChartObj,
+      eventsChartObj, assetsChartObj,
+    ];
+    for (const ch of all) {
+      if (!ch) continue;
+      ch.options.plugins ||= {};
+      ch.options.plugins.periodCursor = { tIndex: t };
+      ch.update("none");
+    }
   }
 
   function updateNetwork(tIdx, snap) {

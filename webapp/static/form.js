@@ -13,7 +13,8 @@ const form = document.getElementById("te-form");
 const verifyBtn = document.getElementById("verify-btn");
 const verifyStatus = document.getElementById("verify-status");
 const downloadBtn = document.getElementById("download-btn");
-const simulateDirectBtn = document.getElementById("simulate-direct-btn");
+// Phase L2 — MC page removed from the UI. Backend kept; no front-end button.
+const simulateDirectBtn = null;
 const exploreDirectBtn = document.getElementById("explore-direct-btn");
 const resetBtn = document.getElementById("reset-btn");
 const uploadBtn = document.getElementById("upload-btn");
@@ -95,14 +96,20 @@ function addTokenCard(prefill = {}) {
   card.addEventListener("input", updatePreviews);
   card.addEventListener("change", updatePreviews);
 
-  // Token-id input lifts the card title.
+  // Token-id input lifts the card title + retriggers K-auto-derive
+  // (assets reference tokens by id, so a changing id changes
+  // which assets count).
   const idInput = card.querySelector(`[name="tok-${tidx}-id"]`);
   const display = card.querySelector(".tok-name-display");
   idInput.addEventListener("input", () => {
     display.textContent = idInput.value || `#${tidx}`;
+    syncTokenKBlocks();
   });
 
   tokensContainer.appendChild(card);
+  // Phase L3: initial K-source-hint label population — empty until
+  // the first asset references this id.
+  if (typeof syncTokenKBlocks === "function") syncTokenKBlocks();
 
   // Apply prefill or seed defaults
   if (prefill.id) idInput.value = prefill.id;
@@ -721,6 +728,179 @@ function addEventRow(prefill = {}) {
       node.querySelector(".event-freq-max").value = r.max ?? "";
     }
   }
+  // Phase L2: stochastic frequency distribution prefill.
+  if (prefill.frequency_distribution) {
+    const d = prefill.frequency_distribution;
+    const kindSel = node.querySelector(".event-dist-kind");
+    if (kindSel) kindSel.value = d.kind || "";
+    const paramsBlock = node.querySelector(".event-dist-params");
+    if (paramsBlock) paramsBlock.hidden = !d.kind;
+    const p1 = node.querySelector(".event-dist-p1");
+    const p2 = node.querySelector(".event-dist-p2");
+    const params = d.parameters || {};
+    if (d.kind === "normal" || d.kind === "lognormal") {
+      if (p1) p1.value = params.mu ?? "";
+      if (p2) p2.value = params.sigma ?? "";
+    } else if (d.kind === "bernoulli") {
+      if (p1) p1.value = params.p ?? "";
+    } else if (d.kind === "poisson") {
+      if (p1) p1.value = params.lambda ?? "";
+    }
+  }
+  // Toggle the params block when the dist kind changes.
+  // Phase L3: distribution and frequency family are MUTUALLY EXCLUSIVE.
+  // When the distribution kind is non-empty, lock the frequency-family
+  // controls and surface a horizon-aware preview of expected firings.
+  const distKind = node.querySelector(".event-dist-kind");
+  const famSel = node.querySelector(".event-freq-family");
+  const famMin = node.querySelector(".event-freq-min");
+  const famMax = node.querySelector(".event-freq-max");
+  const distP1 = node.querySelector(".event-dist-p1");
+  const distP2 = node.querySelector(".event-dist-p2");
+  const distHint = node.querySelector(".event-dist-hint");
+  function syncMutualExclusion() {
+    const params = node.querySelector(".event-dist-params");
+    const distOn = !!(distKind && distKind.value);
+    if (params) params.hidden = !distOn;
+    // Lock the freq family + range when a distribution is active.
+    [famSel, famMin, famMax].forEach((el) => {
+      if (!el) return;
+      el.disabled = distOn;
+      if (distOn) el.value = "";
+    });
+    // Lock the distribution controls when a freq family is active.
+    const famOn = !!(famSel && famSel.value);
+    if (distKind) {
+      distKind.disabled = famOn && !distOn;
+      if (famOn && !distOn) {
+        distKind.value = "";
+        if (params) params.hidden = true;
+      }
+    }
+    updateFiringsPreview();
+  }
+  function updateFiringsPreview() {
+    if (!distKind || !distHint) return;
+    const kind = distKind.value;
+    if (!kind) {
+      distHint.textContent =
+        "Normal/lognormal: (μ, σ). Bernoulli: p ∈ [0, 1]. " +
+        "Poisson: λ (≥ 0). Per-period firings get clamped to ≥ 0.";
+      return;
+    }
+    const p1 = parseFloat(distP1?.value);
+    const p2 = parseFloat(distP2?.value);
+    // Use the current explore-horizon hint if visible, otherwise 100.
+    const H = 100;
+    let mean = NaN;
+    let detail = "";
+    if (kind === "normal" || kind === "lognormal") {
+      if (Number.isFinite(p1)) {
+        mean = kind === "lognormal" ? Math.exp(p1 + (Number.isFinite(p2) ? p2 * p2 / 2 : 0)) : p1;
+        detail = `μ=${p1}${Number.isFinite(p2) ? `, σ=${p2}` : ""}`;
+      }
+    } else if (kind === "bernoulli") {
+      if (Number.isFinite(p1)) {
+        mean = p1;
+        detail = `p=${p1}`;
+      }
+    } else if (kind === "poisson") {
+      if (Number.isFinite(p1)) {
+        mean = p1;
+        detail = `λ=${p1}`;
+      }
+    }
+    if (Number.isFinite(mean)) {
+      const expected = Math.max(0, mean) * H;
+      distHint.innerHTML =
+        `<strong>Preview:</strong> ${detail}. ` +
+        `Expected mean firings per period ≈ ${mean.toFixed(3)}. ` +
+        `Over a 100-period horizon ≈ ${expected.toFixed(1)} firings ` +
+        `(clamped to ≥ 0 each period). ` +
+        (kind === "bernoulli"
+          ? `Bernoulli fires at most once per period.`
+          : `Use Bernoulli if you want a 0/1 per period instead.`);
+    }
+  }
+  if (distKind) distKind.addEventListener("change", syncMutualExclusion);
+  if (famSel)   famSel.addEventListener("change", syncMutualExclusion);
+  if (distP1)   distP1.addEventListener("input", updateFiringsPreview);
+  if (distP2)   distP2.addEventListener("input", updateFiringsPreview);
+  syncMutualExclusion();
+
+  // Phase L3 — per-kind contextual hint + visibility.
+  // Each kind explains what "frequency" means in its context and hides
+  // fields that don't make semantic sense.
+  const EVENT_KIND_INFO = {
+    time_based: {
+      hint: "Scheduled events. Leave frequency family empty for the implicit '1 firing per period'; set it to declare a different rate per period.",
+      frequency: "optional", distribution: "optional", conditions: "rare",
+    },
+    behavioral: {
+      hint: "Fires when agents EARN. The frequency you set here is the AGGREGATE per-period rate the verifier reasons over — the ABM's realised count comes from the agent action loop.",
+      frequency: "required", distribution: "optional", conditions: "rare",
+    },
+    physical_resource_flow: {
+      hint: "Models real-world resource arrival (mining output, deliveries). Use the frequency family or a Poisson distribution.",
+      frequency: "required", distribution: "optional", conditions: "rare",
+    },
+    algorithmic: {
+      hint: "Programmatic / smart-contract trigger. Use a deterministic frequency for fixed rates, or a stochastic distribution for randomised oracles / shocks.",
+      frequency: "optional", distribution: "optional", conditions: "rare",
+    },
+    demand_driven: {
+      hint: "Fires when agents REDEEM (burn-side counterpart of behavioral). Same rule as behavioral: declared frequency is the aggregate the verifier sees; ABM derives counts from REDEEM action mix.",
+      frequency: "required", distribution: "optional", conditions: "rare",
+    },
+    rule_driven: {
+      hint: "Governance / policy-driven event. The conditions block (below) typically holds the firing rule (e.g. 'when token_holder_vote passes'). Frequency is the verifier-side aggregate estimate.",
+      frequency: "optional", distribution: "optional", conditions: "primary",
+    },
+    threshold_driven: {
+      hint: "Fires once a state quantity crosses a threshold. Use the conditions block (below) to declare the threshold predicate. Frequency family / distribution are not the natural fit — leave empty unless modelling repeated crossings.",
+      frequency: "discouraged", distribution: "discouraged", conditions: "primary",
+    },
+    expiry: {
+      hint: "Fires when something times out (e.g. veCRV lock unlock). Effective frequency is the rate at which lockings reach their lifespan. Use a Poisson distribution to model staggered expirations.",
+      frequency: "optional", distribution: "optional", conditions: "rare",
+    },
+    none: {
+      hint: "Sentinel: this event never fires. Use as a placeholder. Frequency / distribution / conditions are all forbidden in this kind.",
+      frequency: "forbidden", distribution: "forbidden", conditions: "forbidden",
+    },
+  };
+  const kindSel = node.querySelector(".event-kind");
+  const kindHint = node.querySelector(".event-kind-hint");
+  const freqBlock = node.querySelectorAll(".event-freq-block");
+  const distBlock = node.querySelector(".event-dist-block");
+  const condDetails = node.querySelector(".event-conditions");
+  function applyKindUI() {
+    const k = kindSel.value || "time_based";
+    const info = EVENT_KIND_INFO[k] || EVENT_KIND_INFO.time_based;
+    if (kindHint) kindHint.textContent = info.hint;
+    const isNone = k === "none";
+    // Hide frequency + distribution entirely when kind=none.
+    freqBlock.forEach((el) => el.hidden = isNone);
+    if (distBlock) distBlock.hidden = isNone;
+    if (condDetails) condDetails.hidden = isNone;
+    // Auto-open the conditions section for kinds where it's the
+    // primary trigger surface (threshold / rule).
+    if (condDetails && (info.conditions === "primary")) {
+      condDetails.open = true;
+    }
+  }
+  if (kindSel) kindSel.addEventListener("change", applyKindUI);
+  applyKindUI();
+
+  // Wire the "+ Add condition" button for event-level gating.
+  node.querySelector(".add-event-condition")?.addEventListener("click", () => {
+    appendConditionRow(node.querySelector(".event-conditions-list"));
+  });
+  // Prefill conditions if YAML supplied them.
+  const initConds = prefill.conditions || [];
+  const initCondList = node.querySelector(".event-conditions-list");
+  for (const c of initConds) appendConditionRow(initCondList, c);
+
   node.querySelector(".remove-event").addEventListener("click", () => {
     node.remove();
     populateAllEventDropdowns();
@@ -748,6 +928,32 @@ function readEventsList() {
       const max = parseFloat(row.querySelector(".event-freq-max").value);
       const ac = makeAsymptoticClass(famRaw, min, max);
       if (ac) ev.frequency = ac;
+    }
+    // Phase L2: stochastic per-period firings — serialise as
+    // DistributionSpec. Mutually exclusive with the AC family only at
+    // ABM evaluation time; the verifier still consumes ``frequency``
+    // for its static surface.
+    const distKindV = row.querySelector(".event-dist-kind")?.value || "";
+    if (distKindV) {
+      const p1 = parseFloat(row.querySelector(".event-dist-p1")?.value);
+      const p2 = parseFloat(row.querySelector(".event-dist-p2")?.value);
+      const dist = { kind: distKindV, parameters: {} };
+      if (distKindV === "normal" || distKindV === "lognormal") {
+        if (Number.isFinite(p1)) dist.parameters.mu = p1;
+        if (Number.isFinite(p2)) dist.parameters.sigma = p2;
+      } else if (distKindV === "bernoulli") {
+        if (Number.isFinite(p1)) dist.parameters.p = p1;
+      } else if (distKindV === "poisson") {
+        if (Number.isFinite(p1)) dist.parameters.lambda = p1;
+      }
+      ev.frequency_distribution = dist;
+    }
+    // Phase L3: event-level gating conditions. Reuses
+    // readConditionList from the rule-trigger code path.
+    const condList = row.querySelector(".event-conditions-list");
+    if (condList) {
+      const conds = readConditionList(condList);
+      if (conds.length) ev.conditions = conds;
     }
     out.push(ev);
   });
@@ -828,7 +1034,10 @@ function addAssetRow(prefill = {}) {
     const vc = prefill.variety_contribution ?? 1;
     likertSel.value = String(VARIETY_TO_LIKERT[vc] ?? 1);
   }
-  node.querySelector(".remove-asset").addEventListener("click", () => node.remove());
+  node.querySelector(".remove-asset").addEventListener("click", () => {
+    node.remove();
+    syncTokenKBlocks();
+  });
   assetsContainer.appendChild(node);
   return node;
 }
@@ -879,7 +1088,74 @@ function readAssetsList() {
 }
 
 if (addAssetBtn) {
-  addAssetBtn.addEventListener("click", () => addAssetRow());
+  addAssetBtn.addEventListener("click", () => {
+    addAssetRow();
+    syncTokenKBlocks();
+  });
+}
+
+/** Phase L1 sync — K is auto-derived from the asset catalog when ≥ 1
+ *  asset references a token. Disables the manual K range inputs and
+ *  surfaces the derived value next to the label. Manual K stays
+ *  editable only for tokens with zero asset references.
+ *
+ *  Called whenever:
+ *    - an asset is added or removed
+ *    - an asset's referenced_tokens or variety_contribution changes
+ *    - a token id changes (assets reference by id)
+ */
+function syncTokenKBlocks() {
+  if (!tokensContainer) return;
+  // Count Σ variety_contribution per token id from the asset list.
+  const assets = readAssetsList();
+  const tally = new Map();
+  for (const a of assets) {
+    const vc = Math.max(1, Math.floor(a.variety_contribution || 1));
+    for (const tid of (a.referenced_tokens || [])) {
+      tally.set(tid, (tally.get(tid) || 0) + vc);
+    }
+  }
+  // Apply to each token card.
+  tokensContainer.querySelectorAll(".token-card").forEach((card) => {
+    const tidx = card.dataset.tidx;
+    const idInput = card.querySelector(`[name="tok-${tidx}-id"]`);
+    const tokenId = (idInput?.value || "").trim();
+    const derived = tally.get(tokenId);
+    const block = card.querySelector(".token-K-block");
+    if (!block) return;
+    const minIn = block.querySelector(".token-K-min");
+    const maxIn = block.querySelector(".token-K-max");
+    const hint = block.querySelector(".K-source-hint");
+    if (derived && derived > 0) {
+      if (minIn) {
+        minIn.value = derived;
+        minIn.disabled = true;
+      }
+      if (maxIn) {
+        maxIn.value = derived;
+        maxIn.disabled = true;
+      }
+      if (hint) {
+        hint.textContent = `— auto-derived from asset catalog: Σ variety_contribution = ${derived}`;
+        hint.style.color = "#3b8a3b";
+      }
+    } else {
+      if (minIn) minIn.disabled = false;
+      if (maxIn) maxIn.disabled = false;
+      if (hint) {
+        hint.textContent = "— no asset references this token; set manual range";
+        hint.style.color = "#666";
+      }
+    }
+  });
+}
+
+// Re-run on every form mutation that could touch the asset catalog or
+// a token id. Bound at the container level so dynamically-added rows
+// are covered automatically.
+if (assetsContainer) {
+  assetsContainer.addEventListener("input", syncTokenKBlocks);
+  assetsContainer.addEventListener("change", syncTokenKBlocks);
 }
 
 /** Decode a select value of shape ``family`` or ``family:degree`` into
@@ -994,6 +1270,29 @@ function addXtflowCard(prefill = {}) {
   };
   couplingSel.addEventListener("change", updateCouplingUI);
 
+  // Target action toggle: transfer reveals the recipient input.
+  const actionSel = card.querySelector(".xt-action");
+  const recipientField = card.querySelector(".xt-recipient-field");
+  const transferHint = card.querySelector(".xt-transfer-hint");
+  const updateActionUI = () => {
+    const isTransfer = actionSel.value === "transfer";
+    if (recipientField) recipientField.hidden = !isTransfer;
+    if (transferHint) transferHint.hidden = !isTransfer;
+  };
+  actionSel.addEventListener("change", updateActionUI);
+
+  // Amount-family toggle: constant uses a single `value` input, others
+  // use a min/max range.
+  const amountFamSel = card.querySelector(".xt-amount-family");
+  const constantBlock = card.querySelector(".xt-amount-constant-block");
+  const rangeBlock = card.querySelector(".xt-amount-range-block");
+  const updateAmountUI = () => {
+    const isConstant = (amountFamSel.value || "constant") === "constant";
+    if (constantBlock) constantBlock.hidden = !isConstant;
+    if (rangeBlock) rangeBlock.hidden = isConstant;
+  };
+  amountFamSel.addEventListener("change", updateAmountUI);
+
   xtflowsContainer.appendChild(card);
 
   if (prefill.source_token) card.querySelector(".xt-source").value = prefill.source_token;
@@ -1011,9 +1310,21 @@ function addXtflowCard(prefill = {}) {
     if (r) {
       card.querySelector(".xt-amount-min").value = r.min ?? "";
       card.querySelector(".xt-amount-max").value = r.max ?? "";
+      // Round-trip min == max into the single-value input as a
+      // convenience: lets the user re-edit a "fixed 3" without
+      // typing both fields again.
+      if (r.min === r.max) {
+        const v = card.querySelector(".xt-amount-value");
+        if (v) v.value = r.min ?? "";
+      }
     }
   }
+  if (prefill.recipient_type) {
+    card.querySelector(".xt-recipient").value = prefill.recipient_type;
+  }
   updateCouplingUI();
+  updateActionUI();
+  updateAmountUI();
 
   return card;
 }
@@ -1040,11 +1351,30 @@ function readXtflowCard(card) {
     flow.amount = { family: "constant", parameter_ranges: { c: { min: 0, max: 0 } } };
   } else {
     const family = card.querySelector(".xt-amount-family").value || "constant";
-    const min = parseFloat(card.querySelector(".xt-amount-min").value);
-    const max = parseFloat(card.querySelector(".xt-amount-max").value);
+    let min, max;
+    if (family === "constant") {
+      // Single-value path: read .xt-amount-value first; fall back to
+      // min/max if user wrote a range there instead.
+      const v = parseFloat(card.querySelector(".xt-amount-value")?.value);
+      if (Number.isFinite(v)) {
+        min = v;
+        max = v;
+      } else {
+        min = parseFloat(card.querySelector(".xt-amount-min").value);
+        max = parseFloat(card.querySelector(".xt-amount-max").value);
+      }
+    } else {
+      min = parseFloat(card.querySelector(".xt-amount-min").value);
+      max = parseFloat(card.querySelector(".xt-amount-max").value);
+    }
     const ac = makeAsymptoticClass(family, min, max);
     if (!ac) return null;
     flow.amount = ac;
+  }
+  // Recipient type only meaningful when target_action == transfer.
+  if (flow.target_action === "transfer") {
+    const rcp = card.querySelector(".xt-recipient")?.value.trim();
+    if (rcp) flow.recipient_type = rcp;
   }
   return flow;
 }
@@ -2070,17 +2400,37 @@ async function buildAndStashYaml() {
   return data.yaml || "";
 }
 
-if (simulateDirectBtn) {
-  simulateDirectBtn.addEventListener("click", async () => {
-    verifyStatus.classList.remove("error");
-    verifyStatus.textContent = "Preparing simulator…";
-    const yamlText = await buildAndStashYaml();
-    if (yamlText == null) return;
-    sessionStorage.setItem("te_form_yaml", yamlText);
-    verifyStatus.textContent = "Done — opening simulator.";
-    window.location.href = "/simulate";
-  });
+// Phase M — Flow-graph preview (Stage 3.2).
+// Light-weight YAML builder for the preview: uses /api/ir-to-yaml so
+// every keystroke skips the verifier pass that build-and-verify
+// otherwise runs. Silent on errors — partial forms shouldn't surface
+// FM-level diagnostics into the preview lane.
+async function buildYamlForPreview() {
+  let ir;
+  try {
+    ir = buildIR();
+  } catch {
+    return "";
+  }
+  try {
+    const r = await fetch("/api/ir-to-yaml", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ir }),
+    });
+    if (!r.ok) return "";
+    const data = await r.json();
+    return data.yaml || "";
+  } catch {
+    return "";
+  }
 }
+if (typeof bindFormFlowGraph === "function") {
+  bindFormFlowGraph(buildYamlForPreview);
+}
+
+// Phase L2 — MC handoff button removed; the ABM-explorer button below
+// is the sole "send the form-built spec onward" path.
 
 if (exploreDirectBtn) {
   exploreDirectBtn.addEventListener("click", async () => {

@@ -312,3 +312,58 @@ canvas {
   cursor: pointer;
 }
 .example-btn:hover { background: #dde0e7; }
+
+/* Phase L1 — metrics tables (network analytics + FM coherence). */
+.metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin: 0.4rem 0 0.8rem 0;
+}
+.metrics-table th, .metrics-table td {
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid #e3e6ec;
+  text-align: left;
+}
+.metrics-table thead th {
+  background: #f4f6fa;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+.metrics-table td.muted, .metrics-table .muted { color: #777; font-size: 0.78rem; }
+.metrics-table td.z-significant { font-weight: 700; }
+.correlation-table th { text-align: center; }
+.correlation-table td { text-align: center; font-variant-numeric: tabular-nums; }
+.coherence-table .cohbadge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #fff;
+}
+/* Consistency colour scheme.
+   Green  = ABM result agrees with the verifier's verdict (both safe, or
+            both showing the same failure surface).
+   Amber  = ABM and verifier partially disagree (verifier was
+            conservative, or ABM stayed in the safe subset of a fragile
+            box).
+   Red    = ABM observed a violation in territory the verifier proved
+            safe — a real divergence to investigate. */
+.cohbadge-aligned,
+.cohbadge-confirmed,
+.cohbadge-fragile_realised { background: #3b8a3b; }   /* consistent */
+.cohbadge-fragile_avoided,
+.cohbadge-verifier_pessimistic { background: #b07f1f; } /* partial */
+.cohbadge-abm_drift { background: #d0524a; }            /* INCONSISTENT */
+.cohbadge-inconclusive { background: #888; }
+.consistency-ok    { color: #3b8a3b; font-weight: 700; }
+.consistency-warn  { color: #b07f1f; font-weight: 700; }
+.consistency-bad   { color: #d0524a; font-weight: 700; }
+.consistency-muted { color: #888; }
+.coherence-row-note td {
+  padding-top: 0.1rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid #e3e6ec;
+}

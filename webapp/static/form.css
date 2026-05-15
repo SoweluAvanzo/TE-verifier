@@ -1082,3 +1082,135 @@ button.ghost:hover {
   border: 1px solid #ccd;
   border-radius: 3px;
 }
+
+/* Phase M — Flow-graph preview (Stage 3.2). */
+.flow-graph-controls {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  font-size: 0.82rem;
+  margin: 0.3rem 0;
+}
+.flow-graph-controls .muted { color: #666; }
+.flow-graph-canvas {
+  width: 100%;
+  height: 380px;
+  border: 1px solid #d6dde6;
+  border-radius: 6px;
+  background: #fafbfd;
+  margin: 0.4rem 0 0.5rem;
+}
+.flow-graph-legend {
+  font-size: 0.78rem;
+  margin-bottom: 0.5rem;
+}
+.flow-legend-details {
+  border: 1px solid #d6dde6;
+  border-radius: 5px;
+  background: #fafbfd;
+  padding: 0.35rem 0.55rem;
+}
+.flow-legend-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: #333;
+}
+.flow-legend-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.2rem;
+  margin: 0.35rem 0;
+  align-items: center;
+}
+.flow-legend-section {
+  font-weight: 600;
+  color: #555;
+  min-width: 90px;
+}
+.flow-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.flow-legend-label {
+  font-size: 0.78rem;
+  color: #333;
+}
+.flow-legend-dot {
+  width: 14px; height: 14px;
+  border: 1.5px solid #444;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.flow-legend-line {
+  display: inline-block;
+  width: 26px; height: 4px; border-radius: 2px;
+  flex: 0 0 auto;
+}
+.flow-legend-line-styled {
+  display: inline-block;
+  width: 28px; height: 4px;
+  flex: 0 0 auto;
+}
+.flow-legend-note {
+  font-size: 0.77rem;
+  color: #666;
+  font-style: italic;
+}
+.flow-diag-ok { color: #3b8a3b; font-size: 0.85rem; }
+.flow-diag-list {
+  margin: 0.2rem 0 0.4rem 1rem;
+  padding: 0;
+  font-size: 0.82rem;
+}
+.flow-diag-error { color: #d0524a; }
+.flow-diag-warn  { color: #b07f1f; }
+.flow-diag-info  { color: #555; }
+.flow-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 1rem 2rem;
+  color: #888;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* Phase L3 — event-row mutual-exclusion divider between the
+   deterministic frequency family and the stochastic distribution. */
+.event-mode-divider {
+  border: 0;
+  border-top: 1px dashed #c7ccd4;
+  margin: 0.55rem 0 0.4rem;
+}
+.event-mode-label {
+  display: block;
+  color: #555;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.event-mode-label small { font-weight: 400; color: #777; }
+.dist-param-row {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.25rem 0;
+}
+.dist-param-row input { flex: 1 1 auto; }
+.event-dist-hint {
+  display: block;
+  font-size: 0.78rem;
+  color: #555;
+  margin-top: 0.2rem;
+  padding: 0.3rem 0.4rem;
+  background: #f6f8fc;
+  border-left: 3px solid #4f7adf;
+  border-radius: 3px;
+}
+.K-source-hint {
+  font-size: 0.78rem;
+  font-weight: 400;
+  margin-left: 0.4rem;
+}
+.K-help { margin-top: 0.2rem; }

@@ -61,17 +61,12 @@ def test_yaml_editor_renders(client) -> None:
     assert r.status_code == 200
 
 
-def test_simulator_page_renders(client) -> None:
+def test_simulator_page_was_removed(client) -> None:
+    """Phase L2: the /simulate UI page was removed to simplify the
+    pipeline. The JSON ``/api/simulate`` endpoint is retained for the
+    backend (cadCAD export + tests)."""
     r = client.get("/simulate")
-    assert r.status_code == 200
-    html = r.data.decode("utf-8")
-    assert "ABM Simulator" in html
-    # Chart.js is loaded from a CDN — the page references the script.
-    assert "chart.umd.min.js" in html
-    # Controls are present.
-    assert "cfg-runs" in html
-    assert "run-btn" in html
-    assert "export-btn" in html
+    assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------

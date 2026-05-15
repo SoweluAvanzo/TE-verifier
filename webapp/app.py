@@ -300,18 +300,10 @@ def conditions() -> dict:
     return jsonify(out)
 
 
-@app.route("/simulate")
-def simulate_page() -> str:
-    """Render the ABM simulator page.
-
-    The simulator drives ``verifier.abm.run_simulation`` against a
-    user-supplied YAML (or a loaded example) and renders charts of
-    P(violation), deployment-vs-dynamic split, and time-to-violation
-    distributions per failure mode. The page also offers a download
-    of the cadCAD-compatible export.
-    """
-    examples = sorted(p.stem for p in EXAMPLES_DIR.glob("*.yaml"))
-    return render_template("simulate.html", examples=examples)
+# Phase L2: the /simulate page was removed from the UI to simplify the
+# pipeline to two steps (verifier + ABM trajectory). The JSON
+# ``/api/simulate`` endpoint below is retained — the explore page and
+# the cadCAD export still consume it under the hood.
 
 
 @app.route("/api/minimal-verdicts", methods=["POST"])
@@ -428,6 +420,53 @@ def explore_endpoint() -> dict:
     except Exception as e:
         return jsonify(error=f"explore failed: {e}"), 500
     return jsonify(report.model_dump(mode="json"))
+
+
+@app.route("/api/ir-to-yaml", methods=["POST"])
+def ir_to_yaml_endpoint() -> dict:
+    """Phase M — lightweight IR → YAML serialiser.
+
+    Used by the form's Stage-3.2 flow-graph preview to refresh on every
+    keystroke without running the (expensive) verifier. Pure validate +
+    serialise.
+    """
+    body = request.get_json(force=True)
+    raw = body.get("ir", {})
+    try:
+        te = TokenEconomy.model_validate(raw)
+    except Exception as e:
+        return jsonify(error=f"failed to validate TE-IR: {e}"), 400
+    yaml_text = yaml.safe_dump(
+        te.model_dump(mode="json", exclude_none=True),
+        sort_keys=False,
+        allow_unicode=True,
+    )
+    return jsonify(yaml=yaml_text)
+
+
+@app.route("/api/flow-graph", methods=["POST"])
+def flow_graph_endpoint() -> dict:
+    """Phase M — declared-flow graph (Cytoscape-JSON payload).
+
+    Accepts the same YAML body the rest of the API uses. Returns a
+    compact, pure-spec graph (no simulation): nodes for mint pools,
+    burn sinks, role wallets, asset inventories, referenced events;
+    edges for emission, burn, redemption, cross-token flows. The form
+    Stage-3.2 preview and the /explore page both consume this.
+    """
+    from verifier.abm.flow_graph import build_flow_graph
+    body = request.get_json(force=True)
+    yaml_text = body.get("yaml", "")
+    try:
+        raw = yaml.safe_load(yaml_text)
+        te = TokenEconomy.model_validate(raw)
+    except Exception as e:
+        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
+    try:
+        payload = build_flow_graph(te)
+    except Exception as e:
+        return jsonify(error=f"flow-graph build failed: {e}"), 500
+    return jsonify(payload)
 
 
 @app.route("/api/cadcad-export", methods=["POST"])

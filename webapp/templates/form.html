@@ -14,7 +14,6 @@
       <h1>Token Economy Verifier</h1>
       <nav>
         <a href="/yaml" class="nav-link">Advanced (YAML editor) →</a>
-        <a href="/simulate" class="nav-link">Monte Carlo →</a>
         <a href="/explore" class="nav-link">Trajectory explorer →</a>
       </nav>
     </div>
@@ -266,12 +265,22 @@
             </select>
           </div>
 
-          <div class="field range-field">
-            <label>Offer variety K (1.7)</label>
+          <div class="field range-field token-K-block">
+            <label>Offer variety K (1.7)
+              <small class="K-source-hint"></small>
+            </label>
+            <p class="hint hint-inline K-help">
+              Distinct redemption opportunities for this token. Manual
+              range is used <em>only</em> when no non-tokenized asset
+              references this token in Stage 4.1. When ≥ 1 asset
+              references it, the catalog's
+              <code>Σ variety_contribution</code> is the single source
+              of truth and the field below is read-only.
+            </p>
             <div class="range">
-              <input type="number" name="tok-__IDX__-K-min" min="1" step="1" placeholder="min" />
+              <input type="number" name="tok-__IDX__-K-min" class="token-K-min" min="1" step="1" placeholder="min" />
               <span>to</span>
-              <input type="number" name="tok-__IDX__-K-max" min="1" step="1" placeholder="max" />
+              <input type="number" name="tok-__IDX__-K-max" class="token-K-max" min="1" step="1" placeholder="max" />
             </div>
           </div>
 
@@ -628,6 +637,17 @@
             <h4>Cross-token flow #__FIDX__</h4>
             <button type="button" class="remove-xtflow ghost-danger">remove</button>
           </header>
+          <p class="hint">
+            <strong>Reading the flow:</strong> "every time
+            <code>source_event</code> fires on
+            <em>source_token</em>, perform <em>target_action</em> on
+            <em>target_token</em> with the declared amount."<br>
+            Example: <em>3 BUONO minted every time ROCCA is swapped</em>
+            → source=ROCCA, source_event=rocca_swapped_for_buono,
+            target=BUONO, target_action=mint, coupling=independent,
+            amount=constant with <code>value = 3</code>
+            (or min=max=3 if you want a range).
+          </p>
           <div class="xtflow-grid">
             <div class="field">
               <label>Source token ID</label>
@@ -646,18 +666,42 @@
               <select class="xt-action">
                 <option value="mint">mint (adds to target's E)</option>
                 <option value="burn">burn (adds to target's B)</option>
-                <option value="transfer">transfer (no supply change)</option>
+                <option value="transfer">transfer (moves between holders, no supply change)</option>
               </select>
+              <p class="hint hint-inline xt-transfer-hint" hidden>
+                Transfer moves <code>target_token</code> from one
+                holder to another (e.g. veCRV lock expires →
+                <em>CRV is transferred back</em> to the locker).
+                Supply doesn't change. Use the
+                <em>recipient agent type</em> below to pin the
+                destination role (leave blank for proportional
+                distribution across all holders).<br>
+                <small>Note: the ABM currently realises MINT and BURN
+                cross-token flows; TRANSFER is captured by the schema +
+                surfaced to FM analysis but not yet routed through the
+                agent action loop. recipient_type is forward-compatible.</small>
+              </p>
+            </div>
+            <div class="field xt-recipient-field" hidden>
+              <label>Recipient agent type
+                <small>(transfer only)</small>
+              </label>
+              <input type="text" class="xt-recipient" placeholder="e.g. mirafiori_merchant" />
             </div>
             <div class="field">
               <label>Coupling</label>
               <select class="xt-coupling">
-                <option value="independent">independent (own amount class)</option>
-                <option value="proportional_to_source">proportional_to_source (× source's own E)</option>
+                <option value="independent">independent — fixed amount per source event</option>
+                <option value="proportional_to_source">proportional_to_source — amount scales with source's E(t)</option>
               </select>
+              <p class="hint hint-inline xt-coupling-hint">
+                Independent: the amount is decided here, regardless of
+                how much source minted this period. Proportional: amount
+                = ratio × source's own emission this period.
+              </p>
             </div>
             <div class="field range-field xt-ratio-field" hidden>
-              <label>Coupling ratio</label>
+              <label>Coupling ratio (proportional flows)</label>
               <div class="range">
                 <input type="number" class="xt-ratio-min" min="0" step="any" placeholder="min" />
                 <span>to</span>
@@ -665,10 +709,10 @@
               </div>
             </div>
             <div class="field xt-amount-block">
-              <label>Amount class (independent flows)</label>
+              <label>Amount per source event (independent flows)</label>
               <select class="xt-amount-family">
-                <option value="constant">constant</option>
-                <option value="linear">linear (a·t + b)</option>
+                <option value="constant">constant — fixed N per event (most common)</option>
+                <option value="linear">linear (a·t + b) — grows / shrinks with time</option>
                 <option value="polynomial:2">quadratic (a·t² + b)</option>
                 <option value="polynomial:3">cubic (a·t³ + b)</option>
                 <option value="sublinear_root:2">√t (square root)</option>
@@ -676,7 +720,13 @@
                 <option value="exponential">exponential (a·bᵗ)</option>
                 <option value="bounded_range">bounded_range</option>
               </select>
-              <div class="range">
+              <div class="xt-amount-constant-block">
+                <label class="hint-inline">Value
+                  <input type="number" class="xt-amount-value" step="any" placeholder="e.g. 3" />
+                  <small> — same as min = max = value</small>
+                </label>
+              </div>
+              <div class="range xt-amount-range-block">
                 <input type="number" class="xt-amount-min" min="0" step="any" placeholder="min" />
                 <span>to</span>
                 <input type="number" class="xt-amount-max" min="0" step="any" placeholder="max" />
@@ -765,6 +815,43 @@
         </div>
       </template>
 
+      <!-- =================================================== Stage 3.2 — Flow-graph preview (Phase M) -->
+      <section class="form-stage" id="stage-flow-graph">
+        <header class="stage-header">
+          <h2><span class="stage-num">3.2</span> Flow-graph preview
+            <small>(read-only diagram of declared value paths)</small>
+          </h2>
+        </header>
+        <details class="why-we-ask">
+          <summary>Why we ask</summary>
+          <p>
+            Schematic of the token economy you're typing.
+            <strong>Mint pools</strong> (⊕), <strong>burn sinks</strong>
+            (⊖), one wallet per agent role × token, asset inventories
+            (◆), and the events (◇) that drive each flow. Edge styles:
+            solid = unconditional, dashed = condition-gated,
+            double-line = DSL-driven, dotted = event-annotation. Updates
+            live as you fill the form — surfaces dangling event
+            references, source-only or sink-only tokens, and
+            disconnected sub-economies before you click Verify.
+          </p>
+        </details>
+        <div class="flow-graph-controls">
+          <button type="button" id="flow-graph-refresh" class="ghost">↻ Refresh preview</button>
+          <label>Layout
+            <select id="flow-graph-layout">
+              <option value="cose">cluster (cose)</option>
+              <option value="breadthfirst">stream (breadth-first)</option>
+              <option value="concentric">concentric</option>
+            </select>
+          </label>
+          <span id="flow-graph-summary" class="muted"></span>
+        </div>
+        <div id="flow-graph-canvas" class="flow-graph-canvas"></div>
+        <div id="flow-graph-legend" class="flow-graph-legend"></div>
+        <div id="flow-graph-diagnostics"></div>
+      </section>
+
       <!-- =================================================== Stage 4 — Events catalog -->
       <section class="form-stage" id="stage-events">
         <header class="stage-header">
@@ -809,16 +896,17 @@
             <div class="field">
               <label>Kind</label>
               <select class="event-kind">
-                <option value="time_based">time_based</option>
-                <option value="behavioral">behavioral</option>
-                <option value="physical_resource_flow">physical_resource_flow</option>
-                <option value="algorithmic">algorithmic</option>
-                <option value="demand_driven">demand_driven</option>
-                <option value="rule_driven">rule_driven</option>
-                <option value="threshold_driven">threshold_driven</option>
-                <option value="expiry">expiry</option>
-                <option value="none">none</option>
+                <option value="time_based">time_based — scheduled (e.g. every period)</option>
+                <option value="behavioral">behavioral — fires when agents do EARN-style actions</option>
+                <option value="physical_resource_flow">physical_resource_flow — real-world resource arrival</option>
+                <option value="algorithmic">algorithmic — smart-contract / programmatic</option>
+                <option value="demand_driven">demand_driven — fires when agents REDEEM (burn-side)</option>
+                <option value="rule_driven">rule_driven — governance / policy fires</option>
+                <option value="threshold_driven">threshold_driven — state crosses a boundary</option>
+                <option value="expiry">expiry — something times out (e.g. lock unlock)</option>
+                <option value="none">none — sentinel; event never fires</option>
               </select>
+              <p class="hint hint-inline event-kind-hint"></p>
             </div>
             <div class="field event-freq-block">
               <label>Frequency family <small>(events / period)</small></label>
@@ -841,6 +929,53 @@
                 <input type="number" class="event-freq-min" min="0" step="any" placeholder="min" />
                 <span>to</span>
                 <input type="number" class="event-freq-max" min="0" step="any" placeholder="max" />
+              </div>
+            </div>
+            <!-- Phase L3 — gating conditions on event firing. Reuses
+                 the structured Condition catalog (threshold / time-window /
+                 event-occurrence). For threshold_driven / rule_driven /
+                 expiry kinds the condition is the trigger itself. -->
+            <details class="event-conditions">
+              <summary>Gating conditions (event fires only when…)</summary>
+              <p class="hint">
+                Restrict when this event can fire. Combined with AND.
+                <code>threshold</code>: compare a system variable (t /
+                M / Q / N / K) to a value — natural fit for
+                <em>threshold_driven</em>. <code>time window</code>:
+                event only fires inside <code>[start, end]</code>
+                periods. <code>event occurrence</code>: gates on another
+                event having fired.
+              </p>
+              <div class="event-conditions-list rule-conditions-list"></div>
+              <button type="button" class="add-event-condition ghost">+ Add condition</button>
+            </details>
+
+            <!-- Phase L3 — arrival model is EITHER deterministic
+                 (the Frequency family above) OR stochastic (the
+                 distribution below). Mutually exclusive — picking one
+                 locks the other. Schema rejects YAMLs that set both. -->
+            <hr class="event-mode-divider" />
+            <div class="field event-dist-block">
+              <label class="event-mode-label">
+                — or —  stochastic arrival distribution
+                <small>(mutually exclusive with the family above; pick ONE)</small>
+              </label>
+              <select class="event-dist-kind">
+                <option value="">— deterministic mode (use Frequency family above) —</option>
+                <option value="normal">normal (μ, σ) — Gaussian fluctuation around base rate</option>
+                <option value="lognormal">lognormal (μ, σ) — heavy right tail (rare spikes)</option>
+                <option value="bernoulli">bernoulli (p) — 0/1 per period (rare random event)</option>
+                <option value="poisson">poisson (λ) — bursty arrivals, mean λ/period</option>
+              </select>
+              <div class="event-dist-params" hidden>
+                <div class="dist-param-row">
+                  <input type="number" class="event-dist-p1" step="any" placeholder="first param" />
+                  <input type="number" class="event-dist-p2" step="any" placeholder="second param (if applicable)" />
+                </div>
+                <small class="event-dist-hint">
+                  Normal/lognormal: (μ, σ). Bernoulli: p ∈ [0, 1].
+                  Poisson: λ (≥ 0). Per-period firings get clamped to ≥ 0.
+                </small>
               </div>
             </div>
           </div>
@@ -1314,7 +1449,6 @@
       <!-- =================================================== Submit -->
       <section class="form-actions">
         <button type="button" id="verify-btn" class="primary">▶ Verify</button>
-        <button type="button" id="simulate-direct-btn" class="ghost" title="Send the form-built spec to the Monte Carlo simulator.">▶ Monte Carlo</button>
         <button type="button" id="explore-direct-btn" class="ghost" title="Send the form-built spec to the trajectory explorer.">▶ Explore trajectory</button>
         <button type="button" id="download-btn" class="ghost">⬇ Download YAML</button>
         <span id="verify-status"></span>
@@ -1353,8 +1487,7 @@
             violation/satisfaction is reachable in the declared parameter
             box, the binding threshold, and the structured safety
             predicates.
-            <a href="/simulate" class="nav-link">Run the ABM →</a>
-            <a href="/explore" class="nav-link">Explore one trajectory →</a>
+            <a href="/explore" class="nav-link">Run the ABM trajectory →</a>
           </p>
           <div id="minimal-table"></div>
         </div>
@@ -1388,6 +1521,9 @@
   "population_event_kinds": {{ population_event_kinds | tojson }}
 }
   </script>
+  <!-- Phase M — Cytoscape for the flow-graph preview (Stage 3.2). -->
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  <script src="{{ url_for('static', filename='flow_graph.js') }}"></script>
   <script src="{{ url_for('static', filename='form.js') }}"></script>
   <script src="{{ url_for('static', filename='verdict.js') }}"></script>
 </body>

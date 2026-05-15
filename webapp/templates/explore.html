@@ -6,7 +6,6 @@
   <title>Token Economy Verifier — Trajectory Explorer</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='form.css') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='simulate.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='explore.css') }}" />
 </head>
 <body>
@@ -17,7 +16,6 @@
       <nav>
         <a href="/" class="nav-link">← Questionnaire</a>
         <a href="/yaml" class="nav-link">YAML editor</a>
-        <a href="/simulate" class="nav-link">Monte Carlo</a>
       </nav>
     </div>
     <p class="subtitle">
@@ -267,6 +265,67 @@
           </header>
           <canvas id="assets-chart"></canvas>
         </article>
+        <article class="explore-card span-2" id="coherence-card" hidden>
+          <header class="card-header">
+            <h3>Failure-mode coherence (verifier vs ABM)</h3>
+            <p class="card-caption">
+              For every safety predicate the verifier emitted, the
+              ABM-realized trajectory is checked against the same
+              threshold. Flags where simulation and static analysis
+              agree, where the ABM exposes a corner the verifier missed,
+              and where the verifier was conservative.
+            </p>
+          </header>
+          <div id="coherence-table-wrap"></div>
+        </article>
+        <article class="explore-card span-2" id="flow-graph-card" hidden>
+          <header class="card-header">
+            <h3>Declared flow graph (Phase M)</h3>
+            <p class="card-caption">
+              Schematic of every value-flow path the spec declares: mint
+              pools (⊕), burn sinks (⊖), per-role wallets, asset
+              inventories (◆), and the events (◇) that drive each flow.
+              Edge styles: solid · dashed (condition-gated) · double
+              (DSL-driven) · dotted (event annotation). Disconnected
+              sub-graphs surface as diagnostics below.
+            </p>
+          </header>
+          <div class="flow-graph-controls">
+            <label>View
+              <select id="flow-graph-view">
+                <option value="spec">spec (declared)</option>
+                <option value="realised">realised (ABM)</option>
+                <option value="diff">diff (spec vs realised)</option>
+              </select>
+            </label>
+            <label>Layout
+              <select id="flow-graph-layout">
+                <option value="cose">cluster (cose)</option>
+                <option value="breadthfirst">stream (breadth-first)</option>
+                <option value="concentric">concentric</option>
+              </select>
+            </label>
+            <span id="flow-graph-summary" class="muted"></span>
+          </div>
+          <div id="flow-graph-canvas" class="flow-graph-canvas"></div>
+          <div id="flow-graph-legend" class="flow-graph-legend"></div>
+          <div id="flow-graph-diagnostics"></div>
+        </article>
+        <article class="explore-card span-2" id="network-metrics-card" hidden>
+          <header class="card-header">
+            <h3>Network analytics (Phase L1)</h3>
+            <p class="card-caption">
+              Centralities computed on the interaction graph. Network-level
+              statistics compared against two null models: G(n, p)
+              matching the observed density (Erdős–Rényi) and the
+              configuration model matching the degree sequence. Z-scores
+              outside ±2 σ flag structural difference from random.
+              Pearson correlations show whether centrality co-varies with
+              balance (network position → economic outcome).
+            </p>
+          </header>
+          <div id="network-metrics-wrap"></div>
+        </article>
       </div>
 
       <!-- ====================== Network + balance histogram at current scrubber position ====================== -->
@@ -331,6 +390,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  <script src="{{ url_for('static', filename='flow_graph.js') }}"></script>
   <script src="{{ url_for('static', filename='explore.js') }}"></script>
 </body>
 </html>
