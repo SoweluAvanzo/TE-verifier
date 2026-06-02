@@ -71,6 +71,34 @@ app = Flask(
     static_folder="static",
 )
 
+# --- Hardening for public deployment ---------------------------------------
+# Cap request bodies — token-economy models are a few KB; reject anything big.
+app.config["MAX_CONTENT_LENGTH"] = 512 * 1024  # 512 KB
+
+# In-memory per-IP rate limit on the compute (POST) endpoints, so one client
+# cannot flood the Z3 solver. Fixed 60 s window. (gunicorn --timeout is the
+# backstop for any single long-running request.)
+import time as _time
+from collections import defaultdict as _defaultdict
+
+_RL_WINDOW = 60   # seconds
+_RL_MAX = 30      # POST requests per window per IP
+_rl_hits: dict[str, list[float]] = _defaultdict(list)
+
+
+@app.before_request
+def _rate_limit():  # type: ignore[no-untyped-def]
+    if request.method != "POST":
+        return None
+    ip = request.remote_addr or "unknown"
+    now = _time.monotonic()
+    hits = [t for t in _rl_hits[ip] if now - t < _RL_WINDOW]
+    hits.append(now)
+    _rl_hits[ip] = hits
+    if len(hits) > _RL_MAX:
+        return jsonify(error="rate_limited"), 429
+    return None
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"

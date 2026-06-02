@@ -1,0 +1,17 @@
+.venv
+venv
+.git
+.gitignore
+docs
+tests
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pdf
+*.docx
+.claude
+*.egg-info
+files_sample utility functions
+infra
+*.md

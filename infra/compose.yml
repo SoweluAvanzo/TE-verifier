@@ -1,0 +1,30 @@
+# Token-economy simulator — temporary, isolated, hardened stack.
+# Separate compose project => own Docker network; a compromise here cannot
+# reach the NDSC portal or the other sites. Tear down completely with:
+#   docker compose -f infra/compose.yml down
+name: token-economy-simulator
+
+services:
+  web:
+    build:
+      context: ..
+    restart: unless-stopped
+
+    # Fully public on a raw host port (no domain, plain HTTP).
+    # Reach it at  http://<server-ip>:8888
+    ports:
+      - "8888:8000"
+
+    # Resource caps — a Z3 blow-up kills this container, never the host.
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 256
+
+    # Sandbox hardening.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
