@@ -853,20 +853,16 @@ button.ghost:hover {
 }
 
 .minimal-table {
-  /* Fixed layout: every row fits the pane width with NO horizontal
-     scrolling (rows must be screenshot-able in full). The predicates
-     column absorbs the slack and wraps. */
-  table-layout: fixed;
+  /* Content-driven layout: columns size to their widest cell (the
+     Status column grows to fit the verdict pill; V/S shrink to a
+     "yes"). The predicates column gets a width hint and absorbs the
+     slack by wrapping between chips — every row fits the pane with
+     NO horizontal scrolling (rows must be screenshot-able in full). */
+  table-layout: auto;
   width: 100%;
 }
 
-.minimal-table th:nth-child(1) { width: 7%; }   /* FM        */
-.minimal-table th:nth-child(2) { width: 13%; }  /* Subject   */
-.minimal-table th:nth-child(3) { width: 14%; }  /* Status    */
-.minimal-table th:nth-child(4) { width: 6%; }   /* V         */
-.minimal-table th:nth-child(5) { width: 6%; }   /* S         */
-.minimal-table th:nth-child(6) { width: 15%; }  /* Threshold */
-                                                /* predicates: rest */
+.minimal-table th:nth-child(7) { width: 36%; }  /* predicates: wrapping slack */
 
 .minimal-table th,
 .minimal-table td {
@@ -874,11 +870,25 @@ button.ghost:hover {
   padding: 0.4rem 0.5rem;
   text-align: left;
   vertical-align: top;
-  overflow-wrap: anywhere;   /* long token ids / thresholds wrap, never overflow */
 }
 
 .minimal-table td {
-  font-size: 0.88rem;
+  font-size: 0.82rem;        /* verdict facts slightly smaller … */
+}
+
+/* … but never wrapped mid-word: short cells stay on one line. */
+.minimal-table td:nth-child(1),
+.minimal-table td:nth-child(4),
+.minimal-table td:nth-child(5) {
+  white-space: nowrap;
+}
+
+.minimal-table .status-pill { white-space: nowrap; }
+
+/* Long token ids / threshold values may wrap at word boundaries. */
+.minimal-table td:nth-child(2),
+.minimal-table td:nth-child(6) {
+  overflow-wrap: break-word;
 }
 
 .minimal-table th {
