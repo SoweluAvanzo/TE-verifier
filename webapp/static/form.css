@@ -824,6 +824,18 @@ button.ghost:hover {
    title attributes; the cursor change reinforces that they're informative). */
 .minimal-table th[title] { cursor: help; }
 
+/* Explanation sub-row under fragile / broken / inconclusive verdicts —
+   the rich Verdict's plain-language narrative, indented and muted so
+   the reachability facts stay scannable. */
+.minimal-table .explain-row td {
+  background: #fafafc;
+  border-bottom: 1px solid #e2e2e6;
+  color: #555;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  padding: 0.3rem 0.45rem 0.45rem 1.4rem;
+}
+
 .minimal-table th,
 .minimal-table td {
   border-bottom: 1px solid #e2e2e6;

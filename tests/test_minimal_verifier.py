@@ -289,3 +289,25 @@ def test_inconclusive_fm5_carries_worst_case_threshold():
     fm5 = next(v for v in minimal_verdicts(te) if v.failure_mode == "FM5")
     assert fm5.structural_status == StructuralStatus.INCONCLUSIVE
     assert fm5.minimum_param_shift == {"N": _pytest.approx(201.0)}
+
+
+def test_minimal_verdicts_carry_explanations():
+    """Fragile / broken / inconclusive rows must carry the rich
+    Verdict's explanation so the results table can render the
+    plain-language narrative under each non-sound row."""
+    from tests.conftest import load_example
+    from verifier.minimal import StructuralStatus, minimal_verdicts
+
+    te = load_example("time_bank")
+    verdicts = minimal_verdicts(te)
+    non_sound = [
+        v for v in verdicts
+        if v.structural_status in (
+            StructuralStatus.FRAGILE,
+            StructuralStatus.BROKEN,
+            StructuralStatus.INCONCLUSIVE,
+        )
+    ]
+    assert non_sound, "fixture should produce at least one non-sound verdict"
+    for v in non_sound:
+        assert v.explanation, (v.failure_mode, v.subject)

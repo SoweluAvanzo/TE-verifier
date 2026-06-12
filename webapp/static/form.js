@@ -2496,6 +2496,15 @@ function renderMinimalTable(verdicts) {
     const preds = (v.safety_predicates || []).map((p) =>
       `<code>${escapeHTML(p.variable)} ${p.operator} ${formatThreshold(p.threshold)}</code>`
     ).join(" · ") || "—";
+    const needsExplain =
+      (status === "fragile" || status === "broken" || status === "inconclusive")
+      && v.explanation;
+    const explainRow = needsExplain
+      ? `
+      <tr class="explain-row">
+        <td colspan="7">${escapeHTML(v.explanation)}</td>
+      </tr>`
+      : "";
     return `
       <tr>
         <td>${v.failure_mode}</td>
@@ -2505,7 +2514,7 @@ function renderMinimalTable(verdicts) {
         <td>${triCell(v.satisfaction_reachable)}</td>
         <td>${thr}</td>
         <td>${preds}</td>
-      </tr>
+      </tr>${explainRow}
     `;
   }).join("");
   minimalTable.innerHTML = `

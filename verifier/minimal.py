@@ -36,7 +36,9 @@ What this output deliberately omits, and why:
 
 * No ``PASS_AS_INTENDED`` — NFR-driven reframings belong in the
   simulator / scoring layer, where intent matters.
-* No free-text recommendations beyond the single threshold value.
+* No free-text recommendations beyond the single threshold value
+  (the rich Verdict's ``explanation`` is carried as a display-only
+  annotation; it carries no formal weight).
 * No role-gated alternates.
 * No coherence narrative.
 
@@ -95,6 +97,12 @@ class ReachabilityVerdict(BaseModel):
     # Parameter values witnessing a violation, when one was found.
     # Same data as in the standard Verdict's counterexample.
     witness: dict[str, float] | None = None
+
+    # Human-readable explanation carried over from the rich Verdict —
+    # a display annotation for the results table (rendered under
+    # fragile / broken / inconclusive rows), NOT part of the formal
+    # reachability contract above.
+    explanation: str | None = None
 
     # Structured safety predicates for ABM consumption. Each
     # predicate names a per-period state variable, an operator, and a
@@ -294,6 +302,7 @@ def minimal_verdicts(
                     else None
                 ),
                 witness=_witness_from(v) if violation == "true" else None,
+                explanation=v.explanation or None,
                 safety_predicates=predicates,
             )
         )
