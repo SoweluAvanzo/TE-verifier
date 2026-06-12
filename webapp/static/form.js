@@ -2495,7 +2495,7 @@ function renderMinimalTable(verdicts) {
       : "—";
     const preds = (v.safety_predicates || []).map((p) =>
       `<code>${escapeHTML(p.variable)} ${p.operator} ${formatThreshold(p.threshold)}</code>`
-    ).join(" · ") || "—";
+    ).join("") || "—";  /* chips stack as blocks — no separator needed */
     const needsExplain =
       (status === "fragile" || status === "broken" || status === "inconclusive")
       && v.explanation;

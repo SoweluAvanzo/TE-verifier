@@ -64,7 +64,9 @@ button.ghost:hover {
   margin: 0 auto;
   padding: 1rem 2rem 3rem;
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  /* Verdict pane gets the larger share — the reachability table is
+     the densest content on the page and must never truncate. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
   gap: 1.5rem;
   align-items: flex-start;
 }
@@ -852,6 +854,8 @@ button.ghost:hover {
   max-width: 65ch;
 }
 
+#minimal-table { overflow-x: auto; }  /* scroll, never clip, as last resort */
+
 .minimal-table {
   /* Content-driven layout: columns size to their widest cell (the
      Status column grows to fit the verdict pill; V/S shrink to a
@@ -862,7 +866,7 @@ button.ghost:hover {
   width: 100%;
 }
 
-.minimal-table th:nth-child(7) { width: 36%; }  /* predicates: wrapping slack */
+.minimal-table th:nth-child(7) { width: 24%; }  /* predicates: stacked chips */
 
 .minimal-table th,
 .minimal-table td {
@@ -901,10 +905,12 @@ button.ghost:hover {
   background: #f0f0f3;
   padding: 0.05rem 0.3rem;
   border-radius: 0.2rem;
-  display: inline-block;
-  white-space: nowrap;
+  display: block;            /* one predicate per line */
+  width: fit-content;
+  white-space: normal;       /* may wrap, but only at spaces */
+  overflow-wrap: break-word;
   margin: 0.06rem 0;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
 }
 
 .status-pill {
