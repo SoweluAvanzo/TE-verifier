@@ -2552,10 +2552,15 @@ function renderMinimalTable(verdicts) {
             <code>V=yes, S=yes ⇒ fragile</code>,
             <code>V=yes, S=no ⇒ broken</code>.</dd>
         <dt><strong>Threshold</strong></dt>
-        <dd>The minimum parameter shift needed to move a
-            <em>fragile</em> verdict to <em>sound</em> — the closest
-            point on the cliff. Empty for sound / not-applicable rows
-            where no shift is required.</dd>
+        <dd>For <em>fragile</em> / <em>broken</em> rows: the minimum
+            parameter shift needed to reach <em>sound</em> — the
+            closest point on the cliff. For <em>inconclusive</em>
+            rows: the conservative worst-case threshold when the FM
+            exposes one (e.g. FM5 under a spatial topology reports the
+            well-mixed bound N* = 2·K·d + 1 at the worst corner of
+            your ranges — meeting it guarantees safety, but a spatial
+            economy may also survive below it). Empty for sound /
+            not-applicable rows where no shift is required.</dd>
         <dt><strong>Safety predicates</strong></dt>
         <dd>The formal property the ABM evaluates per period and uses to
             count violations. Written as

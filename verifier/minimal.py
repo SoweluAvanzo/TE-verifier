@@ -86,7 +86,10 @@ class ReachabilityVerdict(BaseModel):
 
     # The single threshold (typically taken from the FM's
     # NumericRecommendation.safe_threshold). None when the FM is
-    # passing, not-applicable, or doesn't expose a threshold.
+    # passing, not-applicable, or doesn't expose a threshold. For
+    # INCONCLUSIVE verdicts this is the conservative worst-case
+    # threshold (sufficient, possibly not necessary — e.g. the
+    # well-mixed FM5 bound under a spatial topology).
     minimum_param_shift: dict[str, float] | None = None
 
     # Parameter values witnessing a violation, when one was found.
@@ -277,7 +280,19 @@ def minimal_verdicts(
                 violation_reachable=violation,
                 satisfaction_reachable=satisfaction,
                 structural_status=structural,
-                minimum_param_shift=_threshold_from(v) if violation == "true" else None,
+                # For violation-reachable verdicts this is the minimum
+                # repair to reach SOUND. For INCONCLUSIVE verdicts it is
+                # the conservative worst-case threshold when the FM
+                # exposes one (e.g. FM5 under spatial topology: the
+                # well-mixed bound N* = 2·K·d + 1 at the box's worst
+                # corner — sufficient for safety, possibly not
+                # necessary for this topology).
+                minimum_param_shift=(
+                    _threshold_from(v)
+                    if violation == "true"
+                    or structural == StructuralStatus.INCONCLUSIVE
+                    else None
+                ),
                 witness=_witness_from(v) if violation == "true" else None,
                 safety_predicates=predicates,
             )

@@ -223,3 +223,69 @@ def test_minimal_verdicts_are_json_serializable() -> None:
     assert "violation_reachable" in sample
     assert "satisfaction_reachable" in sample
     assert "structural_status" in sample
+
+
+def test_inconclusive_fm5_carries_worst_case_threshold():
+    """FM5 under a spatial topology is INCONCLUSIVE (the well-mixed
+    bound is only conservative there), but the reachability row must
+    still surface the worst-case closed-form threshold
+    N* = 2·K_hi·d_hi + 1 so the user sees the sufficient condition
+    at a glance. NLAB shape: K ∈ [10,100], d ∈ [0.1,1], N ∈ [100,300],
+    topology spatial → N* = 2·100·1 + 1 = 201."""
+    import pytest as _pytest
+
+    from schema import (
+        AgentRole, AgentType, Archetype, AsymptoticClass, AsymptoticFamily,
+        ContributionVerification, ControllingActor, EventDefinition,
+        EventTriggerKind, FunctionShape, FunctionSign, GovernanceSpec,
+        GovernanceType, HoldingTimeDistribution, Meta, NFRs, NumberRange,
+        ParticipantsSpec, RedemptionMechanism, Rule, RuleTrigger,
+        SanctionKind, SanctionStructure, Token, TokenEconomy, TokenFunction,
+        Topology,
+    )
+    from verifier.minimal import StructuralStatus, minimal_verdicts
+
+    const = AsymptoticClass(
+        family=AsymptoticFamily.CONSTANT,
+        parameter_ranges={"c": NumberRange.point(1.0)},
+    )
+    te = TokenEconomy(
+        meta=Meta(name="t", archetype=Archetype.OTHER, nfrs=NFRs()),
+        tokens=[Token(
+            id="T",
+            function=[TokenFunction.MEDIUM_OF_EXCHANGE],
+            emission_rules=[Rule(
+                trigger=RuleTrigger(event_id="w"),
+                function=FunctionShape(
+                    sign=FunctionSign.ALWAYS_POSITIVE, asymptotic_class=const,
+                ),
+            )],
+            offer_variety_K=NumberRange(min=10.0, max=100.0),
+            contribution_verification=ContributionVerification.PEER_VERIFICATION,
+            redemption_mechanism=RedemptionMechanism.SPECIFIC_GOODS_OR_SERVICES,
+        )],
+        participants=ParticipantsSpec(
+            count_N=NumberRange(min=100.0, max=300.0),
+            expected_Q=NumberRange.point(1000.0),
+            average_demand_d=NumberRange(min=0.1, max=1.0),
+            growth_g=AsymptoticClass(family=AsymptoticFamily.CONSTANT),
+            topology=Topology.SPATIAL,
+            agent_types=[AgentType(
+                id="a", fraction=1.0,
+                expected_holding_time=HoldingTimeDistribution(
+                    expected_periods=NumberRange(min=2.0, max=4.0)),
+                role=AgentRole.CONTRIBUTOR,
+            )],
+        ),
+        governance=GovernanceSpec(
+            type=GovernanceType.DAO,
+            rule_structure={"x": ControllingActor.TOKEN_HOLDER_VOTE},
+            sanction_structure=SanctionStructure(kind=SanctionKind.WARNING),
+        ),
+        events=[EventDefinition(
+            id="w", label="w", kind=EventTriggerKind.BEHAVIORAL, frequency=const,
+        )],
+    )
+    fm5 = next(v for v in minimal_verdicts(te) if v.failure_mode == "FM5")
+    assert fm5.structural_status == StructuralStatus.INCONCLUSIVE
+    assert fm5.minimum_param_shift == {"N": _pytest.approx(201.0)}
