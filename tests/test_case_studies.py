@@ -178,3 +178,63 @@ def test_axie_overall_severity_is_fail():
     assert len(supply_side) >= 2, (
         f"Expected at least two of FM1/FM3 to flag for Axie; got {supply_side}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Catalog-style (Phase-H) case studies — community economies authored
+# through the events catalog, the webapp's native output format. These
+# were historically EXCLUDED from the regression suite, which is how
+# the FM4 catalog-blindness bug survived: every spec below is a
+# contribution-reward economy, and all of them silently received
+# FM4 = not_applicable until the resolver migration.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fm,subject,expected",
+    [
+        ("FM1", "ROCCA", "fail"),
+        ("FM1", "BUONO", "fail"),
+        ("FM2", "ROCCA", "pass"),
+        ("FM2", "BUONO", "pass"),
+        ("FM3", "ROCCA", "fail"),
+        ("FM3", "BUONO", "fail"),
+        # Volunteers earn ROCCA through verified behavioral events →
+        # FM4 applies (and fails: contributor share vs d/K).
+        ("FM4", "system", "fail"),
+        ("FM5", "system", "pass"),
+        ("FM6", "system", "fail"),
+    ],
+)
+def test_cascina_per_failure_mode(fm: str, subject: str, expected: str):
+    r = report_for("cascina_roccafranca")
+    assert lookup_status(r, fm, subject) == expected
+
+
+@pytest.mark.parametrize(
+    "fm,subject,expected",
+    [
+        ("FM1", "HOUR", "fail"),
+        ("FM2", "HOUR", "pass"),
+        ("FM3", "HOUR", "fail"),
+        # HOUR is earned via behavioral service delivery with peer
+        # verification — the textbook FM4-applicable economy.
+        ("FM4", "system", "fail"),
+        ("FM5", "system", "pass"),
+        ("FM6", "system", "pass"),
+    ],
+)
+def test_time_bank_per_failure_mode(fm: str, subject: str, expected: str):
+    r = report_for("time_bank")
+    assert lookup_status(r, fm, subject) == expected
+
+
+def test_curve_dsl_matches_legacy_curve_verdicts():
+    """curve_vecrv_dsl is the DSL/catalog re-authoring of curve_vecrv;
+    the two forms must agree verdict-for-verdict (dual-form invariant
+    on a real case study)."""
+    r_legacy = report_for("curve_vecrv")
+    r_dsl = report_for("curve_vecrv_dsl")
+    legacy = {(v.failure_mode, v.subject): v.status for v in r_legacy.verdicts}
+    dsl = {(v.failure_mode, v.subject): v.status for v in r_dsl.verdicts}
+    assert legacy == dsl

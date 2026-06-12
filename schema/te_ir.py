@@ -338,7 +338,7 @@ class RuleTrigger(_Frozen):
 
     Legacy fields (``kind`` / ``event_predicate`` / ``event_frequency``)
     remain accepted for back-compat. At load time
-    :func:`TokenEconomy.normalize_events` auto-synthesizes an
+    :func:`TokenEconomy._normalize_legacy_triggers` auto-synthesizes an
     EventDefinition for any rule that supplies the legacy fields, so
     downstream consumers always read through ``event_id``.
     """
@@ -1400,6 +1400,23 @@ class NonTokenizedAsset(_Frozen):
     variety_contribution: int = Field(default=1, ge=1)
 
 
+# Legacy inline trigger kinds → unified Phase-H event kinds. Every value
+# is spelled identically in both vocabularies except the behavioral one
+# (legacy "behavioral_event" vs catalog "behavioral").
+_LEGACY_TO_EVENT_KIND: dict[str, EventTriggerKind] = {
+    "none": EventTriggerKind.NONE,
+    "time_based": EventTriggerKind.TIME_BASED,
+    "behavioral_event": EventTriggerKind.BEHAVIORAL,
+    "physical_resource_flow": EventTriggerKind.PHYSICAL_RESOURCE_FLOW,
+    "algorithmic": EventTriggerKind.ALGORITHMIC,
+    "demand_driven": EventTriggerKind.DEMAND_DRIVEN,
+    "rule_driven": EventTriggerKind.RULE_DRIVEN,
+    "threshold_driven": EventTriggerKind.THRESHOLD_DRIVEN,
+    "expiry": EventTriggerKind.EXPIRY,
+    "coupon_layer_only": EventTriggerKind.COUPON_LAYER_ONLY,
+}
+
+
 class TokenEconomy(_Frozen):
     meta: Meta
     tokens: list[Token]
@@ -1407,7 +1424,8 @@ class TokenEconomy(_Frozen):
     governance: GovernanceSpec
     cross_token_flows: list[CrossTokenFlow] = Field(default_factory=list)
     # Phase-H additions. Empty by default — legacy YAMLs are auto-promoted
-    # via the loader so internal consumers always see a populated catalog.
+    # by ``_normalize_legacy_triggers`` at load time so internal consumers
+    # always see a populated catalog.
     events: list[EventDefinition] = Field(default_factory=list)
     non_tokenized_assets: list[NonTokenizedAsset] = Field(default_factory=list)
 
@@ -1436,6 +1454,82 @@ class TokenEconomy(_Frozen):
         if len(ids) != len(set(ids)):
             raise ValueError("NonTokenizedAsset ids must be unique")
         return v
+
+    @model_validator(mode="after")
+    def _normalize_legacy_triggers(self) -> "TokenEconomy":
+        """Canonicalize legacy inline triggers into the events catalog.
+
+        For every mint/burn rule that declares the legacy inline fields
+        (``kind`` / ``event_predicate`` / ``event_frequency``), synthesize
+        an :class:`EventDefinition` (id ``_auto_<token>_<side>_<i>``,
+        label = the rule's event_predicate, kind mapped through
+        :data:`_LEGACY_TO_EVENT_KIND`, frequency *moved* from the
+        trigger) and rewrite the trigger to reference it.
+
+        Post-load invariant: every ``RuleTrigger`` carries ``event_id``
+        and ``kind is None`` — downstream consumers see exactly one
+        trigger vocabulary (:class:`EventTriggerKind`) and read it
+        through ``verifier.events_resolver.resolve_trigger``. Legacy
+        YAML remains accepted at the parse boundary; it simply
+        normalizes here. Declared BEFORE ``_validate_event_refs`` so
+        the synthesized ids pass reference validation (Pydantic runs
+        ``mode="after"`` model validators in definition order).
+        """
+        existing_ids = {e.id for e in self.events}
+        synthesized: list[EventDefinition] = []
+        new_tokens: list[Token] = []
+        changed = False
+        for token in self.tokens:
+            updates: dict[str, list[Rule]] = {}
+            token_changed = False
+            for side_attr in ("emission_rules", "burn_rules"):
+                rules_out: list[Rule] = []
+                for i, rule in enumerate(getattr(token, side_attr)):
+                    trig = rule.trigger
+                    if trig.event_id is not None or trig.kind is None:
+                        rules_out.append(rule)
+                        continue
+                    kind = _LEGACY_TO_EVENT_KIND[trig.kind.value]
+                    base_id = f"_auto_{token.id}_{side_attr}_{i}"
+                    eid, n = base_id, 2
+                    while eid in existing_ids:
+                        eid = f"{base_id}_{n}"
+                        n += 1
+                    existing_ids.add(eid)
+                    synthesized.append(
+                        EventDefinition(
+                            id=eid,
+                            label=trig.event_predicate or eid,
+                            kind=kind,
+                            frequency=(
+                                trig.event_frequency
+                                if kind != EventTriggerKind.NONE
+                                else None
+                            ),
+                        )
+                    )
+                    # Validating construction: event_id-only trigger.
+                    rules_out.append(
+                        rule.model_copy(
+                            update={
+                                "trigger": RuleTrigger(
+                                    event_id=eid,
+                                    conditions=list(trig.conditions),
+                                )
+                            }
+                        )
+                    )
+                    token_changed = True
+                updates[side_attr] = rules_out
+            if token_changed:
+                changed = True
+                new_tokens.append(token.model_copy(update=updates))
+            else:
+                new_tokens.append(token)
+        if changed:
+            object.__setattr__(self, "tokens", new_tokens)
+            object.__setattr__(self, "events", list(self.events) + synthesized)
+        return self
 
     @model_validator(mode="after")
     def _validate_event_refs(self) -> "TokenEconomy":

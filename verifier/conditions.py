@@ -183,16 +183,20 @@ def _eval_event_occurrence(
     src = next((t for t in te.tokens if t.id == c.source_token), None)
     if src is None:
         return ConditionStatus.NEVER
-    # Match against any source emission rule's trigger.event_predicate
-    # or kind value (legacy path).
+    # Match the named source_event against each source emission rule's
+    # *resolved* trigger (Phase-H): label (event_predicate for legacy
+    # inline rules, catalog label otherwise), kind value, or catalog
+    # event id. Resolution keeps legacy and catalog rules symmetric.
+    from verifier.events_resolver import resolve_trigger
+
     for r in src.emission_rules:
-        if r.trigger.event_predicate == c.source_event:
+        rt = resolve_trigger(r, te)
+        if c.source_event is not None and c.source_event in (
+            rt.event_label,
+            rt.kind,
+            rt.event_id,
+        ):
             return ConditionStatus.ALWAYS
-        try:
-            if r.trigger.kind is not None and r.trigger.kind.value == c.source_event:
-                return ConditionStatus.ALWAYS
-        except AttributeError:
-            pass
     # Source token exists but no matching event → conservative EVER
     # (we don't know exactly when the named event would fire).
     return ConditionStatus.EVER

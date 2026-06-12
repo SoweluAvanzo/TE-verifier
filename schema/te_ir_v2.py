@@ -1399,11 +1399,44 @@ def _migrate_function_shape(fn_v1: Any) -> FunctionShape:
     )
 
 
+def _resolve_v1_trigger(rule_v1: Any, events_by_id: dict | None) -> tuple[str, Any, Any]:
+    """Resolve a v1 rule's trigger to (kind_value, label, frequency).
+
+    Post-canonicalization every v1 RuleTrigger carries ``event_id``
+    (the legacy inline fields normalize into the events catalog at
+    load), so the migrator reads through the catalog. The inline path
+    is kept for robustness with hand-built v1 objects.
+    """
+    trig = rule_v1.trigger
+    eid = getattr(trig, "event_id", None)
+    if eid is not None and events_by_id:
+        ev = events_by_id.get(eid)
+        if ev is not None:
+            return ev.kind.value, ev.label, ev.frequency
+    kind = trig.kind.value if trig.kind is not None else "none"
+    return kind, trig.event_predicate, trig.event_frequency
+
+
+# Catalog (EventTriggerKind) values → the per-side v1 vocabulary the
+# driver mapper below expects. Only the behavioral spelling diverges on
+# the emission side; non-burn kinds appearing on burn rules map to the
+# closest burn kind (mirrors FM3's defensive classification).
+_EVENT_KIND_TO_EMISSION: dict[str, str] = {"behavioral": "behavioral_event"}
+_EVENT_KIND_TO_BURN: dict[str, str] = {
+    "behavioral": "demand_driven",
+    "behavioral_event": "demand_driven",
+    "physical_resource_flow": "demand_driven",
+    "time_based": "rule_driven",
+    "algorithmic": "rule_driven",
+}
+
+
 def _v1_trigger_to_driver(
     kind_v1: Any, is_burn: bool
 ) -> tuple[FunctionDriver, TriggerKind | None]:
-    """Map v1 RuleTrigger.kind to (v2 driver, v2 trigger_kind)."""
+    """Map a v1/catalog trigger-kind value to (v2 driver, v2 trigger_kind)."""
     name = kind_v1.value if hasattr(kind_v1, "value") else str(kind_v1)
+    name = (_EVENT_KIND_TO_BURN if is_burn else _EVENT_KIND_TO_EMISSION).get(name, name)
     if is_burn:
         burn_kind = BurnTriggerKind(name)
         if burn_kind in (BurnTriggerKind.DEMAND_DRIVEN, BurnTriggerKind.RULE_DRIVEN):
@@ -1427,12 +1460,13 @@ def _v1_trigger_to_driver(
         return FunctionDriver.TIME, emit_kind  # NONE fallback
 
 
-def _migrate_rule(rule_v1: Any, *, is_burn: bool, primary_token: str) -> Function:
-    driver, trigger_kind = _v1_trigger_to_driver(rule_v1.trigger.kind, is_burn=is_burn)
+def _migrate_rule(
+    rule_v1: Any, *, is_burn: bool, primary_token: str, events_by_id: dict | None = None
+) -> Function:
+    kind_value, label, frequency = _resolve_v1_trigger(rule_v1, events_by_id)
+    driver, trigger_kind = _v1_trigger_to_driver(kind_value, is_burn=is_burn)
     event_freq = (
-        _migrate_asymptotic_class(rule_v1.trigger.event_frequency)
-        if rule_v1.trigger.event_frequency is not None
-        else None
+        _migrate_asymptotic_class(frequency) if frequency is not None else None
     )
     shape = _migrate_function_shape(rule_v1.function)
 
@@ -1474,14 +1508,16 @@ def _migrate_rule(rule_v1: Any, *, is_burn: bool, primary_token: str) -> Functio
     return Function(
         driver=driver,
         trigger_kind=trigger_kind,
-        event_predicate=rule_v1.trigger.event_predicate,
+        event_predicate=label,
         event_frequency=event_freq,
         phases=phases,
         schedule=_migrate_schedule(rule_v1.schedule),
     )
 
 
-def _migrate_token(token_v1: Any, primary_token: str) -> Token:
+def _migrate_token(
+    token_v1: Any, primary_token: str, events_by_id: dict | None = None
+) -> Token:
     return Token(
         id=token_v1.id,
         function=[TokenFunction(f.value) for f in token_v1.function],
@@ -1499,11 +1535,17 @@ def _migrate_token(token_v1: Any, primary_token: str) -> Token:
             else None
         ),
         emission_rules=[
-            _migrate_rule(r, is_burn=False, primary_token=primary_token)
+            _migrate_rule(
+                r, is_burn=False, primary_token=primary_token,
+                events_by_id=events_by_id,
+            )
             for r in token_v1.emission_rules
         ],
         burn_rules=[
-            _migrate_rule(r, is_burn=True, primary_token=primary_token)
+            _migrate_rule(
+                r, is_burn=True, primary_token=primary_token,
+                events_by_id=events_by_id,
+            )
             for r in token_v1.burn_rules
         ],
         initial_distribution=InitialDistribution(
@@ -1586,6 +1628,7 @@ def from_v1(te_v1: Any) -> TokenEconomyV2:
     silently dropping data.
     """
     primary_token = te_v1.tokens[0].id if te_v1.tokens else "PRIMARY"
+    events_by_id = {e.id: e for e in getattr(te_v1, "events", [])}
 
     return TokenEconomyV2(
         meta=Meta(
@@ -1607,7 +1650,10 @@ def from_v1(te_v1: Any) -> TokenEconomyV2:
             ),
             simulation_horizon=getattr(te_v1.meta, "simulation_horizon", None),
         ),
-        tokens=[_migrate_token(t, primary_token) for t in te_v1.tokens],
+        tokens=[
+            _migrate_token(t, primary_token, events_by_id=events_by_id)
+            for t in te_v1.tokens
+        ],
         goods=[],
         redemptions=[],
         participants=ParticipantsSpec(

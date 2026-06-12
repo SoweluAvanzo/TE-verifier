@@ -267,3 +267,74 @@ def test_conditions_endpoint(client) -> None:
     for fm in ("FM1", "FM2", "FM3", "FM4", "FM5", "FM6"):
         assert fm in data
         assert "plain_statement" in data[fm]
+
+
+# ---------------------------------------------------------------------------
+# Form-built (catalog-style) IR through the full verify pipeline — the
+# webapp's native output format. Regression for the FM4 catalog bug:
+# the form ALWAYS emits event_id-style triggers, so this is the path
+# every real user exercises.
+# ---------------------------------------------------------------------------
+
+
+def test_build_and_verify_catalog_ir_fm4_applicable(client) -> None:
+    ir = {
+        "meta": {"name": "form-e2e", "archetype": "community_reward",
+                 "nfrs": {}},
+        "tokens": [{
+            "id": "CT",
+            "function": ["medium_of_exchange"],
+            "earning_mechanisms": ["behavioral_reward"],
+            "contribution_verification": "peer_verification",
+            "redemption_mechanism": "specific_goods_or_services",
+            "offer_variety_K": {"min": 10, "max": 10},
+            "emission_rules": [{
+                "trigger": {"event_id": "volunteer_shift"},
+                "function": {
+                    "sign": "always_positive",
+                    "asymptotic_class": {
+                        "family": "constant",
+                        "parameter_ranges": {"c": {"min": 5, "max": 5}},
+                    },
+                },
+            }],
+            "burn_rules": [],
+            "initial_distribution": {"kind": "none"},
+        }],
+        "events": [{
+            "id": "volunteer_shift",
+            "label": "volunteer shift completed",
+            "kind": "behavioral",
+            "frequency": {
+                "family": "constant",
+                "parameter_ranges": {"c": {"min": 1, "max": 1}},
+            },
+        }],
+        "participants": {
+            "count_N": {"min": 100, "max": 100},
+            "expected_Q": {"min": 500, "max": 500},
+            "average_demand_d": {"min": 0.5, "max": 0.5},
+            "growth_g": {"family": "constant"},
+            "topology": "well_mixed",
+            "agent_types": [{
+                "id": "volunteer",
+                "fraction": 1.0,
+                "role": "contributor",
+                "expected_holding_time": {
+                    "expected_periods": {"min": 2, "max": 4},
+                },
+            }],
+        },
+        "governance": {
+            "type": "dao",
+            "rule_structure": {"x": "token_holder_vote"},
+            "sanction_structure": {"kind": "warning"},
+        },
+    }
+    r = client.post("/api/build-and-verify", json={"ir": ir})
+    assert r.status_code == 200, r.get_json()
+    report = r.get_json()["report"]
+    fm4 = next(
+        v for v in report["verdicts"] if v["failure_mode"].startswith("FM4")
+    )
+    assert fm4["status"] != "not_applicable", fm4["explanation"]

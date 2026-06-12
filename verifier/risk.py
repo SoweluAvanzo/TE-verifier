@@ -34,6 +34,7 @@ from schema import (
     TokenEconomy,
 )
 from verifier.elicitation import CoherenceIssue
+from verifier.events_resolver import resolve_trigger
 from verifier.failure_modes.base import RiskLevel, Status, Verdict
 
 
@@ -86,7 +87,16 @@ def _ac_midpoint_rate(ac: AsymptoticClass | None, *, periods_horizon: float = 52
     return 0.0
 
 
-def _rule_midpoint_rate(rule, *, periods_horizon: float = 52.0) -> float:
+def _rule_midpoint_rate(
+    rule, *, te: TokenEconomy | None = None, periods_horizon: float = 52.0
+) -> float:
+    # A declared per-period distribution takes precedence over the
+    # asymptotic class (ABM sampling semantics); the midpoint layer
+    # uses its analytic mean, clamped at 0 like the ABM's samples.
+    if getattr(rule.function, "distribution", None) is not None:
+        from verifier.distribution_support import mean as _dist_mean
+        fn = max(0.0, _dist_mean(rule.function.distribution))
+        return fn * _freq_midpoint_factor(rule, te, periods_horizon)
     # K5: DSL-only rules — use a deterministic mid-of-range evaluation
     # by binding each ParamDecl to the midpoint of its declared range.
     if getattr(rule.function, "expression", None) is not None:
@@ -108,23 +118,42 @@ def _rule_midpoint_rate(rule, *, periods_horizon: float = 52.0) -> float:
             fn = 0.0
     else:
         fn = _ac_midpoint_rate(rule.function.asymptotic_class, periods_horizon=periods_horizon)
-    if rule.trigger.event_frequency is not None:
-        freq = _ac_midpoint_rate(rule.trigger.event_frequency, periods_horizon=periods_horizon)
-        return fn * freq
-    return fn
+    return fn * _freq_midpoint_factor(rule, te, periods_horizon)
 
 
-def _own_E_midpoint(token: Token) -> float:
-    return sum(_rule_midpoint_rate(r) for r in token.emission_rules)
+def _freq_midpoint_factor(rule, te: TokenEconomy | None, periods_horizon: float) -> float:
+    """Midpoint event-arrival multiplier (1.0 for time-based rules).
+
+    Resolved through the events catalog (Phase-H): deterministic
+    frequency families use their midpoint rate; stochastic arrivals
+    (``frequency_distribution``) use the analytic mean, clamped at 0.
+    """
+    if te is not None:
+        rt = resolve_trigger(rule, te)
+        freq_ac = rt.event_frequency
+        freq_dist = rt.event_frequency_distribution
+    else:
+        freq_ac = rule.trigger.event_frequency
+        freq_dist = None
+    if freq_ac is not None:
+        return _ac_midpoint_rate(freq_ac, periods_horizon=periods_horizon)
+    if freq_dist is not None:
+        from verifier.distribution_support import mean as _dist_mean
+        return max(0.0, _dist_mean(freq_dist))
+    return 1.0
 
 
-def _own_B_midpoint(token: Token) -> float:
-    return sum(_rule_midpoint_rate(r) for r in token.burn_rules)
+def _own_E_midpoint(token: Token, te: TokenEconomy | None = None) -> float:
+    return sum(_rule_midpoint_rate(r, te=te) for r in token.emission_rules)
+
+
+def _own_B_midpoint(token: Token, te: TokenEconomy | None = None) -> float:
+    return sum(_rule_midpoint_rate(r, te=te) for r in token.burn_rules)
 
 
 def _token_E_midpoint(te: TokenEconomy, token: Token) -> float:
     """E(t) at midpoint, including cross-token MINT contributions."""
-    e = _own_E_midpoint(token)
+    e = _own_E_midpoint(token, te=te)
     for flow in te.cross_token_flows:
         if flow.target_token != token.id or flow.target_action != CrossTokenAction.MINT:
             continue
@@ -133,7 +162,7 @@ def _token_E_midpoint(te: TokenEconomy, token: Token) -> float:
 
 
 def _token_B_midpoint(te: TokenEconomy, token: Token) -> float:
-    b = _own_B_midpoint(token)
+    b = _own_B_midpoint(token, te=te)
     for flow in te.cross_token_flows:
         if flow.target_token != token.id or flow.target_action != CrossTokenAction.BURN:
             continue
@@ -147,7 +176,7 @@ def _flow_midpoint_rate(te: TokenEconomy, flow) -> float:
         src = next((t for t in te.tokens if t.id == flow.source_token), None)
         if src is None:
             return 0.0
-        return ratio * _own_E_midpoint(src)
+        return ratio * _own_E_midpoint(src, te=te)
     return _ac_midpoint_rate(flow.amount)
 
 

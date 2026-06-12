@@ -150,11 +150,16 @@ def test_enum_fidelity(name: str) -> None:
             f.value for f in t2.function
         )
         assert t1.value_anchor.value == t2.value_anchor.value
+        from verifier.events_resolver import resolve_trigger
+        from schema.te_ir_v2 import _EVENT_KIND_TO_BURN, _EVENT_KIND_TO_EMISSION
+
         for r1, r2 in zip(t1.emission_rules, t2.emission_rules):
-            assert r1.trigger.kind.value == r2.trigger_kind.value
+            k1 = resolve_trigger(r1, te_v1).kind
+            assert _EVENT_KIND_TO_EMISSION.get(k1, k1) == r2.trigger_kind.value
             assert r1.function.sign.value == r2.phases[0].shape.sign.value
         for r1, r2 in zip(t1.burn_rules, t2.burn_rules):
-            assert r1.trigger.kind.value == r2.trigger_kind.value
+            k1 = resolve_trigger(r1, te_v1).kind
+            assert _EVENT_KIND_TO_BURN.get(k1, k1) == r2.trigger_kind.value
             assert r1.function.sign.value == r2.phases[0].shape.sign.value
 
     # Governance

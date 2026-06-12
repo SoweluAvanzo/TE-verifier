@@ -250,9 +250,35 @@ def rule_rate_per_period(
     # legacy inline ``trigger.event_frequency`` for back-compat.
     if te is not None:
         from verifier.events_resolver import resolve_trigger
-        resolved_frequency = resolve_trigger(rule, te).event_frequency
+        _rt = resolve_trigger(rule, te)
+        resolved_frequency = _rt.event_frequency
+        resolved_frequency_dist = _rt.event_frequency_distribution
     else:
         resolved_frequency = rule.trigger.event_frequency
+        resolved_frequency_dist = None
+
+    def _frequency_factor(prefix: str) -> "z3.ArithRef | None":
+        """Z3 term for the per-period event arrival count.
+
+        Deterministic frequency families go through the standard
+        average-rate encoding. Stochastic arrivals (the event's
+        ``frequency_distribution``) are bound to their support
+        envelope, clamped at 0 — the documented conservative reading
+        of a DistributionSpec. Returns None for time-based rules
+        (implicit factor 1).
+        """
+        if resolved_frequency is not None:
+            return average_rate_per_period(
+                solver, f"{prefix}_freq", resolved_frequency,
+                periods_horizon=periods_horizon,
+            )
+        if resolved_frequency_dist is not None:
+            from verifier.distribution_support import rate_support
+            lo, hi = rate_support(resolved_frequency_dist)
+            v = z3.Real(f"{prefix}_freqdist")
+            solver.add(v >= lo, v <= hi)
+            return v
+        return None
 
     # Phase K5: if the rule's function carries a DSL expression
     # (Phase K1+), encode that into Z3 directly rather than going
@@ -300,11 +326,8 @@ def rule_rate_per_period(
                 solver.add(env.state_vars["t"] >= 0)
                 solver.add(env.state_vars["t"] <= periods_horizon)
                 base_rate = encode_z3(fs.expression, env)
-                if resolved_frequency is not None:
-                    freq = average_rate_per_period(
-                        solver, f"{name_prefix}_freq", resolved_frequency,
-                        periods_horizon=periods_horizon,
-                    )
+                freq = _frequency_factor(name_prefix)
+                if freq is not None:
                     return base_rate * freq
                 return base_rate
             except Z3EncodingError:
@@ -317,35 +340,34 @@ def rule_rate_per_period(
         # the FM check becomes Inconclusive rather than crashing.
         free = z3.Real(f"{name_prefix}__expr_free")
         solver.add(free >= 0)
-        if resolved_frequency is not None:
-            freq = average_rate_per_period(
-                solver, f"{name_prefix}_freq", resolved_frequency,
-                periods_horizon=periods_horizon,
-            )
+        freq = _frequency_factor(name_prefix)
+        if freq is not None:
             return free * freq
         return free
 
     def _function_to_rate(prefix: str, fn) -> z3.ArithRef:
-        if fn.asymptotic_class is None:
+        dist = getattr(fn, "distribution", None)
+        if dist is not None:
+            # A declared per-period distribution takes precedence over
+            # the asymptotic class — exactly the ABM's sampling
+            # semantics (it samples the distribution INSTEAD of the
+            # class). The static layer binds the value to the
+            # distribution's support envelope, clamped at 0.
+            from verifier.distribution_support import rate_support
+            lo, hi = rate_support(dist)
+            fn_value = z3.Real(f"{prefix}_fndist")
+            solver.add(fn_value >= lo, fn_value <= hi)
+        elif fn.asymptotic_class is None:
             # Same defensive path for regime functions: free var.
-            free = z3.Real(f"{prefix}__expr_free")
-            solver.add(free >= 0)
-            if resolved_frequency is not None:
-                frequency = average_rate_per_period(
-                    solver, f"{prefix}_freq", resolved_frequency,
-                    periods_horizon=periods_horizon,
-                )
-                return free * frequency
-            return free
-        fn_value = average_rate_per_period(
-            solver, f"{prefix}_fn", fn.asymptotic_class,
-            periods_horizon=periods_horizon,
-        )
-        if resolved_frequency is not None:
-            frequency = average_rate_per_period(
-                solver, f"{prefix}_freq", resolved_frequency,
+            fn_value = z3.Real(f"{prefix}__expr_free")
+            solver.add(fn_value >= 0)
+        else:
+            fn_value = average_rate_per_period(
+                solver, f"{prefix}_fn", fn.asymptotic_class,
                 periods_horizon=periods_horizon,
             )
+        frequency = _frequency_factor(prefix)
+        if frequency is not None:
             return fn_value * frequency
         return fn_value
 

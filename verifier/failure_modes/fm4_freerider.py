@@ -37,6 +37,7 @@ from verifier.constants import (
     DEFAULT_TEMPTATION_GAP_NORMALIZED,
     SANCTION_KIND_TO_S_NORMALIZED,
 )
+from verifier.events_resolver import resolve_trigger
 from verifier.failure_modes.base import (
     Counterexample,
     CriticalValue,
@@ -49,7 +50,10 @@ from verifier.failure_modes.base import (
 
 
 # Token earning mechanisms (encoded via emission trigger kinds) that imply
-# a contribution-reward economy where FM4 applies.
+# a contribution-reward economy where FM4 applies. Kept for back-compat;
+# the applicability check itself routes through
+# ``ResolvedTrigger.is_contribution``, which also covers the Phase-H
+# events-catalog vocabulary ("behavioral" vs legacy "behavioral_event").
 CONTRIBUTION_TRIGGER_KINDS: frozenset[EmissionTriggerKind] = frozenset(
     {
         EmissionTriggerKind.BEHAVIORAL_EVENT,
@@ -567,7 +571,7 @@ class FM4FreeRider(FailureMode):
             if collateral_backed_peg:
                 continue
             for rule in token.emission_rules:
-                if rule.trigger.kind in CONTRIBUTION_TRIGGER_KINDS:
+                if resolve_trigger(rule, te).is_contribution:
                     # Also require at least one token whose function set
                     # implies redemption (medium_of_exchange or access_right).
                     if any(

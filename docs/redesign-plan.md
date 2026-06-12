@@ -191,3 +191,58 @@ Per-phase test additions:
 - D3 — `tests/test_coherence_simulator.py` (9)
 - B2+B3 — `tests/test_conditional_rules.py` (12)
 - D4 — `tests/test_token_role.py` (12)
+
+## Phase M — trigger canonicalization + distribution soundness (2026-06-12)
+
+Root-cause fix for the FM4 catalog-blindness bug (event_id-style specs
+wrongly received NOT_APPLICABLE) and two documented-but-unimplemented
+contracts discovered during the investigation.
+
+1. **M1 — resolver-first migration.** All 11 sites that read
+   `rule.trigger.kind` / `.event_frequency` directly (FM4 applicability,
+   FM3 burn classification, C1/C6 coherence, FM1 upper bound, risk
+   midpoints, trajectory rates, ABM stochastic pools, EventOccurrence
+   matching) now route through `events_resolver.resolve_trigger`.
+   Semantic predicates (`is_contribution`, `is_demand_driven`, …) own
+   the legacy↔catalog vocabulary mapping ("behavioral_event" vs
+   "behavioral") in one place. Tests: `tests/test_trigger_resolution.py`.
+2. **M2 — distribution soundness.** `verifier/distribution_support.py`
+   implements the DistributionSpec contract (support envelopes + means).
+   Static Z3 binds event `frequency_distribution` and rule
+   `function.distribution` to clamped support intervals (previously:
+   silently ignored — a Poisson(λ=5) arrival spec was statically scored
+   as 1 firing/period, a proven unsound PASS). Risk/trajectory use
+   analytic means; the ABM resamples freq-dist rules per period.
+   Tests: `tests/test_distribution_soundness.py` (incl. a static-vs-ABM
+   agreement tripwire).
+3. **M3 — canonicalize-at-load.** `TokenEconomy._normalize_legacy_triggers`
+   (declared BEFORE `_validate_event_refs`; pydantic runs mode="after"
+   validators in definition order) synthesizes `_auto_<token>_<side>_<i>`
+   EventDefinitions for legacy inline triggers — kind mapped through
+   `_LEGACY_TO_EVENT_KIND`, label = event_predicate, frequency MOVED to
+   the catalog — and rewrites triggers to event_id-only. The v1→v2
+   migrator resolves through the catalog. Tests:
+   `tests/test_canonicalization.py` (post-load invariant on every
+   example, synthesis mapping, dual-form verdict + seeded-ABM
+   trajectory equivalence).
+4. **M4 — tripwire + regression hardening.** `tests/test_trigger_tripwire.py`
+   forbids new direct trigger reads in `verifier/` (audited allowlist of
+   `te is None` fallbacks). Catalog-style case studies
+   (cascina_roccafranca, time_bank) added to `tests/test_case_studies.py`
+   with per-FM expectations; `curve_vecrv_dsl` pinned verdict-equal to
+   `curve_vecrv`; webapp E2E asserts FM4 applicability on form-built IR.
+5. **M5 — model-checker oracles.** `tests/test_model_checker_oracles.py`
+   pins Z3 results to hand-derived closed forms: FM1 E>Q boundary +
+   witness arithmetic, FM2 shift = 1.5/0.9, FM3 ρ floor ×1.1 under
+   NFR1=5, FM4 φ* = d/K, FM5 N* = 2Kd+1, FM6 Γ around 0.5 with the
+   demotion count ceil(U − T/2).
+
+Intentional verdict changes (all bug-fix direction; the five legacy
+case studies are byte-identical to the pre-M baseline):
+- cascina_roccafranca / time_bank / NLAB te(5): FM4 not_applicable →
+  fail (fragile); FM3 risk bands tightened (catalog frequencies and
+  emission distributions now feed risk midpoints).
+
+Test count: **910** (was 844 pre-M; +66: trigger_resolution 16,
+distribution_soundness 9, canonicalization 13, tripwire 1, oracles 10,
+case studies 16, webapp E2E 1).

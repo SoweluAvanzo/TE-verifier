@@ -44,7 +44,7 @@ from verifier.asymptotic import (
 from verifier.conditions import rule_contributes
 
 
-def _declared_emission_upper_bound(token: Token) -> float:
+def _declared_emission_upper_bound(token: Token, te=None) -> float:
     """Heuristic upper bound of the declared per-period emission.
 
     Walks each emission rule's function asymptotic class and event
@@ -55,11 +55,54 @@ def _declared_emission_upper_bound(token: Token) -> float:
 
     The heuristic is intentionally conservative — it over-estimates
     on log/exp/poly classes, which is fine because we only use the
-    result for a >10× threshold check.
+    result for a >10× threshold check. Event frequencies are resolved
+    through the events catalog when ``te`` is supplied (Phase-H), so
+    catalog-style rules are bounded identically to legacy inline ones.
     """
+    from verifier.events_resolver import resolve_trigger
+
     H = 52.0  # default verification horizon
     total = 0.0
     for rule in token.emission_rules:
+        if te is not None:
+            _rt = resolve_trigger(rule, te)
+            resolved_ef = _rt.event_frequency
+            resolved_ef_dist = _rt.event_frequency_distribution
+        else:
+            resolved_ef = rule.trigger.event_frequency
+            resolved_ef_dist = None
+
+        def _freq_ub(fn_ub: float) -> float:
+            """Multiply by the frequency upper bound (constant/bounded/
+            linear families, or the support ceiling of a stochastic
+            arrival distribution)."""
+            ef = resolved_ef
+            if ef is not None:
+                if ef.family == AsymptoticFamily.CONSTANT:
+                    ef_r = ef.parameter_ranges.get("c")
+                    return fn_ub * (ef_r.max if ef_r else 1.0)
+                if ef.family == AsymptoticFamily.BOUNDED_RANGE:
+                    return fn_ub * (ef.bounds.max if ef.bounds else 1.0)
+                if ef.family == AsymptoticFamily.LINEAR:
+                    ar = ef.parameter_ranges.get("a")
+                    br = ef.parameter_ranges.get("b")
+                    return fn_ub * (
+                        (ar.max if ar else 0.0) * (H / 2.0)
+                        + (br.max if br else 0.0)
+                    )
+                return fn_ub
+            if resolved_ef_dist is not None:
+                from verifier.distribution_support import rate_support
+                return fn_ub * rate_support(resolved_ef_dist)[1]
+            return fn_ub
+
+        # A declared per-period distribution takes precedence over the
+        # asymptotic class (ABM sampling semantics); its support
+        # ceiling is the conservative upper bound.
+        if getattr(rule.function, "distribution", None) is not None:
+            from verifier.distribution_support import rate_support
+            total += _freq_ub(rate_support(rule.function.distribution)[1])
+            continue
         ac = rule.function.asymptotic_class
         if ac is None:
             # K5: DSL expression — use a midpoint evaluation as a
@@ -82,11 +125,7 @@ def _declared_emission_upper_bound(token: Token) -> float:
                 ))
             except Exception:
                 fn_ub = 0.0
-            ef = rule.trigger.event_frequency
-            if ef is not None and ef.family == AsymptoticFamily.CONSTANT:
-                ef_r = ef.parameter_ranges.get("c")
-                fn_ub *= ef_r.max if ef_r else 1.0
-            total += fn_ub
+            total += _freq_ub(fn_ub)
             continue
         fam = ac.family
         if fam == AsymptoticFamily.CONSTANT:
@@ -110,20 +149,7 @@ def _declared_emission_upper_bound(token: Token) -> float:
             ar = ac.parameter_ranges.get("a")
             a_max = ar.max if ar else 0.0
             fn_ub = a_max * (H / 4.0) + 1.0  # rough surrogate
-        ef = rule.trigger.event_frequency
-        if ef is not None:
-            if ef.family == AsymptoticFamily.CONSTANT:
-                ef_r = ef.parameter_ranges.get("c")
-                fn_ub *= ef_r.max if ef_r else 1.0
-            elif ef.family == AsymptoticFamily.BOUNDED_RANGE:
-                fn_ub *= ef.bounds.max if ef.bounds else 1.0
-            elif ef.family == AsymptoticFamily.LINEAR:
-                ar = ef.parameter_ranges.get("a")
-                br = ef.parameter_ranges.get("b")
-                fn_ub *= (ar.max if ar else 0.0) * (H / 2.0) + (
-                    br.max if br else 0.0
-                )
-        total += fn_ub
+        total += _freq_ub(fn_ub)
     return total
 from verifier.failure_modes.base import (
     Counterexample,
@@ -349,7 +375,7 @@ class FM1Oversupply(FailureMode):
             # against Q_hi rather than the Z3 model's witness — Z3
             # finds the smallest violating witness, not the worst-case
             # corner of the declared box.
-            E_declared_ub = _declared_emission_upper_bound(token)
+            E_declared_ub = _declared_emission_upper_bound(token, te)
             wide_declaration = E_declared_ub > 3.0 * Q_hi
             if wide_declaration:
                 narrative = (

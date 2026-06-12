@@ -1,0 +1,73 @@
+%==========================================================================
+% Subsection: Architecture and Implementation (condensed version)
+% Replace placeholder labels (\ref{sec:spec}, \ref{sec:output},
+% \ref{sec:background}, \ref{sec:soundness}, \ref{sec:future}) with the
+% master file's labels.  Bib keys needed: \cite{deMoura2008z3} (Z3,
+% TACAS 2008) and \cite{bjorner2015nuz} (nuZ optimization).
+%==========================================================================
+
+\subsection{Architecture and Implementation}
+\label{sec:architecture}
+
+The diagnostic engine behind the specification of
+Section~\ref{sec:spec} is a \emph{formal verifier}: a static analysis
+pipeline ($\sim$22\,kLOC of Python) that decides the six failure-mode
+conditions symbolically, over the entire declared parameter space,
+without executing a single simulation step. The system is delivered as
+a Flask web application whose form front-end is a thin client with no
+diagnostic logic --- the verifier runs server-side behind a JSON API
+--- and the same pipeline is also exposed as a command-line tool, so
+every diagnostic is reproducible from the exported YAML specification
+alone. A complementary
+agent-based simulator is included as a prototype: it consumes the
+safety predicates attached to each verdict to estimate, for
+\textsf{fragile} designs, how likely and how soon a violation occurs;
+its calibration and validation are left to future work
+(Section~\ref{sec:future}), and every diagnostic reported in this
+paper is produced by the formal layer alone.
+
+\subsubsection{Static Verification}
+Every numeric input of the form is a $[\min,\max]$ interval rather
+than a point estimate, so a completed specification describes not one
+token economy but a whole \emph{family} of candidate designs --- one
+for each way of choosing a value from every declared range --- and
+each verdict is a statement about that entire family. For
+each failure mode and subject (a token for FM1--FM3, the system for
+FM4--FM6), the threshold condition of Section~\ref{sec:background} is
+translated into an exact mathematical constraint and handed to the Z3
+theorem prover~\cite{deMoura2008z3}, which decides two questions:
+does \emph{any} combination in the ranges violate the condition, and
+does any satisfy it? Because the solver reasons about all combinations
+at once rather than sampling, the answers yield the verdicts of
+Section~\ref{sec:output}: \textsf{sound} (a machine-checked proof
+that no violating combination exists), \textsf{fragile} (both safe
+and unsafe combinations exist), \textsf{broken} (no safe combination
+exists), or \textsf{inconclusive}. Each violation is reported with the
+concrete combination of values that triggers it, translated back into
+the form's vocabulary, and each \textsf{fragile} verdict with the
+smallest parameter change reaching \textsf{sound} --- from closed-form
+thresholds (e.g.\ $N^{*}=2Kd+1$ for FM5) or by optimisation within the
+solver~\cite{bjorner2015nuz}.
+
+Composite designs are handled conservatively: mint and burn mechanisms
+compose additively, event-driven rules contribute per-event amount
+times event frequency, cross-token flows scale with the source token's
+emission, and a conditionally guarded \emph{mint} is counted unless
+its condition can never hold, while a guarded \emph{burn} is credited
+only if its condition always holds. Every choice over-approximates
+supply growth, so the verifier may raise a false alarm but can never
+certify a design with a reachable violation
+(Section~\ref{sec:soundness}).
+
+For every non-\textsf{sound} verdict, a sensitivity pass re-runs the
+proof with each declared range collapsed to its endpoints, identifying
+which single input, if tightened, flips the verdict; a deterministic
+midpoint trajectory of $M_{t+1}=M_t+E_t-B_t$ illustrates the violation
+over time. All framework-derived constants and elicitation tables
+(e.g.\ $\gamma$ from the verification mechanism, $T-R$ from the
+redemption structure) reside in one configuration object with source
+references and override flags, and a coherence pass flags cross-field
+contradictions as warnings or errors. The implementation is exercised
+by 844 automated tests; a full verification returns in under 0.2\,s,
+keeping the verify--adjust--reverify loop interactive for
+non-technical practitioners.

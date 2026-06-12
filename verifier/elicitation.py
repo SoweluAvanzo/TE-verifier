@@ -53,6 +53,7 @@ from schema import (
     TokenEconomy,
 )
 from verifier.config import VerifierConfig
+from verifier.events_resolver import resolve_trigger
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +353,7 @@ def coherence_violations(
         # there's no redemption to fire the burn on.)
         if token.redemption_mechanism == RedemptionMechanism.PEER_TO_PEER_TRANSFER:
             for rule in token.burn_rules:
-                if rule.trigger.kind == BurnTriggerKind.DEMAND_DRIVEN:
+                if resolve_trigger(rule, te).is_demand_driven:
                     issues.append(
                         CoherenceIssue(
                             severity="error",
@@ -565,7 +566,7 @@ def coherence_violations(
     if nfrs.circulation_speed == CirculationSpeed.RETAIN_VALUE:
         for token in te.tokens:
             for rule in token.burn_rules:
-                if rule.trigger.kind == BurnTriggerKind.EXPIRY:
+                if resolve_trigger(rule, te).is_expiry:
                     issues.append(
                         CoherenceIssue(
                             severity="warn",

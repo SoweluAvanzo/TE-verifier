@@ -742,7 +742,7 @@ def _pick_peer(
 def prepare_pools(
     state: dict[str, Any],
     static_rates: dict[str, dict[str, float]],
-    stochastic_rules: list[tuple[str, str, Any]],
+    stochastic_rules: list[tuple[str, str, Any, Any, Any]],
     sampler: Sampler,
     agent_types_by_id: dict[str, Any],
 ) -> dict[str, dict[str, float]]:
@@ -760,13 +760,14 @@ def prepare_pools(
     pools: dict[str, dict[str, float]] = {}
     for token_id, rates in static_rates.items():
         pools[token_id] = {"E": rates.get("E", 0.0), "B": rates.get("B", 0.0)}
-    for token_id, side, rule in stochastic_rules:
-        from verifier.abm.engine import _sample_ac  # local to avoid cycle
+    for token_id, side, rule, freq_ac, freq_dist in stochastic_rules:
+        # Frequency sources were resolved through the events catalog at
+        # run setup (see engine._build_initial_state) — no trigger
+        # reads here. The sampling semantics live in ONE place:
+        # engine._sample_stochastic_rule_value.
+        from verifier.abm.engine import _sample_stochastic_rule_value  # local to avoid cycle
 
-        dist = rule.function.distribution
-        value = max(0.0, sampler.sample_distribution(dist))
-        if rule.trigger.event_frequency is not None:
-            value *= _sample_ac(rule.trigger.event_frequency, sampler)
+        value = _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler)
         pools[token_id][side] = pools[token_id].get(side, 0.0) + value
     return pools
 

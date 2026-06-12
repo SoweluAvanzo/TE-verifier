@@ -43,6 +43,7 @@ from verifier.asymptotic import (
     rule_rate_per_period,
 )
 from verifier.conditions import rule_contributes
+from verifier.events_resolver import resolve_trigger
 from verifier.failure_modes.fm1_oversupply import _declared_emission_upper_bound
 from verifier.config import VerifierConfig
 from verifier.constants import RHO_BURN_COVERAGE_FLOOR
@@ -186,12 +187,17 @@ class FM3BurnEmission(FailureMode):
             return self._verdict_no_burn(token)
 
         # Case B: rule-driven (time-based) burn — flagged as structurally weak.
-        # Determine the dominant burn trigger kind.
-        burn_kinds = {self._burn_kind_of(rule.trigger.kind) for rule in token.burn_rules}
+        # Determine the dominant burn trigger kind. Trigger kinds are
+        # resolved through the events catalog (Phase-H) so burn rules
+        # linked to catalog events classify identically to inline ones.
+        resolved_kind_values = {
+            resolve_trigger(rule, te).kind for rule in token.burn_rules
+        }
+        burn_kinds = {self._burn_kind_of(v) for v in resolved_kind_values}
         is_demand_driven = bool(burn_kinds & DEMAND_DRIVEN_BURN_KINDS)
         is_rule_driven = (
             BurnTriggerKind.RULE_DRIVEN in burn_kinds
-            or EmissionTriggerKind.TIME_BASED in {rule.trigger.kind for rule in token.burn_rules}
+            or EmissionTriggerKind.TIME_BASED.value in resolved_kind_values
         )
 
         # Quantitative ρ check
@@ -303,7 +309,7 @@ class FM3BurnEmission(FailureMode):
             # corner from a too-wide spec. Lead with "narrow the
             # declared emission range" instead.
             Q_hi = te.participants.expected_Q.max
-            E_declared_ub = _declared_emission_upper_bound(token)
+            E_declared_ub = _declared_emission_upper_bound(token, te)
             wide_declaration = Q_hi > 0 and E_declared_ub > 3.0 * Q_hi
             # Fix F — Z3 finds the smallest violating witness. When
             # E_val is much smaller than the declared upper bound
@@ -413,13 +419,17 @@ class FM3BurnEmission(FailureMode):
         )
 
     @staticmethod
-    def _burn_kind_of(kind) -> BurnTriggerKind:
-        # Defensive: emission-style triggers can appear on burn rules in
-        # IR variants; map them to the closest burn kind.
-        if isinstance(kind, BurnTriggerKind):
-            return kind
-        # Fallback: treat behavioral_event burn as demand-driven.
-        return BurnTriggerKind.DEMAND_DRIVEN
+    def _burn_kind_of(kind_value: str) -> BurnTriggerKind:
+        # Defensive: emission-style trigger kinds (behavioral /
+        # time_based / ...) can appear on burn rules in IR variants;
+        # map anything outside the burn vocabulary to the closest burn
+        # kind. ``kind_value`` is the resolved string from
+        # ``ResolvedTrigger.kind`` (legacy or catalog vocabulary).
+        try:
+            return BurnTriggerKind(kind_value)
+        except ValueError:
+            # Fallback: treat behavioral-style burn as demand-driven.
+            return BurnTriggerKind.DEMAND_DRIVEN
 
     @staticmethod
     def _structural_note(*, is_demand_driven: bool, is_rule_driven: bool) -> str:

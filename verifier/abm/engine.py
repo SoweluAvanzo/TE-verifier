@@ -80,6 +80,7 @@ from verifier.abm.delegation import (
 from verifier.abm.events import apply_population_events
 from verifier.abm.exit import any_exit_enabled, apply_exit_decisions
 from verifier.abm.regimes import active_function_for_rule
+from verifier.events_resolver import resolve_trigger
 from verifier.abm.topology import build_neighbor_graph
 from verifier.abm.predicates import evaluate as eval_predicate
 from verifier.abm.samplers import Sampler
@@ -116,6 +117,37 @@ _DEFAULT_HORIZON = 260
 # ---------------------------------------------------------------------------
 # Sampling: from IR per-run
 # ---------------------------------------------------------------------------
+
+
+def _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler: Sampler) -> float:
+    """One per-period sample of a stochastic rule's realized rate.
+
+    Shared by ``actions.prepare_pools`` (agent-driven branch) and the
+    no-agent fallback in ``_step_state``. The function part samples the
+    declared distribution when present (precedence over the asymptotic
+    class — the documented FunctionShape semantics) and the frequency
+    part samples either the deterministic family (``freq_ac``) or the
+    event's stochastic arrival distribution (``freq_dist``), both
+    pre-resolved through the events catalog at run setup.
+    """
+    fdist = getattr(rule.function, "distribution", None)
+    if fdist is not None:
+        value = max(0.0, sampler.sample_distribution(fdist))
+    elif rule.function.asymptotic_class is not None:
+        value = max(0.0, _sample_ac(rule.function.asymptotic_class, sampler))
+    else:
+        # DSL-expression rule routed here because its event declares
+        # stochastic arrivals. Sample the expression without TE
+        # context; state-dependent expressions fall back to 0.
+        try:
+            value = max(0.0, _sample_rule_rate(rule, sampler))
+        except Exception:
+            value = 0.0
+    if freq_ac is not None:
+        value *= max(0.0, _sample_ac(freq_ac, sampler))
+    elif freq_dist is not None:
+        value *= max(0.0, sampler.sample_distribution(freq_dist))
+    return value
 
 
 def _sample_ac(ac: AsymptoticClass, sampler: Sampler) -> float:
@@ -319,28 +351,34 @@ def _build_initial_state(
     # resampled per period — see ``_step_state`` for the per-period
     # path. We collect the rule sources here for both branches.
     static_rates = {tid: {"E": 0.0, "B": 0.0} for tid in token_ids}
-    stochastic_rules: list[tuple[str, str, Any]] = []  # (token_id, side, rule)
+    # (token_id, side, rule, freq_ac, freq_dist) — the event frequency
+    # is resolved ONCE here through the events catalog (Phase-H) so
+    # per-period consumers (prepare_pools, the no-agent fallback) never
+    # touch rule.trigger directly. A rule is *stochastic* (resampled
+    # per period) when its function declares a distribution OR its
+    # event declares a stochastic arrival distribution.
+    stochastic_rules: list[tuple[str, str, Any, Any, Any]] = []
     # Phase-F: rules with a non-empty ``regimes`` list. ``_step_state``
     # re-checks each one's predicate every period and swaps the rule's
     # rate contribution in static_rates when a regime fires.
     regime_rules: list[tuple[str, str, Any, float]] = []
     for token in te.tokens:
-        for rule in token.emission_rules:
-            if getattr(rule.function, "distribution", None) is not None:
-                stochastic_rules.append((token.id, "E", rule))
-            else:
-                rate = _sample_rule_rate(rule, sampler, te=te, state=state)
-                static_rates[token.id]["E"] += rate
-                if getattr(rule, "regimes", None):
-                    regime_rules.append((token.id, "E", rule, rate))
-        for rule in token.burn_rules:
-            if getattr(rule.function, "distribution", None) is not None:
-                stochastic_rules.append((token.id, "B", rule))
-            else:
-                rate = _sample_rule_rate(rule, sampler, te=te, state=state)
-                static_rates[token.id]["B"] += rate
-                if getattr(rule, "regimes", None):
-                    regime_rules.append((token.id, "B", rule, rate))
+        for side, rules in (("E", token.emission_rules), ("B", token.burn_rules)):
+            for rule in rules:
+                rt = resolve_trigger(rule, te)
+                if (
+                    getattr(rule.function, "distribution", None) is not None
+                    or rt.event_frequency_distribution is not None
+                ):
+                    stochastic_rules.append(
+                        (token.id, side, rule, rt.event_frequency,
+                         rt.event_frequency_distribution)
+                    )
+                else:
+                    rate = _sample_rule_rate(rule, sampler, te=te, state=state)
+                    static_rates[token.id][side] += rate
+                    if getattr(rule, "regimes", None):
+                        regime_rules.append((token.id, side, rule, rate))
     # Cross-token flows — always static-per-run (their amount is
     # an AsymptoticClass, not a FunctionShape with a distribution).
     for flow in te.cross_token_flows:
@@ -806,11 +844,8 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
         per_period_E = {tid: static.get(tid, {}).get("E", 0.0) for tid in state["tokens"]}
         per_period_B = {tid: static.get(tid, {}).get("B", 0.0) for tid in state["tokens"]}
         if stochastic and sampler is not None:
-            for token_id, side, rule in stochastic:
-                dist = rule.function.distribution
-                v = max(0.0, sampler.sample_distribution(dist))
-                if rule.trigger.event_frequency is not None:
-                    v *= _sample_ac(rule.trigger.event_frequency, sampler)
+            for token_id, side, rule, freq_ac, freq_dist in stochastic:
+                v = _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler)
                 if side == "E":
                     per_period_E[token_id] += v
                 else:

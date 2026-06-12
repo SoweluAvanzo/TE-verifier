@@ -103,8 +103,15 @@ def test_te_carries_events_catalog() -> None:
     te = _minimal_te(events=[
         EventDefinition(id="e1", label="e1", kind=EventTriggerKind.TIME_BASED),
     ])
-    assert len(te.events) == 1
+    # The declared event is carried; the fixture's legacy inline rules
+    # canonicalize into synthesized ``_auto_`` events at load.
     assert te.get_event("e1").label == "e1"
+    declared = [e for e in te.events if not e.id.startswith("_auto_")]
+    assert len(declared) == 1
+    for tok in te.tokens:
+        for rule in tok.emission_rules + tok.burn_rules:
+            assert rule.trigger.event_id is not None
+            assert rule.trigger.kind is None
 
 
 def test_unique_event_ids_enforced() -> None:

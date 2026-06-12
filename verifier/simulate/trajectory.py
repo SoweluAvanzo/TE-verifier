@@ -186,7 +186,13 @@ def _ac_at_time(ac: AsymptoticClass | None, t: float) -> float:
     return 0.0
 
 
-def _rule_base_rate_at(rule, t: float) -> float:
+def _rule_base_rate_at(rule, t: float, te=None) -> float:
+    if getattr(rule.function, "distribution", None) is not None:
+        # Distribution precedence (ABM sampling semantics): the
+        # deterministic trajectory uses the analytic mean, clamped at 0.
+        from verifier.distribution_support import mean as _dist_mean
+        fn = max(0.0, _dist_mean(rule.function.distribution))
+        return fn * _freq_factor_at(rule, t, te)
     """Per-period rate from a Rule at time t (midpoint params),
     *before* schedule modifiers are applied. Use this only for the
     schedule-aware path inside trajectory simulation; everywhere else,
@@ -222,10 +228,30 @@ def _rule_base_rate_at(rule, t: float) -> float:
             fn = 0.0
     else:
         fn = _ac_at_time(rule.function.asymptotic_class, t)
-    if rule.trigger.event_frequency is not None:
-        freq = _ac_at_time(rule.trigger.event_frequency, t)
-        return fn * freq
-    return fn
+    return fn * _freq_factor_at(rule, t, te)
+
+
+def _freq_factor_at(rule, t: float, te=None) -> float:
+    """Event-arrival multiplier at time t (1.0 for time-based rules).
+
+    Resolved through the events catalog (Phase-H) when a TE handle is
+    available; stochastic arrivals use their analytic mean, clamped
+    at 0 — the deterministic-trajectory reading of a distribution.
+    """
+    if te is not None:
+        from verifier.events_resolver import resolve_trigger
+        rt = resolve_trigger(rule, te)
+        freq_ac = rt.event_frequency
+        freq_dist = rt.event_frequency_distribution
+    else:
+        freq_ac = rule.trigger.event_frequency
+        freq_dist = None
+    if freq_ac is not None:
+        return _ac_at_time(freq_ac, t)
+    if freq_dist is not None:
+        from verifier.distribution_support import mean as _dist_mean
+        return max(0.0, _dist_mean(freq_dist))
+    return 1.0
 
 
 def _schedule_multiplier(rule, t: int, cumulative_emitted: float) -> float:
@@ -255,17 +281,17 @@ def _schedule_multiplier(rule, t: int, cumulative_emitted: float) -> float:
     return mult
 
 
-def _rule_rate_at(rule, t: float) -> float:
+def _rule_rate_at(rule, t: float, te=None) -> float:
     """Per-period rate from a Rule at time t — schedule-unaware entry
     point used by FMs and the static layer. The schedule-aware path
     in trajectory uses `_rule_base_rate_at` plus `_schedule_multiplier`
     so that cap-driven shut-off can incorporate cumulative state.
     """
-    return _rule_base_rate_at(rule, t)
+    return _rule_base_rate_at(rule, t, te=te)
 
 
-def _own_rate_at(rules: list, t: float) -> float:
-    return sum(_rule_rate_at(r, t) for r in rules)
+def _own_rate_at(rules: list, t: float, te=None) -> float:
+    return sum(_rule_rate_at(r, t, te=te) for r in rules)
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +398,7 @@ def simulate_token_trajectory(
             tok_E = 0.0
             for ridx, rule in enumerate(tok.emission_rules):
                 key = id(rule)
-                base = _rule_base_rate_at(rule, t)
+                base = _rule_base_rate_at(rule, t, te=te)
                 mult = _schedule_multiplier(rule, t, rule_cumulative.get(key, 0.0))
                 contribution = base * mult
                 tok_E += contribution
@@ -385,7 +411,7 @@ def simulate_token_trajectory(
         B_own = 0.0
         for ridx, rule in enumerate(token.burn_rules):
             key = id(rule)
-            base = _rule_base_rate_at(rule, t)
+            base = _rule_base_rate_at(rule, t, te=te)
             mult = _schedule_multiplier(rule, t, rule_cumulative.get(key, 0.0))
             contrib = base * mult
             B_own += contrib
