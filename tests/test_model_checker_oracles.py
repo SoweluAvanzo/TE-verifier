@@ -346,3 +346,93 @@ def test_fm6_demotion_critical_value() -> None:
             "ceil" in (cv.formula or "") or "demote" in (cv.explanation or "").lower()
             for cv in v.critical_values
         ), v.critical_values
+
+
+# ---------------------------------------------------------------------------
+# FM4 — γ precedence, recommendation routing, and the repair property
+# ---------------------------------------------------------------------------
+
+
+def _nlab_shaped_te(*, explicit_gamma: bool, K=(8.0, 24.0)) -> TokenEconomy:
+    """NLAB-shaped FM4 fixture: contributor share 0.1 with third-party
+    verification (φ_eff = 0.09), NFR5 = 5 (×1.2 proportionality), and
+    optionally an explicit γ ∈ [0.95, 1.0] that makes the monitoring
+    clause unviolable across the box."""
+    ht = HoldingTimeDistribution(expected_periods=NumberRange(min=2.0, max=4.0))
+    gov_kwargs = dict(
+        type=GovernanceType.CENTRALIZED,
+        rule_structure={"x": ControllingActor.SINGLE_ENTITY},
+        sanction_structure=SanctionStructure(
+            kind=SanctionKind.ECONOMIC,
+            S_normalized=NumberRange(min=0.7, max=0.9),
+        ),
+    )
+    if explicit_gamma:
+        gov_kwargs["monitoring_capacity_gamma"] = NumberRange(min=0.95, max=1.0)
+    return _te(
+        emission_rules=[Rule(trigger=RuleTrigger(event_id="w"), function=_fn(10.0))],
+        events=[_behavioral_event("w", 1.0)],
+        d=(0.1, 1.0),
+        K=K,
+        nfrs=NFRs(proportionality=5),
+        verification=ContributionVerification.THIRD_PARTY_CERTIFICATION,
+        agent_types=[
+            AgentType(id="assoc", fraction=0.1, expected_holding_time=ht,
+                      role=AgentRole.CONTRIBUTOR),
+            AgentType(id="vol", fraction=0.9, expected_holding_time=ht,
+                      role=AgentRole.CONSUMER),
+        ],
+    ).model_copy(update={"governance": GovernanceSpec(**gov_kwargs)})
+
+
+def test_fm4_explicit_gamma_overrides_verification_derived() -> None:
+    """Documented contract (paper §4.6, elicitation-mapping): a filled
+    monitoring_capacity_gamma takes precedence over the
+    verification-derived γ. The Z3 witness must respect the declared
+    [0.95, 1.0] box, and since γ·S ≥ 0.95·0.7 = 0.665 > T−R there, the
+    recommendation must NOT target the (unviolable) γ lever."""
+    te = _nlab_shaped_te(explicit_gamma=True)
+    v = _verdict(verify(te), "FM4")
+    assert v.status == Status.FAIL
+    assert v.counterexample.parameter_values["gamma"] >= 0.95 - 1e-9
+    assert "contribution" in v.counterexample.binding_constraint
+    assert v.recommendation is not None
+    assert v.recommendation.parameter != "gamma", v.recommendation.narrative
+
+
+def test_fm4_blank_gamma_still_uses_verification_table() -> None:
+    """With γ left unset, the verification-derived range applies (the
+    schema default must NOT shadow the elicitation table)."""
+    te = _nlab_shaped_te(explicit_gamma=False)
+    v = _verdict(verify(te), "FM4")
+    # third_party_certification derives a γ range whose floor is below
+    # 0.95 — the witness is free to go there.
+    g = v.counterexample.parameter_values["gamma"]
+    assert g < 0.95, g
+
+
+def test_fm4_recommendation_repairs_the_verdict() -> None:
+    """The strongest correctness property a recommendation can have:
+    applying it must flip the verdict to PASS. K* must mirror the
+    NFR5-tightened encoding (d·1.2/φ_eff = 1.2/0.09 ≈ 13.33), not the
+    un-tightened paper form (1.0/0.09 ≈ 11.11, an insufficient
+    repair)."""
+    te = _nlab_shaped_te(explicit_gamma=True)
+    v = _verdict(verify(te), "FM4")
+    rec = v.recommendation
+    assert rec.parameter == "K"
+    # K* = d_hi · nfr5_mult / (contributor_fraction · verification_mult),
+    # with both multipliers read from the paper-cited config tables.
+    cfg = VerifierConfig.paper_defaults()
+    nfr5_mult = cfg.nfr5_phi_multiplier_table["5"]
+    phi_mult = cfg.phi_verification_floor_multiplier_table[
+        "third_party_certification"
+    ]
+    expected_k = 1.0 * nfr5_mult / (0.1 * phi_mult)
+    assert rec.safe_threshold == pytest.approx(expected_k, rel=1e-6)
+
+    repaired = _nlab_shaped_te(
+        explicit_gamma=True,
+        K=(rec.safe_threshold + 0.01, max(24.0, rec.safe_threshold + 1.0)),
+    )
+    assert _verdict(verify(repaired), "FM4").status == Status.PASS

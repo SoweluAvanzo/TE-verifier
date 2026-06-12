@@ -190,30 +190,35 @@ class FM4FreeRider(FailureMode):
                     source="closed_form",
                 )
             )
-        # K* = d / φ, worst-case = max(d) / min(phi) (when phi > 0)
+        # K* = d·nfr5_mult / φ, worst-case = max(d) / min(phi) (phi > 0).
+        # MUST mirror the encoded violation condition φ·K < d·nfr5_mult —
+        # a K* computed against the un-tightened paper condition would
+        # be an insufficient repair whenever NFR5 > default.
+        _d_eff = d_hi * nfr5_mult
+        _mult_note = f" × {nfr5_mult:g} (NFR5)" if nfr5_mult != 1.0 else ""
         k_star: float | None = None
         if phi_min > 0:
-            k_star = d_hi / phi_min
+            k_star = _d_eff / phi_min
             critical_values.append(
                 CriticalValue(
                     parameter="K",
                     value=k_star,
                     direction=">=",
-                    formula=f"K* = d / φ = {d_hi:g} / {phi_min:g}",
+                    formula=f"K* = d{_mult_note} / φ = {_d_eff:g} / {phi_min:g}",
                     explanation=(
-                        f"The minimum offer variety K such that φ ≥ d/K "
-                        f"holds across the declared d range, given the "
-                        f"declared minimum contributor share φ_min = "
-                        f"{phi_min:.2f}."
+                        f"The minimum offer variety K such that the "
+                        f"contribution clause holds across the declared d "
+                        f"range, given the declared minimum contributor "
+                        f"share φ_min = {phi_min:.2f}."
                     ),
                     source="closed_form",
                 )
             )
-        # φ* = d / K, worst-case = max(d) / min(K)
+        # φ* = d·nfr5_mult / K, worst-case = max(d) / min(K)
         phi_star: float | None = None
         phi_star_infeasible = False
         if K_lo > 0:
-            phi_star = d_hi / K_lo
+            phi_star = _d_eff / K_lo
             # P5 — φ is structurally a fraction in [0, 1]. When
             # d_hi / K_lo > 1, no realistic agent-role assignment can
             # satisfy φ ≥ d/K — the constraint is **infeasible**, not
@@ -228,7 +233,7 @@ class FM4FreeRider(FailureMode):
                         value=phi_star,
                         direction=">=",
                         formula=(
-                            f"φ* = d / K = {d_hi:g} / {K_lo:g} = "
+                            f"φ* = d{_mult_note} / K = {_d_eff:g} / {K_lo:g} = "
                             f"{phi_star:.3g}   (INFEASIBLE — φ ∈ [0, 1])"
                         ),
                         explanation=(
@@ -249,7 +254,7 @@ class FM4FreeRider(FailureMode):
                         parameter="phi",
                         value=phi_star,
                         direction=">=",
-                        formula=f"φ* = d / K = {d_hi:g} / {K_lo:g}",
+                        formula=f"φ* = d{_mult_note} / K = {_d_eff:g} / {K_lo:g}",
                         explanation=(
                             f"The minimum contributor fraction needed to "
                             f"satisfy demand at the worst-case d and K. If "
@@ -268,7 +273,8 @@ class FM4FreeRider(FailureMode):
         if result == z3.sat:
             model = solver.model()
             ce = self._build_counterexample(
-                model, K, d, gamma, S, phi, T_minus_R_normalized
+                model, K, d, gamma, S, phi, T_minus_R_normalized,
+                nfr5_mult=nfr5_mult,
             )
             recommendation = self._build_recommendation(
                 ce=ce,
@@ -373,7 +379,10 @@ class FM4FreeRider(FailureMode):
         any contributor declaration.
         """
         binding = ce.binding_constraint
-        if "monitoring" in binding and gamma_star is not None:
+        gamma_lever_meaningful = (
+            gamma_star is not None and gamma_star > gamma_range[0]
+        )
+        if "monitoring" in binding and gamma_lever_meaningful:
             return NumericRecommendation(
                 parameter="gamma",
                 current_range=gamma_range,
@@ -447,8 +456,10 @@ class FM4FreeRider(FailureMode):
                         f"or K cannot rescue this verdict."
                     ),
                 )
-        # Fallback: prefer γ recommendation if available
-        if gamma_star is not None:
+        # Fallback: prefer γ recommendation if available AND meaningful
+        # (a γ* at or below the declared floor is already guaranteed —
+        # recommending it would be vacuous).
+        if gamma_lever_meaningful:
             return NumericRecommendation(
                 parameter="gamma",
                 current_range=gamma_range,
@@ -466,18 +477,31 @@ class FM4FreeRider(FailureMode):
 
     @staticmethod
     def _derive_gamma_range(te: TokenEconomy) -> tuple[float, float, str]:
-        """Choose γ range from the strongest signal available.
+        """Choose γ range per the documented elicitation contract.
 
-        Priority:
-        1. If any token has `contribution_verification` set (and it isn't
-           UNSPECIFIED), derive γ from the elicitation table. When
-           multiple tokens disagree, take the union (worst-case sweep).
-        2. Else fall back to the user-supplied
-           `governance.monitoring_capacity_gamma`.
+        Priority (docs/elicitation-mapping.md, paper §4.6, form help):
+        1. An EXPLICITLY user-supplied
+           `governance.monitoring_capacity_gamma` overrides everything
+           ("filled values take precedence"). Detected via pydantic's
+           ``model_fields_set`` — the field has a schema default (0.5
+           point), so presence-by-value can't distinguish "blank".
+        2. Else derive γ from the contribution-verification elicitation
+           table. When multiple tokens disagree, take the union
+           (worst-case sweep).
+        3. Else the schema default range.
 
         Returns (lo, hi, source-description).
         """
         from schema import ContributionVerification
+
+        g = te.governance.monitoring_capacity_gamma
+        if "monitoring_capacity_gamma" in te.governance.model_fields_set:
+            return (
+                g.min,
+                g.max,
+                "user-supplied governance.monitoring_capacity_gamma "
+                "(overrides verification-derived γ)",
+            )
 
         derived_ranges: list[tuple[float, float]] = []
         for token in te.tokens:
@@ -491,9 +515,7 @@ class FM4FreeRider(FailureMode):
             lo = min(r[0] for r in derived_ranges)
             hi = max(r[1] for r in derived_ranges)
             return lo, hi, "derived from contribution_verification"
-        # Fall back to user-supplied
-        g = te.governance.monitoring_capacity_gamma
-        return g.min, g.max, "user-supplied governance.monitoring_capacity_gamma"
+        return g.min, g.max, "schema default (γ not set, no verification declared)"
 
     @staticmethod
     def _strongest_contribution_verification(
@@ -610,6 +632,7 @@ class FM4FreeRider(FailureMode):
         S: z3.ArithRef,
         phi: z3.ArithRef,
         TR: float,
+        nfr5_mult: float = 1.0,
     ) -> Counterexample:
         Kv = z3_value_to_float(model, K)
         dv = z3_value_to_float(model, d)
@@ -626,12 +649,18 @@ class FM4FreeRider(FailureMode):
             "phi_K": pv * Kv,
             "gamma_S": gv * Sv,
         }
-        contrib_failed = (pv * Kv) < dv
+        # Mirror the Z3 violation encoding EXACTLY (including the NFR5
+        # proportionality multiplier) — otherwise witnesses inside the
+        # multiplier gap classify as "neither clause" and the
+        # recommendation router has nothing to route on.
+        contrib_failed = (pv * Kv) < dv * nfr5_mult
         monitor_failed = (gv * Sv) <= TR
         parts = []
         if contrib_failed:
+            req = f"{nfr5_mult:g}·d" if nfr5_mult != 1.0 else "d"
             parts.append(
-                f"φ·K = {pv * Kv:.3f} < d = {dv:.3f} (contribution insufficient)"
+                f"φ·K = {pv * Kv:.3f} < {req} = {dv * nfr5_mult:.3f} "
+                f"(contribution insufficient)"
             )
         if monitor_failed:
             parts.append(
