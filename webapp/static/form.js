@@ -2502,7 +2502,12 @@ function renderMinimalTable(verdicts) {
     const explainRow = needsExplain
       ? `
       <tr class="explain-row">
-        <td colspan="7">${escapeHTML(v.explanation)}</td>
+        <td colspan="7">
+          <details class="explain-details">
+            <summary>Why this verdict</summary>
+            <p>${escapeHTML(v.explanation)}</p>
+          </details>
+        </td>
       </tr>`
       : "";
     return `
@@ -2510,15 +2515,15 @@ function renderMinimalTable(verdicts) {
         <td>${v.failure_mode}</td>
         <td>${escapeHTML(v.subject)}</td>
         <td><span class="status-pill status-${status}">${status}</span></td>
-        <td>${triCell(v.violation_reachable)}</td>
-        <td>${triCell(v.satisfaction_reachable)}</td>
+        <td>${triCell(v.violation_reachable, false)}</td>
+        <td>${triCell(v.satisfaction_reachable, true)}</td>
         <td>${thr}</td>
         <td>${preds}</td>
       </tr>${explainRow}
     `;
   }).join("");
   minimalTable.innerHTML = `
-    <details class="legend-box" open>
+    <details class="legend-box">
       <summary>Legend (what the columns and symbols mean)</summary>
       <dl class="legend-dl">
         <dt><strong>FM</strong></dt>
@@ -2549,13 +2554,17 @@ function renderMinimalTable(verdicts) {
         <dt><strong>V — violation reachable</strong></dt>
         <dd>Is there at least one parameter assignment in the declared box
             for which the FM fires?
-            <span class="tri-yes">yes</span> = reachable;
-            <span class="tri-no">no</span> = not reachable;
+            <span class="tri-bad">yes</span> = reachable (bad — shown red);
+            <span class="tri-good">no</span> = not reachable (good — shown green);
             <span class="tri-unk">?</span> = unknown (skipped /
             inconclusive / not applicable).</dd>
         <dt><strong>S — satisfaction reachable</strong></dt>
         <dd>Is there at least one parameter assignment in the box for
             which the safety predicate <em>holds</em>?
+            <span class="tri-good">yes</span> = a safe corner exists
+            (good — shown green);
+            <span class="tri-bad">no</span> = no safe assignment
+            anywhere (bad — shown red).
             Together with V it determines the status:
             <code>V=no, S=yes ⇒ sound</code>,
             <code>V=yes, S=yes ⇒ fragile</code>,
@@ -2594,9 +2603,14 @@ function renderMinimalTable(verdicts) {
   `;
 }
 
-function triCell(value) {
-  if (value === "true") return '<span class="tri-yes">yes</span>';
-  if (value === "false") return '<span class="tri-no">no</span>';
+function triCell(value, goodWhenTrue = false) {
+  // Color by MEANING, not by literal yes/no: in the V column a "yes"
+  // (violation reachable) is bad news; in the S column a "yes" (a safe
+  // corner exists) is good news. Callers pass goodWhenTrue accordingly.
+  if (value === "true")
+    return `<span class="${goodWhenTrue ? "tri-good" : "tri-bad"}">yes</span>`;
+  if (value === "false")
+    return `<span class="${goodWhenTrue ? "tri-bad" : "tri-good"}">no</span>`;
   return '<span class="tri-unk">?</span>';
 }
 
