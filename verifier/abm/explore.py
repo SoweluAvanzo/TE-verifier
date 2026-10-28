@@ -36,7 +36,7 @@ from verifier.abm.delegation import (
     delegate_concentration_gini,
     delegated_weights,
 )
-from verifier.abm.engine import _build_initial_state, _step_state
+from verifier.abm.engine import _build_initial_state, _primary_supply, _step_state
 from verifier.abm.report import SimulationConfig
 from verifier.abm.samplers import Sampler
 from verifier.abm.topology import build_neighbor_graph, graph_density
@@ -244,7 +244,9 @@ def run_explore(
         te, sampler, verifier_config, effective_agent_cap=cap
     )
     if te.participants.agent_types:
-        state["agents"] = spawn_agents(te, sampler, max_agents=cap)
+        state["agents"] = spawn_agents(
+            te, sampler, max_agents=cap, initial_supply=_primary_supply(state, params)
+        )
         params["neighbor_graph"] = build_neighbor_graph(
             te.participants, state["agents"], sampler
         )

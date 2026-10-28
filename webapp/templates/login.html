@@ -1,0 +1,93 @@
+{# NOTE:
+=============================================================================
+webapp/templates/login.html — the login page (Jinja template)
+=============================================================================
+GUIDE STEP   9.0
+PURPOSE      A single form where an invited person types their personal
+             access code (created with `te-platform users create`). The form
+             is sent by static/login.js to POST /agent/login on the agent
+             service, which checks the code and sets the session cookie;
+             the browser then returns to the page given in ?next=.
+USED BY      webapp/chat_routes.py (GET /login); static/chat.js sends users
+             here when an API call answers 401.
+DEPENDS ON   static/style.css + form.css (existing look), static/chat.css
+             (its Guide 9.0 block: the buttons and .login-page),
+             static/login.js.
+WHY          Architecture §3.5 / guide 9.0: people authenticate with a cookie,
+             never with an API key in the browser. The access code is typed
+             into a password field (not shown on screen, not autocompleted
+             into other sites) and sent once over HTTPS.
+SECURITY     No inline script or event handler (CSP, guide 9.2). The form has
+             no `action`: without JavaScript it does nothing, so the code is
+             never sent as a URL query string (which would end up in logs).
+ACTIVATE     Delete the two marker lines around the markup below.
+=============================================================================
+#}
+{# TO-DO LIST: build this page yourself, step by step
+-----------------------------------------------------------------------------
+Write your markup between this comment and the SOLUTION marker below. Do the
+steps in order and run the "Check" at the end. Lines starting with "|" are
+short illustrations, not the full markup. Keep every id exactly as written
+here: static/login.js looks the elements up by id.
+
+Guide 9.0
+[ ] 1. The page skeleton: DOCTYPE, html lang="en", a head with the charset
+       and viewport meta tags and the title
+       "Token Economy Verifier — Log in".
+[ ] 2. In the head, the icon link (static/favicon.svg) and three
+       stylesheet links built with url_for('static',
+       ...): style.css, form.css (the existing look of the app), then
+       chat.css (the button styles and .login-page, its Guide 9.0 block).
+[ ] 3. A body class="login-body" holding main class="login-page" (the
+       card): a p class="login-product" with the product name, an h1
+       "Log in to the design assistant" and one short paragraph asking for
+       the personal access code.
+[ ] 4. Inside main, a form with id="login-form" and NO action attribute
+       (header SECURITY: without JavaScript nothing is sent). In it, a label
+       for="access-code" and the password input:
+         | input id="access-code" name="access_code" type="password"
+         |       autocomplete="current-password" required minlength="10"
+[ ] 5. Still in the form: a submit button (class "primary-btn", text
+       "Log in") and an empty error paragraph that login.js fills:
+         | p id="login-error" role="alert" hidden
+[ ] 5b. After the form, a p class="login-alt" with a link to "/": the
+       questionnaire works without logging in.
+[ ] 6. Last thing in the body: ONE script tag loading login.js through
+       url_for('static', ...). No inline script and no onclick=... (CSP).
+[ ] 7. Check: with webapp/chat_routes.py, static/login.js and the Guide
+       9.0 block of static/chat.css active, reload /login: the form shows, a wrong code shows the error text, and a
+       right code takes you to /chat (guide 9.0 "Done when").
+
+Stuck, or want to compare? The SOLUTION below is the complete reference
+markup. Activate it only if you decide to use it as it is.
+#}
+{# =========================================================================
+SOLUTION: complete reference markup (deactivated on purpose, see ACTIVATE)
+========================================================================= #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Economy Verifier — Log in</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='form.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}" />
+</head>
+<body class="login-body">
+  <main class="login-page">
+    <p class="login-product">Token Economy Verifier</p>
+    <h1>Log in to the design assistant</h1>
+    <p>Enter the personal access code you received with your invitation.</p>
+    <form id="login-form">
+      <label for="access-code">Access code</label>
+      <input id="access-code" name="access_code" type="password" autocomplete="current-password" required minlength="10" />
+      <button type="submit" class="primary-btn">Log in</button>
+      <p id="login-error" role="alert" hidden></p>
+    </form>
+    <p class="login-alt">No code? You can still use the <a href="/">questionnaire</a> without logging in.</p>
+  </main>
+  <script src="{{ url_for('static', filename='login.js') }}"></script>
+</body>
+</html>

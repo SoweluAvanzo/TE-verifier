@@ -72,6 +72,7 @@ def spawn_agents(
     te: TokenEconomy,
     sampler: Sampler,
     max_agents: int | None = None,
+    initial_supply: float | None = None,
 ) -> list[dict[str, Any]]:
     """Create per-agent instances from agent_types proportionally.
 
@@ -80,6 +81,13 @@ def spawn_agents(
     divided across that type's agents; otherwise share follows
     fraction. ``max_agents`` overrides the per-call cap (defaults to
     ``DEFAULT_MAX_AGENTS``).
+
+    ``initial_supply`` is the supply M(0) of the token agents hold (the
+    engine passes the primary token's): balances are then in TOKENS and
+    add up to it, the unit of every later EARN/REDEEM/TRANSFER. Without
+    it, balances are bare shares adding up to 1 (unit tests of shapes);
+    the engine must never use that, or the first period's flows (in
+    tokens) swamp the shares and distort the balance Gini and spending.
     """
     if not te.participants.agent_types:
         return []
@@ -97,7 +105,8 @@ def spawn_agents(
             if ag_type.balance_share is not None
             else ag_type.fraction
         )
-        balance_per_agent = share / max(n_this_type, 1)
+        scale = 1.0 if initial_supply is None else initial_supply
+        balance_per_agent = share * scale / max(n_this_type, 1)
         for _ in range(n_this_type):
             agent = {
                 "id": aid,
@@ -145,6 +154,23 @@ def step_agents(
             agent["last_action"] = period
 
 
+def wealth_weighted_holding_time(agents: list[dict[str, Any]], fallback: float) -> float:
+    """Return τ̄ = Σ_i (M_i / M) · E_i[τ], the paper's FM2 quantity.
+
+    The wealth-weighted average of each agent's expected holding time
+    (docs/proofs/fm2.md; paper §3.2): E_i[τ] is the agent's declared
+    holding time (sampled from its type's range at spawn), M_i its live
+    balance. As balances move between agents that hold tokens for long
+    or short times, τ̄ moves with them; it is never below the smallest
+    declared holding time. ``fallback`` (the static value computed at the
+    start of the run) is used while no agent holds any balance.
+    """
+    total = sum(a.get("balance", 0.0) for a in agents)
+    if total <= 0:
+        return fallback
+    return sum(a.get("balance", 0.0) * a["holding_time"] for a in agents) / total
+
+
 def tau_bar_from_agents(
     agents: list[dict[str, Any]],
     period: int,
@@ -152,8 +178,12 @@ def tau_bar_from_agents(
 ) -> float:
     """Balance-weighted average of (period - last_action), per agent.
 
-    Falls back to ``fallback`` (typically the static aggregate value)
-    when agent list is empty or zero-balance.
+    The AGE since each agent's last action, not the paper's holding time:
+    any action (EARN, VOTE) resets it and it cannot exceed the current
+    period, so it is below 1.5 at t = 1 whatever the design. Not used for
+    FM2 (see wealth_weighted_holding_time); kept for the clock-driven
+    step_agents tests. Falls back to ``fallback`` when agent list is
+    empty or zero-balance.
     """
     if not agents:
         return fallback

@@ -1,0 +1,203 @@
+## =============================================================================
+## compose.override.yml — DEVELOPMENT additions to compose.yml
+## =============================================================================
+## GUIDE STEP   4.5 (web, mcp), then one block per service when compose.yml
+##              gets it: 5.1 postgres-port, 5.3 migrate, 6.1 worker +
+##              redis-port, 8.1 agent, 9.0 caddy.
+## PURPOSE      `docker compose up` automatically merges this file on top of
+##              compose.yml (that is a built-in Compose rule for the name
+##              "compose.override.yml"). It turns the base stack into a
+##              development stack:
+##                - images are BUILT from your working copy (Dockerfile.platform);
+##                - `develop.watch` copies your edits into the running
+##                  containers on save (`docker compose watch`), instead of
+##                  bind-mounting the source;
+##                - ports are published on 127.0.0.1 only, so you can open the
+##                  apps in your browser without exposing them to your network;
+##                - Flask/uvicorn run with auto-reload.
+##              Production never loads this file: there you name the files
+##              explicitly (-f compose.yml -f compose.prod.yml).
+## USED BY      Developers on their own machine.
+## DEPENDS ON   compose.yml (the services it extends), Dockerfile.platform,
+##              deploy/caddy/Dockerfile (9.0).
+## WHY          Architecture D13 / guide 4.5: one base description, with the
+##              differences between environments visible in one small file.
+## NOTE         A block here for a service that compose.yml does not have yet
+##              is an error, so each block is activated at the step of its
+##              service (the `## Guide X.Y` line above it).
+## ACTIVATE     Uncomment the 4.5 code (commented once), then each later block
+##              (commented twice) at its step. Check: `docker compose config`
+##              shows the build: sections and only 127.0.0.1 ports.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your YAML between this list and the SOLUTION marker below. Add a
+## service here only when it is active in compose.yml (see NOTE above).
+## Lines starting with "|" are short illustrations. Service names must
+## match compose.yml exactly, or Compose reports an error.
+##
+## Guide 4.5
+## [ ] 1. The anchor `x-dev-app: &dev-app` with a `build:` (context .,
+##        dockerfile Dockerfile.platform) and read_only: false. Every app service gets
+##        it: `docker compose watch` can rebuild only a service that has a
+##        build: section, and can copy files only into a writable container.
+## [ ] 2. `services:` and `web`: `<<: *dev-app`, the `flask ... run --debug`
+##        command on 0.0.0.0:8000, ports ["127.0.0.1:5001:8000"], and a
+##        `develop.watch` list: `sync` for ./webapp, ./te_platform,
+##        ./verifier, ./schema into /app/..., `rebuild` when ./uv.lock
+##        changes:
+##          | develop:
+##          |   watch:
+##          |     - {action: sync, path: ./webapp, target: /app/webapp}
+## [ ] 3. `mcp`: `<<: *dev-app`, ports ["127.0.0.1:8001:8000"] and a watch
+##        list with `sync+restart` for ./te_platform and ./policy, `rebuild`
+##        on uv.lock (the MCP server has no auto-reload, so it must be
+##        restarted).
+## [ ] 4. Check: `docker compose config` shows the build: sections and only
+##        127.0.0.1 ports; `docker compose watch` reloads on save.
+##
+## Guide 5.1
+## [ ] 5. `postgres-port`, a debug port for psql on your machine. Publishing
+##        a port of `postgres` itself does NOT work: it is only on the
+##        internal backend network. So a tiny forwarder (alpine/socat) sits
+##        on backend and edge and publishes 127.0.0.1:5432, only when asked
+##        for (profiles: [debug]). For a shell inside the database, no port
+##        is needed: `docker compose exec postgres psql -U te_admin -d te`.
+## [ ] 6. Check: `docker compose --profile debug up -d`, then
+##        `psql -h 127.0.0.1 -U te_app -d te` on your machine.
+##
+## Guide 5.3, 6.1, 8.1 (one block per service, when compose.yml has it)
+## [ ] 7. `migrate` (5.3): `<<: *dev-app` (it runs your new migrations).
+## [ ] 8. `worker` (6.1): `<<: *dev-app`, `sync+restart` for ./te_platform
+##        and ./verifier, `rebuild` on uv.lock.
+## [ ] 9. `redis-port` (6.1): the same forwarder for 127.0.0.1:6379
+##        (redis-cli without a port: `docker compose exec redis redis-cli`).
+## [ ] 10. `agent` (8.1): `<<: *dev-app`, the uvicorn command with --reload,
+##        ports ["127.0.0.1:8002:8000"], sync of ./te_platform, `rebuild`
+##        on uv.lock.
+##
+## Guide 9.0
+## [ ] 11. `caddy`: build ./deploy/caddy, ports ["127.0.0.1:8080:80"] and
+##        environment CADDY_SITE_ADDRESS: http://localhost (plain HTTP on
+##        your machine; the Caddyfile reads it). From now on open the app
+##        at http://localhost:8080 (the login and chat pages need it: their
+##        scripts call /agent/... on the page's own address). 5001 and
+##        8002 stay for debugging one service alone.
+## [ ] 12. Check after each block: `docker compose config -q`.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## Build the image locally instead of pulling it. Every app service gets the
+## same build (same tag te-platform:local from compose.yml), so Docker's build
+## cache makes the second and later builds instant. Two reasons it is on every
+## service and not only on `web`: `docker compose watch` refuses a `rebuild`
+## rule on a service without `build:`, and it copies files with the Docker
+## API, which fails on a read-only container ("container rootfs is marked
+## read-only"), hence read_only: false in development only.
+x-dev-app: &dev-app
+  build:
+    context: .
+    dockerfile: Dockerfile.platform
+  read_only: false
+
+services:
+  web:
+    <<: *dev-app
+    # Flask's development server with auto-reload instead of gunicorn.
+    # NEVER use this command in production (unhardened, debug features).
+    command: ["flask", "--app", "webapp.app", "run", "--host", "0.0.0.0", "--port", "8000",
+              "--debug"]
+    # 127.0.0.1:5001 on your machine -> 8000 in the container.
+    # (5001 because macOS uses 5000 for AirPlay; see README.)
+    ports: ["127.0.0.1:5001:8000"]
+    # Compose Watch: on save, copy changed files into the running container
+    # ("sync"); on dependency changes, rebuild the image ("rebuild"). The
+    # image installs the project in editable mode, so the copied files are
+    # the ones Python imports.
+    develop:
+      watch:
+        - {action: sync, path: ./webapp, target: /app/webapp}
+        - {action: sync, path: ./te_platform, target: /app/te_platform}
+        - {action: sync, path: ./verifier, target: /app/verifier}
+        - {action: sync, path: ./schema, target: /app/schema}
+        - {action: rebuild, path: ./uv.lock}
+
+  mcp:
+    <<: *dev-app
+    ports: ["127.0.0.1:8001:8000"]
+    develop:
+      watch:
+        - {action: sync+restart, path: ./te_platform, target: /app/te_platform}
+        - {action: sync+restart, path: ./policy, target: /app/policy}
+        - {action: rebuild, path: ./uv.lock}
+
+##   Guide 5.1: debug port for the database. `postgres` is only on the
+##   internal backend network, where published ports are unreachable from
+##   your machine (and giving postgres a second, non-internal network would
+##   also give it a route to the internet). This forwarder is on both
+##   networks, publishes on 127.0.0.1 only, and starts only with
+##   `--profile debug` (or when named: `docker compose up -d postgres-port`).
+##   For a psql shell no port is needed:
+##     docker compose exec postgres psql -U te_admin -d te
+  postgres-port:
+    image: alpine/socat:1.8.1.1
+    profiles: [debug]
+    command: ["TCP-LISTEN:5432,fork,reuseaddr", "TCP:postgres:5432"]
+    networks: [edge, backend]
+    ports: ["127.0.0.1:5432:5432"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+##   Guide 5.3: the migration image must contain your newest migrations.
+  migrate:
+    <<: *dev-app
+
+##   Guide 6.1: the worker has no auto-reload; restart it on changes.
+  worker:
+    <<: *dev-app
+    develop:
+      watch:
+        - {action: sync+restart, path: ./te_platform, target: /app/te_platform}
+        - {action: sync+restart, path: ./verifier, target: /app/verifier}
+        - {action: rebuild, path: ./uv.lock}
+
+##   Guide 6.1: debug port for Redis, same forwarder as postgres-port.
+##   Without a port: docker compose exec redis redis-cli
+  redis-port:
+    image: alpine/socat:1.8.1.1
+    profiles: [debug]
+    command: ["TCP-LISTEN:6379,fork,reuseaddr", "TCP:redis:6379"]
+    networks: [edge, backend]
+    ports: ["127.0.0.1:6379:6379"]
+    depends_on:
+      redis: {condition: service_healthy}
+
+##   Guide 8.1: uvicorn --reload restarts the agent when a file changes.
+  agent:
+    <<: *dev-app
+    command: ["uvicorn", "te_platform.agent.app:app", "--host", "0.0.0.0", "--port", "8000",
+              "--reload"]
+    ports: ["127.0.0.1:8002:8000"]
+    develop:
+      watch:
+        - {action: sync, path: ./te_platform, target: /app/te_platform}
+        - {action: rebuild, path: ./uv.lock}
+
+##   Guide 9.0: Caddy in development, plain HTTP on localhost:8080: the
+##   one address where the pages (web) and /agent/* (agent) share an origin,
+##   so login.js and chat.js reach the agent and the login cookie works
+##   (TE_PUBLIC_ORIGIN's default is this address). The Caddyfile reads its
+##   site address from CADDY_SITE_ADDRESS; "http://" turns automatic HTTPS
+##   off, so no certificate is requested.
+  caddy:
+    build: ./deploy/caddy
+    environment:
+      CADDY_SITE_ADDRESS: http://localhost
+    ports: ["127.0.0.1:8080:80"]

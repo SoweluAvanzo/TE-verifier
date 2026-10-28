@@ -1,0 +1,82 @@
+## =============================================================================
+## .github/dependabot.yml.template — automatic dependency update pull requests
+## =============================================================================
+## GUIDE STEP   0.5 (turn on Dependabot)
+## PURPOSE      Dependabot is a GitHub service that checks weekly whether newer
+##              versions (and especially security fixes) exist for:
+##                - Python packages (from pyproject.toml / uv.lock),
+##                - Docker base images (Dockerfile.platform, deploy/caddy/Dockerfile),
+##                - the GitHub Actions used by the workflows,
+##              and opens one pull request per update. CI then tests each
+##              update before you merge it.
+## WHY THE .template SUFFIX
+##              Kept consistent with the workflow templates: nothing in .github
+##              becomes active until you decide. Activate by uncommenting and
+##              renaming to dependabot.yml.
+## USED BY      GitHub.
+## WHY          Guide §2.2 dependency hygiene: vulnerabilities are found in
+##              dependencies all the time; small, frequent, tested updates are
+##              far safer than rare big ones.
+## ACTIVATE     Uncomment, rename, push; check "Insights -> Dependency graph ->
+##              Dependabot" on GitHub. Note: Dependabot's support for uv lock
+##              files is ecosystem "uv"; if your GitHub plan/version does not
+##              offer it yet, use "pip" (it reads pyproject.toml).
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your configuration between this list and the SOLUTION marker below,
+## then rename the file to dependabot.yml. Lines starting with "|" are short
+## illustrations, not the full file.
+##
+## Guide 0.5
+## [ ] 1. `version: 2` and an `updates:` list. Each entry has a
+##        package-ecosystem, a directory and a weekly schedule:
+##          | - package-ecosystem: "docker"
+##          |   directory: "/deploy/caddy"
+##          |   schedule:
+##          |     interval: "weekly"
+## [ ] 2. Entry "uv" for directory "/" (or "pip", see the ACTIVATE note),
+##        with a `groups` entry python-minor that bundles minor and patch
+##        updates into one pull request.
+## [ ] 3. Two "docker" entries: "/" (Dockerfile.platform) and
+##        "/deploy/caddy".
+## [ ] 4. One "github-actions" entry for "/".
+## [ ] 5. Check: push, then GitHub "Insights -> Dependency graph ->
+##        Dependabot" lists the four entries.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+# version: 2
+# updates:
+#   - package-ecosystem: "uv"
+#     directory: "/"
+#     schedule:
+#       interval: "weekly"
+#     # Group minor/patch updates into one PR to reduce noise.
+#     groups:
+#       python-minor:
+#         update-types: ["minor", "patch"]
+
+#   - package-ecosystem: "docker"
+#     directory: "/"
+#     schedule:
+#       interval: "weekly"
+
+#   - package-ecosystem: "docker"
+#     directory: "/deploy/caddy"
+#     schedule:
+#       interval: "weekly"
+
+#   # The workflows pin each action to a commit SHA with the version in a
+#   # comment (ci.yml.template); Dependabot updates both together.
+#   - package-ecosystem: "github-actions"
+#     directory: "/"
+#     schedule:
+#       interval: "weekly"

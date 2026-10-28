@@ -13,6 +13,28 @@
   gap: 1rem;
 }
 
+/* The header links: evenly spaced, wrapping instead of overflowing. */
+.header-row nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1.25rem;
+}
+
+/* Phones: the title above the links, not squeezed beside them. */
+@media (max-width: 700px) {
+  .header-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.6rem;
+    margin-bottom: 0.9rem;
+  }
+  .page-header h1 {
+    font-size: 1.6rem;
+    line-height: 1.2;
+  }
+}
+
 .nav-link {
   color: var(--color-accent);
   text-decoration: none;
@@ -21,6 +43,20 @@
 
 .nav-link:hover {
   text-decoration: underline;
+}
+
+/* Points first-time visitors to the chat assistant (webapp/templates/chat.html). */
+.chat-callout {
+  margin: 0 0 1em;
+  padding: 0.6em 0.9em;
+  border-left: 4px solid var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  border-radius: 4px;
+}
+
+.chat-callout a {
+  color: var(--color-accent);
+  font-weight: 600;
 }
 
 .quick-actions {

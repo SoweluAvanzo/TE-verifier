@@ -48,10 +48,34 @@ Sustainability:
 >
 > ⟺  `avg_degree ≥ 2·K·d`. ∎
 
-This is **strictly weaker** than the well-mixed `N ≥ 2·K·d + 1` when
-`avg_degree < N − 1` — i.e. for genuinely networked populations the
-verifier accepts smaller `N` provided each participant has enough
-neighbors.
+**Relation to the well-mixed bound (corrected).** In a population of
+`N` participants no one can have more than `N − 1` neighbours, so
+`avg_degree ≤ N − 1` and
+
+> `avg_degree ≥ 2·K·d  ⟹  N − 1 ≥ 2·K·d  ⟺  N ≥ 2·K·d + 1`.
+
+The network condition is therefore **stronger** than the well-mixed one,
+not weaker: for a consistent specification it never passes a design the
+well-mixed check fails. The verifier applies the network rule only when
+the declared degree is possible for every declared N
+(`avg_degree.min ≤ N.min − 1`, `fm5_critical_mass.py`); an impossible
+degree, which would otherwise "pass" a design the well-mixed rule fails,
+leaves the decision to the well-mixed rule
+(`tests/test_fm5_default_topology.py`). (An earlier version of this file claimed the
+opposite, that the network rule "accepts smaller `N`"; that was wrong.)
+The paper (§3.5) states that the well-mixed bound is the conservative
+one and that structured topologies may sustain a lower `N`; the paper
+wins, so the verdict is the disjunction "network rule OR well-mixed
+rule", which for consistent specifications equals the well-mixed rule,
+and the network rule only supplies the degree critical value as redesign
+guidance. A model under which sparse networks need fewer participants
+than the well-mixed bound (the paper's remark) is not encoded.
+
+The simulation evaluates the two safety predicates the same way, as
+alternatives (`SafetyPredicate.alternative_group`, OR-ed by
+`verifier/abm/predicates.fm_safe`): requiring both would flag a design
+the formal check proved safe (it did before this was fixed: every run of
+`examples/time_bank.yaml` violated FM5 at t = 0).
 
 ## Critical-value formula
 

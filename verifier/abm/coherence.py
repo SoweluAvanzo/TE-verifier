@@ -23,6 +23,8 @@ from __future__ import annotations
 import statistics
 from typing import Any
 
+from verifier.abm.predicates import fm_safe
+
 
 def _violates(value: float, op: str, threshold: float) -> bool:
     """Return True when ``value`` *violates* the safety condition
@@ -174,16 +176,14 @@ def compute_fm_coherence(
                 ),
             })
         row["predicates"] = pred_rows
-        # Alternative-predicate semantics for SOUND verdicts: when an
-        # FM emits multiple safety predicates as alternatives (e.g. FM5
-        # well-mixed N OR network-corrected avg_degree), the verifier's
-        # verdict reflects EITHER condition securing safety. The
-        # coherence panel should consider the FM aligned when ≥ 1
-        # predicate has 0 ABM violations — the alternative that secured
-        # the verifier's SOUND verdict is also satisfied empirically.
-        any_pred_clean = any(
-            (p.get("observed_min") is not None) and (p.get("violation_periods", 0) == 0)
-            for p in pred_rows
+        # The FM's safety condition, combined as everywhere else
+        # (predicates.fm_safe): predicates sharing an alternative_group are
+        # OR-ed (FM5: well-mixed N OR network degree), the rest AND-ed
+        # (FM4, FM6). A predicate the ABM never reported does not count as
+        # crossed.
+        fm_clean = fm_safe(
+            v.safety_predicates,
+            [r.get("violation_periods", 0) == 0 for r in pred_rows],
         )
         if not any_data:
             row["coherence"] = "inconclusive"
@@ -197,19 +197,18 @@ def compute_fm_coherence(
                 "Verifier proved safety across the parameter box; ABM "
                 "trajectory never crossed the threshold. Consistent."
             )
-        elif status == StructuralStatus.SOUND and any_pred_clean:
+        elif status == StructuralStatus.SOUND and fm_clean:
             row["coherence"] = "aligned"
             row["notes"] = (
-                "Verifier proved safety via ≥ 1 alternative predicate "
-                "(other predicates in this FM are emitted as alternatives, "
-                "not as conjunctions). The ABM trajectory satisfies the "
-                "alternative the verifier used. Consistent."
+                "Verifier proved safety across the parameter box; the ABM "
+                "trajectory satisfies the FM's safety condition "
+                "(alternatives OR-ed, other predicates AND-ed). Consistent."
             )
         elif status == StructuralStatus.SOUND and any_violate:
             row["coherence"] = "abm_drift"
             row["notes"] = (
-                "Verifier said SOUND but every emitted safety predicate "
-                "is crossed in the ABM trajectory. Either the static "
+                "Verifier said SOUND but the ABM trajectory crosses the "
+                "FM's safety condition. Either the static "
                 "analysis missed a corner of the parameter box, or the "
                 "ABM exposed an emergent dynamic the static check can't "
                 "capture (e.g. realized velocity vs declared holding "

@@ -1,0 +1,127 @@
+## =============================================================================
+## tests/platform_tests/case_study_differences.yaml — what the interview does not reproduce
+## =============================================================================
+## GUIDE STEP   7.3
+## PURPOSE      The case-study replay (test_platform_elicitation.py, guide
+##              7.3) answers the elicitation protocol with the values of each
+##              examples/*.yaml file and checks that the resulting spec has
+##              the example's spec hash. Fields that NO slot of the protocol
+##              asks cannot come out of an interview, so the replay lacks
+##              them. This file lists every such field, with the reason, so
+##              that each difference is a documented decision instead of a
+##              silent gap. Anything NOT listed here must be reproduced
+##              exactly.
+## FORMAT       differences: a mapping from an IR path, in the protocol's
+##              notation ("tokens[].transferable" = that field of every
+##              token, elicitation/paths.py), to
+##                kind    intended: not a design question (free text, a
+##                          setting of the analysis, a value the schema
+##                          derives from another answer);
+##                        gap: an input the verifier reads that the
+##                          interview cannot collect yet;
+##                reason  why, in one or two sentences, naming who reads
+##                        the field.
+##              A path covers everything below it ("non_tokenized_assets"
+##              = the whole list).
+## USED BY      tests/platform_tests/test_platform_elicitation.py (7.3: the
+##              replay copies exactly these fields from the example before
+##              comparing hashes; every entry must be a difference of at
+##              least one example under the complete test protocol).
+## DEPENDS ON   examples/*.yaml, schema/te_ir.py, the slots of
+##              policy/elicitation_protocol.yaml (and of the test-only
+##              _complete_protocol() fixture, which the "needed" check uses).
+## WHY          Guide 7.3 "Done when": the replayed spec has the example's
+##              hash, or a documented, intended difference. Architecture
+##              §4.1: each case study can be reproduced by answering the
+##              protocol. The list is data, like the protocol (D16), so a
+##              reviewer can read and challenge every entry.
+## ACTIVATE     Uncomment together with the 7.3 block of
+##              test_platform_elicitation.py. Closing a gap: add the slot to
+##              the protocol (and to _complete_protocol()), run the 7.3
+##              tests, then delete the entry (the "needed" test says when).
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your data between this list and the SOLUTION marker below. Do the
+## steps in order and run the "Check" at the end. Lines starting with "|"
+## are short illustrations, not the full data.
+##
+## Guide 7.3
+## [ ] 1. A single top-level key `differences:`, a mapping. Start it EMPTY
+##        and activate the 7.3 tests: each failing case study names the
+##        paths its replay did not reproduce.
+## [ ] 2. For each reported path, decide: is a slot missing (add it to the
+##        protocol, guide 7.2), or is the field not something an interview
+##        should ask? Only then add an entry:
+##          | meta.description:
+##          |   kind: intended
+##          |   reason: Free text for people; no failure mode reads it.
+##        Use the most general path ("tokens[].x", not one token's index).
+## [ ] 3. A verifier input that no stage of docs/specification-flow.md
+##        collects yet is a `gap`: say which code reads it, so the entry
+##        records what the interview misses.
+## [ ] 4. Check:
+##          | uv run pytest tests/platform_tests/test_platform_elicitation.py -k case_study -v
+##        test_every_documented_difference_is_needed fails for an entry no
+##        example needs: delete it.
+##
+## Stuck, or want to compare? The SOLUTION below is the reference list for
+## the complete test protocol. Uncomment it only if you decide to use it as
+## it is.
+
+## =============================================================================
+## SOLUTION: complete reference data (commented out on purpose)
+## =============================================================================
+
+differences:
+
+## --- intended: not design questions ----------------------------------------
+  meta.description:
+    kind: intended
+    reason: >-
+      Free text for people reading the file. No failure mode reads it; the
+      interview's own summary is the confirmation of Stage 10.
+  meta.simulation_horizon:
+    kind: intended
+    reason: >-
+      How many periods the simulators run (verifier/simulate/trajectory.py,
+      verifier/sign_validation.py): a choice of the analysis, not a fact
+      about the design. The example authors set it so that supply caps
+      binding after decades are visible; the platform's simulation tools
+      take the horizon as an argument.
+  tokens[].holding_incentive_present:
+    kind: intended
+    reason: >-
+      Legacy boolean kept for old YAML files. schema/te_ir.py
+      (Token._backcompat_holding_incentives) derives it from
+      holding_incentives, which the protocol asks (tokens.holding).
+
+## --- gaps: verifier inputs the interview cannot collect yet ----------------
+  tokens[].transferable:
+    kind: gap
+    reason: >-
+      FM1, FM2 and FM3 read it (FM2 skips non-transferable tokens,
+      verifier/failure_modes/fm2_velocity.py; verifier/token_role.py), but no
+      stage of docs/specification-flow.md asks it and the protocol has no
+      yes/no answer type; the schema default (true) holds for most designs.
+  governance.vote_weighting:
+    kind: gap
+    reason: >-
+      FM6 adjusts the capture risk by the vote-weighting class
+      (verifier/failure_modes/fm6_governance.py). Stage 7 of
+      docs/specification-flow.md says "ask for vote weighting" for DAOs,
+      but the protocol has no slot for it yet; the default is linear.
+  governance.vote_weighting_params:
+    kind: gap
+    reason: >-
+      The parameters of the vote-weighting class above (e.g. cap_fraction,
+      avg_lock_fraction); asked together with it once that slot exists.
+  non_tokenized_assets:
+    kind: gap
+    reason: >-
+      Goods and services that are not tokens (cascina_roccafranca: the
+      basket of goods local merchants accept), read only by the agent-based
+      simulation (verifier/abm/engine.py, verifier/abm/flow_graph.py); no
+      stage of the specification flow asks for them.

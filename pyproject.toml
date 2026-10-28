@@ -16,16 +16,77 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
-webapp = ["flask>=3.0"]
+dev = [
+    "mypy>=2.4.0",
+    "pre-commit>=4.7.0",
+    "pytest>=8.0",
+    "ruff>=0.17.1",
+    "types-PyYAML>=6.0",
+    "hypothesis>=6.100",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+    "pypdf>=4.0",
+]
+webapp = ["flask>=3.0", "gunicorn>=23.0"]
+# The platform (te_platform/pyproject_additions.toml explains each group).
+platform = ["pydantic-settings>=2.4", "structlog>=24.1", "anyio>=4.4"]
+mcp = ["mcp>=2.3", "uvicorn>=0.30"]
+db = ["sqlalchemy>=2.0", "alembic>=1.13", "psycopg[binary]>=3.2"]
+jobs = ["redis>=5.0", "rq>=1.16"]
+agent = ["fastapi>=0.115", "uvicorn>=0.30", "anthropic>=1.0", "mcp>=2.3", "httpx2>=2.15"]
+reports = ["weasyprint>=62", "jinja2>=3.1", "matplotlib>=3.8"]
+literature = ["pypdf>=4.0"]
+evals = ["httpx2>=2.15", "anthropic>=1.0"]
 
 [project.scripts]
 te-verify = "verifier.cli:main"
 te-simulate = "verifier.abm.cli:main"
+te-mcp = "te_platform.mcp_server.app:main"
+te-worker = "te_platform.jobs.worker:main"
+te-platform = "te_platform.cli:main"
+
+[project.entry-points."te_platform.tools"]
+"spec.validate.v1" = "te_platform.tools.spec_validate:TOOL"
+"elicit.next_questions.v1" = "te_platform.tools.elicit_next_questions:TOOL"
+"elicit.record_answer.v1" = "te_platform.tools.elicit_record_answer:TOOL"
+"verify.run.v1" = "te_platform.tools.verify_run:TOOL"
+"verify.minimal.v1" = "te_platform.tools.verify_minimal:TOOL"
+"sim.monte_carlo.v1" = "te_platform.tools.sim_monte_carlo:TOOL"
+"sim.trajectory.v1" = "te_platform.tools.sim_trajectory:TOOL"
+"sim.experiment.v1" = "te_platform.tools.sim_experiment:TOOL"
+"jobs.status.v1" = "te_platform.tools.jobs_status:TOOL"
+"jobs.cancel.v1" = "te_platform.tools.jobs_cancel:TOOL"
+"graph.flow.v1" = "te_platform.tools.graph_flow:TOOL"
+"lit.search.v1" = "te_platform.tools.lit_search:TOOL"
+"report.render_pdf.v1" = "te_platform.tools.report_render_pdf:TOOL"
+"report.publish.v1" = "te_platform.tools.report_publish:TOOL"
+"export.cadcad.v1" = "te_platform.tools.export_cadcad:TOOL"
 
 [tool.setuptools.packages.find]
-include = ["schema*", "verifier*"]
+include = ["schema*", "verifier*", "te_platform*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["db: needs a running PostgreSQL (TE_DATABASE_URL)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["MPC_server", "reports"]   # separate project / generated output
+
+[tool.ruff.lint]
+# Safe set for the existing code: real errors only, no style opinions.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "te_platform.*"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["verifier.*", "schema.*"]
+follow_imports = "silent"

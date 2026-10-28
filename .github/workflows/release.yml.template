@@ -1,0 +1,136 @@
+## =============================================================================
+## .github/workflows/release.yml.template — build, scan and publish the image
+## =============================================================================
+## GUIDE STEP   12.2 (release and deploy with Compose: the platform image and
+##              the Caddy image, since compose.yml has Caddy from 9.0)
+## PURPOSE      On every merge to `main`:
+##                1. build the platform image once (Dockerfile.platform);
+##                2. tag it with the git commit SHA (unique, never reused);
+##                3. scan it with Trivy (stop on HIGH/CRITICAL);
+##                4. push it to GitHub Container Registry (GHCR) as
+##                   ghcr.io/soweluavanzo/te-verifier:<sha>;
+##                5. the same for the Caddy image (deploy/caddy/Dockerfile)
+##                   as ghcr.io/soweluavanzo/te-verifier-caddy:<sha>
+##                   (compose.prod.yml runs it from the first deploy).
+##              The server then deploys that exact tag (docs/operations.md):
+##              it never builds code itself.
+## WHY THE .template SUFFIX
+##              Same reason as ci.yml.template: a fully commented file in
+##              .github/workflows/ is reported as invalid. Activate by
+##              uncommenting and renaming to release.yml.
+## USED BY      GitHub Actions; compose.prod.yml pulls the pushed images.
+## DEPENDS ON   Dockerfile.platform, deploy/caddy/Dockerfile (9.0);
+##              repository setting "Workflow permissions" allowing
+##              packages: write (see `permissions` below).
+## WHY          Architecture D13 / guide 12.2: what runs in production is
+##              exactly the image that passed CI, identified by its commit;
+##              rollback = deploy the previous SHA.
+## ACTIVATE     Uncomment the 12.2 code, rename, merge to main, then check the
+##              package under github.com/SoweluAvanzo?tab=packages. Make the
+##              package private or public deliberately (GHCR packages start
+##              private; the server must be able to pull it; the same for
+##              te-verifier-caddy). Lint first:
+##                docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12
+##              Actions are pinned to commit SHAs (see ci.yml.template).
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your workflow between this list and the SOLUTION marker below, then
+## rename the file to release.yml. Lines starting with "|" are short
+## illustrations. The image names must be exactly the ones compose.prod.yml
+## pulls (ghcr.io/soweluavanzo/te-verifier and te-verifier-caddy,
+## lower-case).
+##
+## Guide 12.2
+## [ ] 1. `name: Release image`, triggered only by a push to main.
+## [ ] 2. `permissions`: contents: read and packages: write (nothing else).
+## [ ] 3. `jobs:` → `release` on ubuntu-latest, with a job-level env
+##        IMAGE: ghcr.io/soweluavanzo/te-verifier.
+## [ ] 4. Steps: checkout, then docker/login-action to ghcr.io with
+##        github.actor and the run's secrets.GITHUB_TOKEN (both actions
+##        pinned to a commit SHA, as in ci.yml.template).
+## [ ] 5. Build once, tagged with the full commit SHA:
+##          | - run: docker build -f Dockerfile.platform \
+##          |     -t "$IMAGE:${{ github.sha }}" .
+## [ ] 6. Trivy scan of that image BEFORE pushing (same settings as the
+##        `image` job of ci.yml.template), then `docker push` of the tag.
+## [ ] 7. The Caddy image (compose.yml has Caddy since 9.0, so production
+##        needs it from the first deploy): in the env, CADDY_IMAGE:
+##        ghcr.io/soweluavanzo/te-verifier-caddy; then build deploy/caddy
+##        with the same tag, scan it with the same Trivy settings, push it:
+##          | - run: docker build -t "$CADDY_IMAGE:${{ github.sha }}" \
+##          |     deploy/caddy
+## [ ] 8. Last step: write "Deploy with TE_IMAGE_TAG=<sha>" into
+##        $GITHUB_STEP_SUMMARY.
+## [ ] 9. Check: merge to main, see the run pass, and find both packages,
+##        with the same tag, under github.com/SoweluAvanzo?tab=packages; set
+##        their visibility on purpose.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+# name: Release image
+
+## Only after code reaches main (i.e. after the PR passed CI and review).
+# on:
+#   push:
+#     branches: [main]
+
+## GITHUB_TOKEN is a short-lived token GitHub creates for every run; no secret
+## needs to be stored. These permissions are all it gets:
+##   contents: read   -> check out the code
+##   packages: write  -> push the image to GHCR under this repository's owner
+# permissions:
+#   contents: read
+#   packages: write
+
+# jobs:
+#   release:
+#     runs-on: ubuntu-latest
+#     env:
+#       # Registry paths must be lower-case.
+#       IMAGE: ghcr.io/soweluavanzo/te-verifier
+#       # The Caddy image (deploy/caddy/Dockerfile).
+#       CADDY_IMAGE: ghcr.io/soweluavanzo/te-verifier-caddy
+#     steps:
+#       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+#       # Log in to GHCR with the run's GITHUB_TOKEN.
+#       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+#         with:
+#           registry: ghcr.io
+#           username: ${{ github.actor }}
+#           password: ${{ secrets.GITHUB_TOKEN }}
+
+#       # Build once and tag with the full commit SHA (github.sha).
+#       - run: docker build -f Dockerfile.platform -t "$IMAGE:${{ github.sha }}" .
+
+#       # Scan BEFORE pushing: a vulnerable image never reaches the registry.
+#       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+#         with:
+#           image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+#           severity: HIGH,CRITICAL
+#           ignore-unfixed: true
+#           exit-code: "1"
+
+#       - run: docker push "$IMAGE:${{ github.sha }}"
+
+##       The same three steps for the Caddy image, same tag, so one
+##       TE_IMAGE_TAG names the whole release (compose.prod.yml).
+#       - run: docker build -t "$CADDY_IMAGE:${{ github.sha }}" deploy/caddy
+#       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+#         with:
+#           image-ref: ${{ env.CADDY_IMAGE }}:${{ github.sha }}
+#           severity: HIGH,CRITICAL
+#           ignore-unfixed: true
+#           exit-code: "1"
+#       - run: docker push "$CADDY_IMAGE:${{ github.sha }}"
+
+##       The tag to put in the server's .env (TE_IMAGE_TAG) appears in the run summary.
+#       - run: echo "Deploy with TE_IMAGE_TAG=${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"

@@ -53,6 +53,10 @@
   gap: 4px;
 }
 .config-grid input {
+  /* min-width 0: a number input's default width would overflow its column. */
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   padding: 6px 8px;
   border: 1px solid #d0d0d6;
   border-radius: 5px;

@@ -1,0 +1,107 @@
+## =============================================================================
+## .pre-commit-config.yaml — checks that run before every `git commit`
+## =============================================================================
+## GUIDE STEP   0.4 (file hygiene, ruff), 2.1 (policy consistency hook)
+## PURPOSE      pre-commit installs these "hooks" into git: before each commit
+##              they run on the files you changed, fix what they can (formatting,
+##              trailing spaces) and block the commit when something is wrong
+##              (lint error, invalid YAML, a private key about to be committed,
+##              an inconsistent tool policy).
+## USED BY      git (after `uv run pre-commit install`, once per clone).
+## DEPENDS ON   pre-commit (dev extra in pyproject.toml), the ruff version
+##              locked in uv.lock (the hook's `rev` must match it),
+##              tests/platform_tests/test_platform_policy.py (local hook, 2.1).
+## WHY          Guide §2.1: problems are caught on your machine in seconds,
+##              before CI spends minutes on them; nobody has to remember.
+## ACTIVATE     Uncomment the 0.4 code (commented once), then:
+##                uv run pre-commit install
+##                uv run pre-commit run --all-files   # first run on everything
+##              Done when (guide 0.4): a commit with a lint error is blocked.
+##              At 2.1, uncomment the policy-consistency hook (commented twice).
+##              `uv run pre-commit validate-config` checks this file's syntax.
+##              While this file is fully commented, pre-commit would report an
+##              empty configuration; do not run `pre-commit install` before.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your configuration between this list and the SOLUTION marker below.
+## Lines starting with "|" are short illustrations, not the full file.
+##
+## Guide 0.4
+## [ ] 1. `repos:` with the pre-commit/pre-commit-hooks repository at rev
+##        v6.0.0 and the hooks end-of-file-fixer, trailing-whitespace,
+##        check-yaml and detect-private-key. check-yaml WITHOUT args:
+##        --allow-multiple-documents is only for files with several `---`
+##        documents, and the repository has none (anchors and `<<` merge
+##        keys are normal YAML).
+## [ ] 2. The astral-sh/ruff-pre-commit repository, with `rev` equal to the
+##        ruff version locked in uv.lock (find it with
+##        `grep -A1 'name = "ruff"' uv.lock`), so the hook and CI agree:
+##          | rev: v0.17.1
+##          | hooks:
+##          |   - id: ruff-check
+##        `ruff-check` takes args [--fix]; then add the hook `ruff-format`.
+## [ ] 3. No mypy hook: mypy needs the installed dependencies, which
+##        pre-commit's isolated environments do not have; CI runs it
+##        (`uv run mypy te_platform`, ci.yml.template).
+## [ ] 4. Check:
+##          | uv run pre-commit validate-config
+##          | uv run pre-commit install
+##          | uv run pre-commit run --all-files
+##        The first run fixes files and reports "Failed"; run it again until
+##        everything passes. Then a commit with a lint error is blocked.
+##
+## Guide 2.1
+## [ ] 5. A `repo: local` hook policy-consistency that runs pytest on
+##        tests/platform_tests/test_platform_policy.py when files under
+##        policy/ or te_platform/registry/ change. Not earlier: before that
+##        test file is active (2.1), pytest collects no tests and exits with
+##        code 5, which pre-commit counts as a failure.
+## [ ] 6. Check: change policy/tool_policy.yaml, `git commit` runs the hook.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+repos:
+  # Generic file hygiene hooks maintained by the pre-commit project.
+  # `rev` pins the version; `uv run pre-commit autoupdate` bumps it.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer      # every file ends with exactly one newline
+      - id: trailing-whitespace    # remove invisible spaces at line ends
+      - id: check-yaml             # every YAML file parses
+      - id: detect-private-key     # block committing private keys
+
+  # ruff: lint (with safe automatic fixes) and format, same rules as CI.
+  # rev = the ruff version in uv.lock, so the hook and CI agree.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # No mypy hook on purpose: mypy needs the project's installed
+  # dependencies, which pre-commit's isolated hook environments lack.
+  # CI runs it (`uv run mypy te_platform`, .github/workflows/ci.yml).
+
+#   Guide 2.1: the policy file must stay consistent with the code (every
+#   tool and rule name resolves). Runs only when policy files or the
+#   registry change, so most commits are not slowed down.
+  - repo: local
+    hooks:
+      - id: policy-consistency
+        name: tool policy consistency
+        entry: uv run pytest tests/platform_tests/test_platform_policy.py -q
+        # `unsupported` (pre-commit >= 4.4; formerly called `system`):
+        # run a command already installed on your machine, here uv.
+        language: unsupported
+        pass_filenames: false
+        files: ^(policy/|te_platform/registry/)

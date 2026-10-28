@@ -1,0 +1,556 @@
+## =============================================================================
+## compose.yml — the BASE description of the whole platform (all environments)
+## =============================================================================
+## GUIDE STEP   4.4 (web, mcp), 4.6 (networks), then each phase adds its
+##              part: 5.1 postgres, 5.3 migrate, 5.4 mcp -> database, 6.1
+##              redis + worker, 8.1 agent, 8.5 agent -> database and keys,
+##              9.0 caddy (the single development address of the chat),
+##              10.3 report storage and signing key, 12.3 the agent trusts
+##              Caddy's forwarded client address.
+## PURPOSE      Docker Compose reads this file and starts the platform's
+##              containers ("services"), the virtual networks that connect them,
+##              the volumes that keep data, and the secrets they receive.
+##              This BASE file holds what is the same everywhere. Two small
+##              files are merged on top of it:
+##                compose.override.yml  development (loaded AUTOMATICALLY by
+##                                      `docker compose up`);
+##                compose.prod.yml      production (loaded explicitly:
+##                                      docker compose -f compose.yml -f compose.prod.yml ...).
+## USED BY      Developers (`docker compose up`), the server (guide 12.2),
+##              end-to-end tests (guide §2.1), deploy/postgres/backup.sh.
+## DEPENDS ON   Dockerfile.platform (the image), .env (non-secret variables;
+##              copy .env.example), deploy/postgres/10-init-roles.sh and
+##              init-roles.sql (5.1), deploy/caddy/* (9.0), secret files in
+##              ./secrets/ (git-ignored; from 5.1: passwords, database URLs
+##              and keys are never in .env, see "Secrets" at the end).
+## WHY          Architecture D13: one file describes the system; environments
+##              differ only in a small override file. D1: every app service
+##              runs the SAME image with a different `command:`.
+## RELATION TO infra/compose.yml
+##              infra/compose.yml is the current demo deployment (one public
+##              web container on port 8888). It stays untouched until this
+##              stack replaces it in production (guide 12.2); then delete it.
+## ACTIVATE     Uncomment the 4.4 code (the lines commented once), then each
+##              later block (commented twice, under a `## Guide X.Y` line)
+##              when you reach its step. Check after each step:
+##                docker compose config -q   (no output = valid; it merges
+##                                            compose.override.yml too)
+##                docker compose up
+##              The image is built by compose.override.yml (4.5); at 4.4,
+##              build it first: docker build -f Dockerfile.platform -t te-platform:local .
+##              While everything here is commented, `docker compose` reports
+##              "empty compose file": that is expected.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your YAML between this list and the SOLUTION marker below. Do the
+## steps in order and run each "Check" before moving on. Lines starting with
+## "|" are short illustrations, not the full file. Keep the service names
+## (web, mcp, agent, worker, migrate, postgres, redis, caddy), network,
+## volume and secret names exactly: the other compose files, the Caddyfile,
+## backup.sh and te_platform/config.py (secret file names) refer to them.
+##
+## Guide 4.4 (web and mcp)
+## [ ] 1. The anchor `x-hardening: &hardening` with read_only: true, a tmpfs
+##        on /tmp, cap_drop: [ALL] and security_opt no-new-privileges:true.
+##        No pids_limit here (the SOLUTION explains why).
+## [ ] 2. The anchor `x-app: &app`: image te-platform:local, the hardening
+##        pasted in, env_file: .env. No networks yet (step 6). .env holds
+##        only NON-secret settings: every service reads all of it, so a
+##        password there would reach every container.
+##          | x-app: &app
+##          |   <<: *hardening
+## [ ] 3. `services:` with `web`: `<<: *app`, the gunicorn command (2 workers,
+##        timeout 60, max-requests 200), a curl healthcheck on
+##        http://localhost:8000/ (30s / 5s / 3 retries / start_period 20s /
+##        start_interval 2s),
+##        and deploy.resources.limits {cpus "1.5", memory 768m, pids 256}.
+## [ ] 4. `mcp`: `<<: *app`, command te-mcp --http --host 0.0.0.0
+##        --port 8000, a curl healthcheck on /health (start_period 30s,
+##        start_interval 2s, see the SOLUTION), limits {cpus "1.5",
+##        memory 1g, pids 256}.
+## [ ] 5. Check: cp .env.example .env (guide 4.4), build the image once
+##        (ACTIVATE above), then `docker compose config -q` and
+##        `docker compose up`; both services become "healthy" in
+##        `docker compose ps`.
+##
+## Guide 4.6 (networks)
+## [ ] 6. In x-app: networks: [edge, backend] (mcp, and later agent, need
+##        both). In web: networks: [edge] only. Web calls the service layer
+##        in-process and never uses the database or Redis, so it stays off
+##        the backend network (least privilege).
+## [ ] 7. The top-level `networks:` section: `edge` with an ipam subnet
+##        172.30.0.0/24 (Caddy gets a fixed address in it at 12.3),
+##        `backend` with internal: true.
+## [ ] 8. Check: `docker compose config -q`, `docker compose up`. The
+##        startup order (depends_on) and the "postgres cannot reach the
+##        internet" check of guide 4.6 need postgres: they come in 5.1-5.4.
+##
+## Guide 5.1 (postgres)
+## [ ] 9. `postgres`: image postgres:16, the environment POSTGRES_USER and
+##        POSTGRES_DB (as ${VAR}, from .env) and POSTGRES_PASSWORD_FILE
+##        (/run/secrets/db_admin_password), the three secrets
+##        db_admin_password, db_app_password, db_migrator_password, the
+##        pgdata volume, the two read-only mounts of deploy/postgres/ (the
+##        .sh INTO /docker-entrypoint-initdb.d/, the .sql into
+##        /docker-init/), networks [backend], a pg_isready healthcheck over
+##        TCP, limits.
+##          | test: ["CMD-SHELL",
+##          |        "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} ..."]
+##        (`$$` stops Compose from filling the variable itself.)
+## [ ] 10. The top-level `volumes:` section with `pgdata: {}`, and the
+##         top-level `secrets:` section with the three db_* files.
+##         Create them (random values; 644 because the postgres user in the
+##         container, uid 999, must read them, while the 700 folder keeps
+##         other users of your machine out):
+##          | install -d -m 700 secrets
+##          | for f in db_admin_password db_app_password db_migrator_password; do
+##          |     openssl rand -hex 24 > secrets/$f; done
+##          | chmod 644 secrets/db_*
+## [ ] 11. Check: `docker compose up -d postgres`, it becomes healthy, and
+##         `docker compose exec postgres sh -c 'getent hosts example.org'`
+##         finds nothing (the backend network has no route out; guide 4.6).
+##
+## Guide 5.3 (migrate)
+## [ ] 12. `migrate`: `<<: *app`, command alembic -c
+##         te_platform/db/alembic.ini upgrade head, networks [backend],
+##         secrets [te_migration_database_url], restart "no", pids_limit
+##         256, depends_on postgres healthy.
+## [ ] 13. The secret te_migration_database_url in the top-level
+##         `secrets:` (config.py reads the file into
+##         Settings.migration_database_url). Create it from the migrator
+##         password:
+##          | printf 'postgresql+psycopg://te_migrator:%s@postgres:5432/te' \
+##          |     "$(cat secrets/db_migrator_password)" > secrets/te_migration_database_url
+##          | chmod 644 secrets/te_migration_database_url
+## [ ] 14. Check: `docker compose run --rm migrate` (guide 5.3).
+##
+## Guide 5.4 (mcp reads API keys from the database)
+## [ ] 15. In mcp: `secrets:` with te_database_url, and `depends_on:` with
+##         postgres (service_healthy) and migrate
+##         (service_completed_successfully).
+## [ ] 16. te_database_url in the top-level `secrets:`, `file:
+##         ./secrets/te_database_url`. Create it before `docker compose up`,
+##         like step 13 with te_app and db_app_password:
+##          | printf 'postgresql+psycopg://te_app:%s@postgres:5432/te' \
+##          |     "$(cat secrets/db_app_password)" > secrets/te_database_url
+##          | chmod 644 secrets/te_database_url
+##
+## Guide 6.1 (redis, worker)
+## [ ] 17. `redis`: image redis:7, command with --save "" and --appendonly
+##         no, the hardening anchor, user "999:999", pids_limit 256,
+##         networks [backend], a redis-cli ping healthcheck.
+## [ ] 18. `worker`: `<<: *app`, command ["te-worker"], networks [backend]
+##         only, secrets [te_database_url], depends_on redis healthy and
+##         migrate completed, limits {cpus "2.0", memory 2g, pids 256}.
+## [ ] 19. In mcp's depends_on: redis healthy. Check: `docker compose up`.
+##
+## Guide 8.1 (agent)
+## [ ] 20. `agent`: `<<: *app`, the uvicorn command for
+##         te_platform.agent.app:app (one argument per list item, so 12.3
+##         can add two), healthcheck on /agent/health (start_period 30s,
+##         start_interval 2s), depends_on mcp
+##         healthy, limits {cpus "1.0", memory 512m, pids 256}.
+## [ ] 21. Check: GET /agent/health answers 200 (guide 8.1).
+##
+## Guide 8.5 (agent sessions)
+## [ ] 22. In agent: secrets te_anthropic_api_key, te_agent_mcp_api_key,
+##         te_database_url, and depends_on postgres healthy and migrate
+##         completed. Add the two new entries to the top-level `secrets:`
+##         and create their files.
+##
+## Guide 9.0 (caddy: one address for the pages and the agent API)
+## [ ] 23. `caddy`: image te-caddy:local (built by the override in
+##         development, pulled from GHCR in production), the Caddyfile
+##         mounted read-only plus the caddy_data and caddy_config volumes,
+##         the fixed address on edge, read_only, cap_drop ALL with cap_add
+##         NET_BIND_SERVICE, no-new-privileges, pids_limit 256, depends_on
+##         web, agent and mcp healthy.
+##          | networks:
+##          |   edge:
+##          |     ipv4_address: 172.30.0.10
+##         Add `caddy_data: {}` and `caddy_config: {}` under `volumes:`.
+##         Why now: login.js and chat.js call /agent/... on the SAME address
+##         as the page (one origin, so the login cookie reaches the agent);
+##         Flask (5001) and the agent (8002) alone are two origins.
+## [ ] 24. Check: `docker compose config -q`, `docker compose up -d`, then
+##         http://localhost:8080/login loads and
+##         `curl -fsS http://localhost:8080/agent/health` answers.
+##
+## Guide 10.3 (report downloads)
+## [ ] 25. te_report_signing_key: in the secrets of mcp and agent, and in
+##         the top-level `secrets:` (create the file).
+## [ ] 26. The `reports` volume: worker mounts it read-write at
+##         /data/reports, agent with :ro. Add `reports: {}` under `volumes:`.
+##
+## Guide 12.3 (production edge; caddy itself exists since 9.0)
+## [ ] 27. In agent's command: --proxy-headers and
+##         --forwarded-allow-ips=172.30.0.10 (trust X-Forwarded-For from
+##         Caddy only). The rest of 12.3 is in compose.prod.yml (domain,
+##         ports 80/443) and the Caddyfile (e-mail, HSTS).
+## [ ] 28. Check: `docker compose config -q`, then `docker compose up`.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## Reusable blocks ("YAML anchors"). `x-...` keys are ignored by Compose
+## itself; `&name` defines a block, `<<: *name` pastes it into a service.
+## Defining the hardening once guarantees every app service gets all of it.
+## -----------------------------------------------------------------------------
+x-hardening: &hardening
+  # The container's own files cannot be changed (an attacker cannot plant
+  # code). Programs that need scratch space get /tmp as an in-memory tmpfs.
+  read_only: true
+  tmpfs:
+    - /tmp
+  # Drop every Linux capability (individual admin powers); app processes
+  # need none, because they listen on 8000 (>1024) and run as uid 1000.
+  cap_drop: [ALL]
+  # A process can never gain more privileges later (e.g. via setuid files).
+  security_opt:
+    - no-new-privileges:true
+  # The process limit (a "fork bomb" cannot exhaust the host) is set per
+  # service as deploy.resources.limits.pids, next to CPU and memory:
+  # Compose refuses a service that sets both `pids_limit` here and
+  # `deploy.resources.limits` there (found by validating this file with
+  # `docker compose config`).
+
+## The platform image, built from Dockerfile.platform. In development the
+## override file adds `build:`; in production compose.prod.yml sets the
+## registry image instead.
+x-app: &app
+  image: te-platform:local
+  <<: *hardening
+  # NON-secret settings from .env (TE_* variables). Every app service
+  # reads all of .env, so it holds no password, URL with a password, or
+  # key: those are secret files, and each service lists only the ones it
+  # needs (`secrets:`, see the end of this file).
+  env_file: .env
+##   Guide 4.6: both networks (defined at the end of this file), for mcp and
+##   agent. Services that must not be reachable from Caddy override this
+##   with [backend] (migrate, worker); web, which needs no database and no
+##   Redis, overrides it with [edge].
+  networks: [edge, backend]
+
+services:
+
+##   ---- web: the existing Flask app (form, /yaml, /explore, /chat page) ----
+##   Guide 4.4. Same command as the current ./Dockerfile.
+  web:
+    <<: *app
+    command: ["gunicorn", "webapp.app:app", "--bind", "0.0.0.0:8000",
+              "--workers", "2", "--timeout", "60", "--max-requests", "200"]
+    # Docker runs this every 30 s; 3 failures in a row = "unhealthy".
+    # During start_period it checks every start_interval instead (Docker
+    # Engine 25+), so a service is "healthy" seconds after it starts, and
+    # whatever waits for it (Caddy) starts at once: a deploy or rollback
+    # then takes well under a minute (guide 12.2).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+    deploy:
+      resources:
+        limits: {cpus: "1.5", memory: 768m, pids: 256}
+##     Guide 4.6: edge only. Web calls te_platform.service in-process and
+##     never opens a database or Redis connection, so it is not on backend.
+    networks: [edge]
+
+##   ---- mcp: the public MCP server (Streamable HTTP at /mcp) ----
+##   Guide 4.4 (served over HTTP since 4.1). `te-mcp` is declared in
+##   pyproject.toml [project.scripts] (te_platform.mcp_server.app:main).
+  mcp:
+    <<: *app
+    command: ["te-mcp", "--http", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      # The MCP app exposes a plain /health route besides /mcp
+      # (te_platform/mcp_server/http_app.py), so the check needs no MCP client.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Frequent checks while starting (see web): agent waits for this one.
+      start_period: 30s
+      start_interval: 2s
+    deploy:
+      resources:
+        # Z3 can blow up on pathological specs; the limit kills this
+        # container, never the host.
+        limits: {cpus: "1.5", memory: 1g, pids: 256}
+##     Guide 5.4: from here the MCP server reads API keys (and, from 5.5,
+##     sessions, verifications, audit rows) from the database.
+    secrets:
+      - te_database_url
+##     Guide 10.3: the report tool signs download links in this process.
+      - te_report_signing_key
+##     Guide 5.4: start only when the database is ready and migrated.
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+##     Guide 6.1: the simulation and quota code talks to Redis.
+      redis: {condition: service_healthy}
+
+##   ---- postgres: the database ----
+##   Guide 5.1. Data lives in the named volume `pgdata`. Scripts in
+##   /docker-entrypoint-initdb.d run ONCE, when the volume is empty: ours
+##   creates the app and migration roles (least privilege, guide §2.2).
+##   Only what the database needs is passed (not the whole .env): two plain
+##   names, filled by Compose from .env (${VAR}), and three secret files.
+##   The passwords are FILES that only this container gets, so no other
+##   service and no `docker inspect` output ever shows them.
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # The image reads the superuser's password from this file (the
+      # *_FILE form of POSTGRES_PASSWORD).
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_admin_password
+    # At /run/secrets/<name>; 10-init-roles.sh reads the two role
+    # passwords from there. Compose mounts each file with its host
+    # permissions, so they must be readable by uid 999 (chmod 644).
+    secrets: [db_admin_password, db_app_password, db_migrator_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # The wrapper runs (it is in initdb.d); the SQL file is kept outside
+      # initdb.d so the image does not run it a second time without passwords.
+      - ./deploy/postgres/10-init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro
+      - ./deploy/postgres/init-roles.sql:/docker-init/init-roles.sql:ro
+    networks: [backend]
+    healthcheck:
+      # pg_isready answers 0 when the server accepts connections. -h
+      # 127.0.0.1 checks over TCP: during the first start the image runs
+      # the init scripts on a temporary server that listens only on a
+      # local socket, then restarts; a check without -h would already
+      # pass then, and `migrate` could connect during the restart.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 1g, pids: 256}
+
+##   ---- migrate: one-shot container that applies database migrations ----
+##   Guide 5.3. Runs `alembic upgrade head` with the MIGRATION role (DDL
+##   rights), then exits. Services that need the schema wait for it with
+##   `condition: service_completed_successfully`. It is the ONLY service
+##   that gets the migration role's URL (secret te_migration_database_url,
+##   read into Settings.migration_database_url); production makes it
+##   tolerate rollbacks (compose.prod.yml, guide 12.2).
+  migrate:
+    <<: *app
+    command: ["alembic", "-c", "te_platform/db/alembic.ini", "upgrade", "head"]
+    networks: [backend]
+    secrets: [te_migration_database_url]
+    restart: "no"
+    # No deploy limits on this one-shot service, so the plain form is allowed.
+    pids_limit: 256
+    depends_on:
+      postgres: {condition: service_healthy}
+
+##   ---- redis: job queue, rate-limit counters, short-lived cache ----
+##   Guide 6.1.
+  redis:
+    image: redis:7
+    # --save "" and --appendonly no: Redis keeps nothing on disk. Durable
+    # results live in Postgres. TRADE-OFF: a Redis restart also logs every
+    # user out (web sessions) and drops QUEUED jobs (their database rows
+    # stay "queued"; the user simply asks again). Acceptable for a research
+    # tool; if not, enable --appendonly yes with a volume.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # Same hardening as the app services (checked: Redis runs fine
+    # read-only, without capabilities, as its own non-root user 999).
+    <<: *hardening
+    user: "999:999"
+    pids_limit: 256
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+##   ---- worker: runs background jobs (simulations, PDF reports) ----
+##   Guide 6.1. No HTTP port; only on the backend network.
+  worker:
+    <<: *app
+    command: ["te-worker"]
+    networks: [backend]
+    # No signing key here: links are signed by the report tool (mcp) and
+    # checked by the agent; the worker only renders and stores the PDF.
+    secrets: [te_database_url]
+    depends_on:
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    deploy:
+      resources:
+        limits: {cpus: "2.0", memory: 2g, pids: 256}
+##     Guide 10.3: reports are written here (TE_REPORT_STORAGE_DIR=/data/reports);
+##     the volume keeps them across restarts while the root filesystem is
+##     read-only. Dockerfile.platform creates /data/reports owned by uid 1000,
+##     so the new volume starts with that owner.
+    volumes:
+      - reports:/data/reports
+
+##   ---- agent: the interviewing agent (FastAPI, SSE) ----
+##   Guide 8.1. Calls the MCP server over the network
+##   (TE_AGENT_MCP_URL=http://mcp:8000/mcp) and the Anthropic API.
+##   The command is a list with one argument per line, so 12.3 can add two.
+  agent:
+    <<: *app
+    command:
+      - uvicorn
+      - te_platform.agent.app:app
+      - --host=0.0.0.0
+      - --port=8000
+##       Guide 12.3: read the real client IP from X-Forwarded-For, trusting
+##       that header ONLY from Caddy's fixed address on the edge network
+##       (see `caddy` below and TE_FORWARDED_ALLOW_IPS).
+      - --proxy-headers
+      - --forwarded-allow-ips=172.30.0.10
+##     Guide 8.1 (continued): health check, limits, start after mcp.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/agent/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 512m, pids: 256}
+    depends_on:
+      mcp: {condition: service_healthy}
+##     Guide 8.5: sessions and transcripts are stored in the database.
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+##     Guide 8.5: the model key, the agent's own MCP key, the database.
+    secrets:
+      - te_anthropic_api_key
+      - te_agent_mcp_api_key
+      - te_database_url
+##     Guide 10.3: to verify report download links.
+      - te_report_signing_key
+##     Guide 10.3: the worker writes PDFs into this volume; the agent only
+##     READS them to serve downloads (GET /agent/reports/{id}), hence :ro.
+    volumes:
+      - reports:/data/reports:ro
+
+##   ---- caddy: the only entry point (reverse proxy; HTTPS in production) ----
+##   Guide 9.0. From the chat on, the browser needs ONE address for the
+##   pages (web) and the agent API (/agent/*): login.js and chat.js call
+##   /agent/... on the page's own origin, and the login cookie must reach
+##   the agent. Caddy gives that address in development
+##   (http://localhost:8080, compose.override.yml) as in production.
+##   Image built from deploy/caddy/Dockerfile (adds the rate-limit plugin):
+##   compose.override.yml builds it as te-caddy:local; production pulls the
+##   copy that the release workflow pushed (compose.prod.yml).
+##   Ports are published only in the override file (development, on
+##   localhost) and, from guide 12.3, in compose.prod.yml (80/443, your
+##   domain, TLS). 12.3 also makes the agent trust Caddy's X-Forwarded-For
+##   (agent command above).
+  caddy:
+    image: te-caddy:local
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and keys MUST persist, or every restart requests new
+      # certificates and hits the certificate authority's rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    # A FIXED address, so the services can trust X-Forwarded-For from
+    # Caddy and from nobody else (TE_FORWARDED_ALLOW_IPS; the agent
+    # from guide 12.3).
+    networks:
+      edge:
+        ipv4_address: 172.30.0.10
+    read_only: true
+    cap_drop: [ALL]
+    # The single capability Caddy needs: bind ports 80 and 443 (< 1024).
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    depends_on:
+      web: {condition: service_healthy}
+      agent: {condition: service_healthy}
+      mcp: {condition: service_healthy}
+
+## -----------------------------------------------------------------------------
+## Networks (guide 4.6)
+## -----------------------------------------------------------------------------
+## Guide 4.6: Caddy and the services it forwards to live on `edge`; the
+## database, Redis and the worker only on `backend`; mcp and agent on both;
+## web on `edge` only.
+networks:
+  # An explicit address range, so Caddy can have a fixed address in it.
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  # internal: true = no route to or from the internet; only containers
+  # attached to this network can reach the services on it. (It also means
+  # a port published on this network alone is unreachable: see
+  # compose.override.yml for the debug ports.)
+  backend:
+    internal: true
+
+## -----------------------------------------------------------------------------
+## Volumes: storage managed by Docker that survives container rebuilds.
+## -----------------------------------------------------------------------------
+## Guide 5.1: the database files.
+volumes:
+  pgdata: {}
+## Guide 9.0: Caddy's certificates (production, 12.3) and its runtime
+## configuration.
+  caddy_data: {}
+  caddy_config: {}
+## Guide 10.3: the generated PDF reports.
+  reports: {}
+
+## -----------------------------------------------------------------------------
+## Secrets: each is a file on the host, mounted read-only into the containers
+## that list it, at /run/secrets/<name>. te_platform/config.py reads them
+## (secrets_dir="/run/secrets"); the file name equals the Settings field name
+## with the TE_ prefix (te_database_url -> Settings.database_url). The db_*
+## files are read by the postgres container only (not Settings).
+## The ./secrets/ folder is git-ignored; the same files are used in
+## development and production, never variables in .env, so each container
+## sees only its own (least privilege). Every file listed here must exist
+## before `docker compose up`. Compose mounts a file with its host owner and
+## permissions (its `mode:` option is ignored for files), so create the
+## folder with mode 700 and the files with mode 644: the containers run as
+## other users (postgres 999, the app 1000) and must be able to read them.
+## -----------------------------------------------------------------------------
+## Guide 5.1: the superuser's and the two roles' passwords (postgres only).
+secrets:
+  db_admin_password:
+    file: ./secrets/db_admin_password
+  db_app_password:
+    file: ./secrets/db_app_password
+  db_migrator_password:
+    file: ./secrets/db_migrator_password
+## Guide 5.3: the migration role's URL (migrate only).
+  te_migration_database_url:
+    file: ./secrets/te_migration_database_url
+## Guide 5.4: the app role's database URL (mcp first, then worker and agent).
+  te_database_url:
+    file: ./secrets/te_database_url
+## Guide 8.5: the agent's keys.
+  te_anthropic_api_key:
+    file: ./secrets/te_anthropic_api_key
+  te_agent_mcp_api_key:
+    file: ./secrets/te_agent_mcp_api_key
+## Guide 10.3: signs and verifies report download links.
+  te_report_signing_key:
+    file: ./secrets/te_report_signing_key

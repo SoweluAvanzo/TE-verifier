@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+## =============================================================================
+## deploy/postgres/backup.sh.template — nightly database backup (and how to restore)
+## =============================================================================
+## GUIDE STEP   12.4
+## PURPOSE      A shell script, run every night by cron (the Linux scheduler)
+##              on the server, that:
+##              1. dumps the database with pg_dump into one file;
+##              2. copies the file to OFF-SITE storage (another location, so a
+##                 lost server does not take the backups with it);
+##              3. deletes local dumps older than the retention period.
+## USED BY      cron on the production server, e.g. the crontab line
+##                15 2 * * * /opt/te/deploy/postgres/backup.sh >> /var/log/te-backup.log 2>&1
+##              (every day at 02:15).
+## DEPENDS ON   Docker Compose (pg_dump runs INSIDE the postgres container, so
+##              its version always matches the server), an off-site target
+##              (e.g. university storage via rclone or rsync).
+## WHY          Guide 12.4: "A backup you have never restored is not a
+##              backup." The restore drill below is part of this file.
+## ACTIVATE     Copy to backup.sh, uncomment, fill in the off-site command,
+##              `chmod 700 backup.sh` (only the owner may read or run it), add
+##              the crontab line, then perform the restore drill once.
+##              Line 1 (the shebang, which tells the system to run this file
+##              with bash) is already active: a shebang works only on line 1.
+##              Check the syntax with `bash -n backup.sh`.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your script in backup.sh (a copy of this file, see ACTIVATE), between
+## this list and the SOLUTION marker. Lines starting with "|" are short
+## illustrations, not the full script.
+##
+## Guide 12.4
+## [ ] 1. Line 1 already holds the shebang `#!/usr/bin/env bash` (keep it
+##        there). Below this list: `set -euo pipefail` and `umask 077`.
+## [ ] 2. Four variables: BACKUP_DIR=/var/backups/te, RETENTION_DAYS=14,
+##        STAMP from `date +%Y%m%d-%H%M%S`, FILE="$BACKUP_DIR/te-$STAMP.dump".
+## [ ] 3. Create BACKUP_DIR and make it readable by its owner only (700).
+## [ ] 4. Run pg_dump INSIDE the postgres container, with both compose files,
+##        as te_migrator, in custom format, into "$FILE.partial", and
+##        rename it to "$FILE" only when pg_dump succeeded:
+##          | docker compose -f ... -f ... exec -T postgres \
+##          |     pg_dump -U te_migrator -d te -Fc > "$FILE.partial"
+##          | mv "$FILE.partial" "$FILE"
+## [ ] 5. The off-site copy (e.g. rclone copy); until you have a target,
+##        keep the SOLUTION's warning placeholder.
+## [ ] 6. Delete local dumps older than RETENTION_DAYS with `find ... -mtime
+##        +"$RETENTION_DAYS" -delete`, then echo "backup ok: $FILE".
+## [ ] 7. Check: chmod 700 backup.sh, run it once by hand, add the crontab
+##        line from USED BY, then do the RESTORE DRILL at the end of this
+##        file and write the result in docs/operations.md.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## code. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## (The shebang is line 1 of this file, above the header.)
+## -e: stop at the first failing command; -u: using an unset variable is an
+## error; -o pipefail: a failure inside a pipe (a | b) counts as a failure.
+# set -euo pipefail
+## umask 077: every file this script creates is readable by its owner only
+## (a dump contains every user's data).
+# umask 077
+#
+# BACKUP_DIR=/var/backups/te          # local folder, readable by root only
+# RETENTION_DAYS=14                   # keep two weeks locally
+# STAMP=$(date +%Y%m%d-%H%M%S)
+# FILE="$BACKUP_DIR/te-$STAMP.dump"
+#
+# mkdir -p "$BACKUP_DIR"
+# chmod 700 "$BACKUP_DIR"
+#
+## pg_dump -Fc: PostgreSQL's "custom" format. Compressed, and pg_restore can
+## restore all of it or selected tables. Run as the schema owner (te_migrator);
+## inside the container a local connection needs no password.
+## `exec -T`: no terminal, so the binary output is not corrupted.
+## Written to .partial first: if pg_dump fails, set -e stops the script
+## before `mv`, and no broken file is ever named like a good backup.
+# docker compose -f /opt/te/compose.yml -f /opt/te/compose.prod.yml exec -T postgres \
+#     pg_dump -U te_migrator -d te -Fc > "$FILE.partial"
+# mv "$FILE.partial" "$FILE"
+#
+## Copy off-site. Replace this warning with your real target, for example:
+##   rclone copy "$FILE" unito-backup:te-db/
+## Until then the warning lands in the cron log every night (stderr).
+# echo "WARNING: no off-site copy configured; $FILE exists only on this server" >&2
+#
+## Delete local dumps older than the retention period ('te-*.dump*' also
+## matches the .partial file a failed run may have left).
+# find "$BACKUP_DIR" -name 'te-*.dump*' -mtime +"$RETENTION_DAYS" -delete
+#
+# echo "backup ok: $FILE"
+
+## -----------------------------------------------------------------------------
+## RESTORE DRILL (monthly; write the date and result in docs/operations.md)
+## -----------------------------------------------------------------------------
+## 1. Start a THROW-AWAY postgres container (never restore over production)
+##    and wait until it accepts TCP connections. (Checking over TCP, -h,
+##    matters: on first start the image runs a temporary server on a local
+##    socket only, then restarts it; a socket check would pass too early.)
+##      docker run --rm -d --name te-restore -e POSTGRES_PASSWORD=drill postgres:16
+##      until docker exec te-restore pg_isready -h 127.0.0.1 -U postgres; do sleep 1; done
+## 2. Copy the latest dump into it and restore. The fresh server has no
+##    te_app / te_migrator roles, so skip ownership (--no-owner) and the
+##    GRANTs to those roles (--no-privileges); the data is what is checked.
+##      docker cp /var/backups/te/te-<stamp>.dump te-restore:/tmp/x.dump
+##      docker exec te-restore createdb -U postgres te
+##      docker exec te-restore pg_restore -U postgres -d te --no-owner --no-privileges /tmp/x.dump
+##    pg_restore must end without any "error" line.
+## 3. Check it: row counts of sessions, spec_versions and verifications are
+##    close to production's; open one recent session's latest spec. The
+##    tables live in the schema `te` (init-roles.sql), so name it:
+##      docker exec te-restore psql -U postgres -d te -c 'select count(*) from te.sessions'
+## 4. Remove the container: docker stop te-restore

@@ -20,7 +20,9 @@ build/
 dist/
 *.egg-info/
 .eggs/
-
+MPC_server/.venv/
+ **/__pycache__/
+ 
 # Tests / type-checkers
 .pytest_cache/
 .mypy_cache/
@@ -40,3 +42,14 @@ Thumbs.db
 CLAUDE.md
 Roadmap Simulatore Irene.docx
 Six_Failure_Modes__A_Pre_Deployment_Diagnostic_Framework_for_Tokenized_Collaborative_Economies.pdf
+literature/
+reports/
+MPC_server/
+docs/agent-implementation-guide.md
+docs/operations.md
+docs/adr/
+te_platform/README.md
+te_platform/db/migrations/README.md
+te_platform/db/migrations/versions/README.md
+evals/README.md
+webapp/service_adapter_notes.md

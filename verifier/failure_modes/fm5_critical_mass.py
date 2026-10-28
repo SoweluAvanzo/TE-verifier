@@ -176,8 +176,12 @@ class FM5CriticalMass(FailureMode):
                 )
             )
             # If avg_degree.min ≥ deg_star, FM5 passes by the network rule
-            # regardless of the well-mixed Z3 outcome.
-            if avg_deg_range.min >= deg_star:
+            # regardless of the well-mixed Z3 outcome, PROVIDED the degree
+            # is possible: nobody has more neighbours than there are other
+            # participants, so avg_degree ≤ N − 1 for every declared N
+            # (docs/proofs/topology.md). An impossible degree (above
+            # N_min − 1) must not pass the check; the well-mixed rule decides.
+            if avg_deg_range.min >= deg_star and avg_deg_range.min <= N_range.min - 1:
                 return Verdict(
                     failure_mode=self.name,
                     subject="system",
@@ -461,10 +465,10 @@ class FM5CriticalMass(FailureMode):
         if K_lo is None or K_hi is None:
             return []
         d_hi = te.participants.average_demand_d.max
-        # The well-mixed predicate. For network topologies the
-        # alternate (degree ≥ 2Kd) is the binding one; we emit both
-        # so the ABM author picks the one matching the modelled
-        # topology.
+        # The well-mixed predicate, and for network topologies the
+        # degree predicate as an ALTERNATIVE (the verdict passes if either
+        # route holds; docs/proofs/topology.md). Same group = OR.
+        group = "critical_mass" if te.participants.topology == Topology.NETWORK else None
         preds: list = [
             SafetyPredicate(
                 failure_mode="FM5",
@@ -474,6 +478,7 @@ class FM5CriticalMass(FailureMode):
                 formula="N ≥ 2·K·d + 1 (well-mixed critical mass)",
                 inputs=["count_N", "offer_variety_K", "average_demand_d"],
                 paper_section="§3.5 eq. (21)",
+                alternative_group=group,
             )
         ]
         if te.participants.topology == Topology.NETWORK:
@@ -486,6 +491,7 @@ class FM5CriticalMass(FailureMode):
                     formula="avg_degree ≥ 2·K·d (network-corrected; bypasses N)",
                     inputs=["topology_params.average_degree", "offer_variety_K", "average_demand_d"],
                     paper_section="§3.5 (network correction)",
+                    alternative_group=group,
                 )
             )
         return preds

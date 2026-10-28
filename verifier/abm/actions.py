@@ -64,6 +64,7 @@ from schema import (
     UtilityWeights,
 )
 from verifier.abm.samplers import Sampler
+from verifier.abm.state import mint_room
 
 
 # Default utility weights per role. Used when AgentType.utility is None
@@ -619,6 +620,9 @@ def execute_action(
         # earners until all agents have decided, so the engine
         # pre-computes the count and we draw `pool / count`.
         share = pools[token_id].get("_earn_share", 0.0)
+        room = mint_room(state, token_id)  # outstanding supply cap
+        if room is not None:
+            share = min(share, room)
         if share > 0:
             agent["balance"] = agent.get("balance", 0.0) + share
             state["tokens"][token_id]["M"] += share
@@ -767,7 +771,7 @@ def prepare_pools(
         # engine._sample_stochastic_rule_value.
         from verifier.abm.engine import _sample_stochastic_rule_value  # local to avoid cycle
 
-        value = _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler)
+        value = _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler, state)
         pools[token_id][side] = pools[token_id].get(side, 0.0) + value
     return pools
 

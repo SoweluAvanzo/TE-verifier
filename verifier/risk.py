@@ -101,11 +101,14 @@ def _rule_midpoint_rate(
     # by binding each ParamDecl to the midpoint of its declared range.
     if getattr(rule.function, "expression", None) is not None:
         from verifier.expr_eval import EvalEnv, evaluate
+        from verifier.simulate.trajectory import _initial_supplies
         params = {}
         for p in (rule.function.parameters or []):
             params[p.name] = (p.range.min + p.range.max) / 2.0
         env = EvalEnv(
-            state={"t": periods_horizon / 2.0},
+            # state.M['ID'] at the initial supplies: the midpoint layer
+            # has no simulated supply (docs/dsl-reference.md).
+            state={"t": periods_horizon / 2.0, "M": _initial_supplies(te)},
             params=params,
             consts={"horizon": periods_horizon},
             agents=[], tokens=[], events=[], assets=[],
@@ -219,7 +222,11 @@ def _risk_for_fm1(te: TokenEconomy, verdict: Verdict) -> RiskLevel:
         return RiskLevel.RED_CRITICAL  # no transaction volume
     if E <= 0:
         return RiskLevel.GREEN  # no emission
-    ros = max(0.0, (E - B) / Q)
+    net = E - B
+    if token.outstanding_supply_cap is not None:
+        # Realized net creation is at most the cap (outstanding_cap.md, Lemma 2).
+        net = min(net, _mid(token.outstanding_supply_cap))
+    ros = max(0.0, net / Q)
     if ros <= 1.0:
         return RiskLevel.GREEN
     if ros <= 1.5:
@@ -259,11 +266,22 @@ def _risk_for_fm3(te: TokenEconomy, verdict: Verdict) -> RiskLevel:
     """FM3 ρ = B/E at midpoint. Bands per Simulator.pdf §4.3."""
     if verdict.status in (Status.NOT_APPLICABLE, Status.INCONCLUSIVE):
         return RiskLevel.NOT_APPLICABLE
+    if verdict.status == Status.PASS_AS_INTENDED:
+        # As for FM2 and FM6. FM3 is intended when supply is capped (every
+        # emission rule has a supply_cap, or an outstanding_supply_cap) or the
+        # token's governance role relaxes it (Simulator.pdf §4, multi-token:
+        # "ρ = 0 does not trigger a critical warning"). §4.3's RED CRITICAL
+        # premise, supply growing monotonically with no corrective mechanism,
+        # does not hold for a capped supply.
+        return RiskLevel.GREEN
     token = next((t for t in te.tokens if t.id == verdict.subject), None)
     if token is None:
         return RiskLevel.NOT_APPLICABLE
     E = _token_E_midpoint(te, token)
     B = _token_B_midpoint(te, token)
+    if token.outstanding_supply_cap is not None:
+        # Steady-state creation under the cap is min(E, B) (Lemma 3).
+        E = min(E, B)
     if E <= 0:
         return RiskLevel.GREEN  # no emission, ρ undefined → safe
     if B <= 0:
@@ -328,23 +346,39 @@ def _risk_for_fm6(te: TokenEconomy, verdict: Verdict) -> RiskLevel:
         return RiskLevel.NOT_APPLICABLE
     if verdict.status == Status.PASS_AS_INTENDED:
         return RiskLevel.GREEN
+    # The FM6 module's own unilateral set and effective Gini, so the band
+    # and the verdict measure the same two channels (a plain COMMITTEE is
+    # not unilateral; docs/proofs/fm6.md).
+    from verifier.failure_modes.fm6_governance import (
+        GINI_SECONDARY_THRESHOLD,
+        UNILATERAL_ACTORS,
+        _effective_gini_range,
+    )
+
+    # Secondary channel: effective Gini at its midpoint above the threshold
+    # is a violation in the typical case. The Simulator's §4.6 bands cover
+    # only Γ; this channel is banded AMBER, as a moderate Γ violation.
+    gini_band: RiskLevel | None = None
+    eff, _note = _effective_gini_range(te.governance, None)
+    if eff is not None and (eff.min + eff.max) / 2.0 > GINI_SECONDARY_THRESHOLD:
+        gini_band = RiskLevel.AMBER
     rules = te.governance.rule_structure
     if not rules:
-        return RiskLevel.NOT_APPLICABLE
-    # Same unilateral set as the FM6 module
-    from schema import ControllingActor
-
-    UNILATERAL = {ControllingActor.SINGLE_ENTITY, ControllingActor.COMMITTEE}
-    unilateral = sum(1 for actor in rules.values() if actor in UNILATERAL)
+        return gini_band or RiskLevel.NOT_APPLICABLE
+    unilateral = sum(1 for actor in rules.values() if actor in UNILATERAL_ACTORS)
     total = len(rules)
     gamma = unilateral / total
     if gamma <= 0.30:
-        return RiskLevel.GREEN
-    if gamma <= 0.50:
-        return RiskLevel.GREEN_BORDERLINE
-    if gamma <= 0.80:
-        return RiskLevel.AMBER
-    return RiskLevel.RED
+        gamma_band = RiskLevel.GREEN
+    elif gamma <= 0.50:
+        gamma_band = RiskLevel.GREEN_BORDERLINE
+    elif gamma <= 0.80:
+        gamma_band = RiskLevel.AMBER
+    else:
+        gamma_band = RiskLevel.RED
+    if gini_band is not None and _RISK_SCORE[gini_band] > _RISK_SCORE[gamma_band]:
+        return gini_band
+    return gamma_band
 
 
 _FM_RISK_FUNCS = {

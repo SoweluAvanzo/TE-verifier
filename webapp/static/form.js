@@ -2139,11 +2139,24 @@ function syncVoteWeightingParamVisibility() {
   });
 }
 // Wire the change handler at module init (after DOM is ready).
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   const sel = document.getElementById("gov-vote-weighting");
   if (sel) {
     sel.addEventListener("change", syncVoteWeightingParamVisibility);
     syncVoteWeightingParamVisibility();
+  }
+  // Guide 9.3: a spec handed over by the chat's "Open in form" button
+  // (webapp/static/chat.js) is loaded like an uploaded YAML file.
+  const chatYaml = sessionStorage.getItem("te_chat_yaml");
+  if (chatYaml) {
+    sessionStorage.removeItem("te_chat_yaml");
+    const r = await fetch("/api/yaml-to-ir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ yaml: chatYaml }),
+    });
+    const data = await r.json();
+    if (!data.error) hydrateForm(data.ir);
   }
 });
 
@@ -2346,6 +2359,17 @@ verifyBtn.addEventListener("click", async () => {
       return;
     }
     lastVerifiedYaml = data.yaml || "";
+    // Guide 9.3: opened from the chat? Store the verified spec in that chat
+    // session as a new version (author "form", te_platform/agent/spec_api.py).
+    const sid = sessionStorage.getItem("te_chat_session");
+    // Not awaited: the verdict must show even if the agent is unreachable.
+    if (sid) {
+      fetch(`/agent/sessions/${encodeURIComponent(sid)}/spec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ yaml: lastVerifiedYaml }),
+      }).catch(() => {});
+    }
     verdictEmpty.hidden = true;
     verdictContent.hidden = false;
     // Populate the hidden rich containers (coherence-issues lives there

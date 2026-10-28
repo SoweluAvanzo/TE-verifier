@@ -1,0 +1,113 @@
+## =============================================================================
+## te_platform/db/alembic.ini.template — Alembic's configuration file
+## =============================================================================
+## GUIDE STEP   5.3
+## PURPOSE      Alembic (the migration tool) reads a file named alembic.ini to
+##              find its scripts folder and logging settings. This template
+##              becomes te_platform/db/alembic.ini.
+## USED BY      the `alembic` command, run by the one-shot `migrate` service in
+##              Compose (`alembic -c te_platform/db/alembic.ini upgrade head`).
+## DEPENDS ON   migrations/env.py (which supplies the database URL and tables).
+## WHY          The database URL is deliberately NOT written here: env.py reads
+##              it from Settings.migration_database_url (an environment
+##              variable / Docker secret), so no password is ever committed.
+## ACTIVATE     Copy this template to te_platform/db/alembic.ini and uncomment
+##              it. Do NOT run `alembic init`: the standard files it would
+##              create are already shipped (migrations/README.md). Commands
+##              then use `alembic -c te_platform/db/alembic.ini ...`.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Copy this template to te_platform/db/alembic.ini (header ACTIVATE) and
+## write the sections below there, in this order. Lines starting with "|"
+## are short illustrations, not the full file. Do NOT run `alembic init`.
+##
+## Guide 5.3
+## [ ] 1. An [alembic] section with three keys: script_location, the
+##        migrations folder next to the ini file,
+##          | script_location = %(here)s/migrations
+##        file_template, so new migration files start with the date (an ini
+##        file needs %% for a literal %), and prepend_sys_path = .
+## [ ] 2. No sqlalchemy.url line: env.py supplies the URL (header WHY).
+## [ ] 3. The logging sections: [loggers] with keys root,sqlalchemy,alembic;
+##        [handlers] console; [formatters] generic; then [logger_root]
+##        (WARNING, console handler), [logger_sqlalchemy] (WARNING,
+##        qualname sqlalchemy.engine), [logger_alembic] (INFO),
+##        [handler_console] (StreamHandler on sys.stderr) and
+##        [formatter_generic].
+## [ ] 4. A [post_write_hooks] section: after writing a new migration,
+##        Alembic runs ruff on it (`check --fix`, then `format`), so a
+##        generated file passes the CI lint job. `exec` runs the `ruff` of
+##        the environment that runs alembic (`uv run` puts .venv/bin first).
+##          | hooks = ruff_fix, ruff_format
+##          | ruff_fix.type = exec
+## [ ] 5. Check, with migrations/env.py active (migrations/README.md):
+##          | uv run alembic -c te_platform/db/alembic.ini upgrade head
+##        then `downgrade -1` and `upgrade head` again (guide 5.3).
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## code. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+# [alembic]
+## Folder with env.py and versions/ (relative to this ini file's folder via %(here)s).
+# script_location = %(here)s/migrations
+## Name migration files "<date>_<rev>_<slug>.py" so they sort chronologically.
+# file_template = %%(year)d%%(month).2d%%(day).2d_%%(rev)s_%%(slug)s
+## Use the same import roots as the application.
+# prepend_sys_path = .
+## Intentionally no `sqlalchemy.url` line: env.py provides it.
+
+# [loggers]
+# keys = root,sqlalchemy,alembic
+#
+# [handlers]
+# keys = console
+#
+# [formatters]
+# keys = generic
+#
+# [logger_root]
+# level = WARNING
+# handlers = console
+# qualname =
+#
+# [logger_sqlalchemy]
+# level = WARNING
+# handlers =
+# qualname = sqlalchemy.engine
+#
+# [logger_alembic]
+# level = INFO
+# handlers =
+# qualname = alembic
+#
+# [handler_console]
+# class = StreamHandler
+# args = (sys.stderr,)
+# level = NOTSET
+# formatter = generic
+#
+# [formatter_generic]
+# format = %(levelname)-5.5s [%(name)s] %(message)s
+
+## Run ruff on every file `alembic revision` writes, so it passes the CI lint
+## job (te_platform/ruff.toml applies to migrations too). --unsafe-fixes
+## lets ruff also fix the docstring's trailing spaces and the old-style type
+## hints of Alembic's template; you review the file by hand anyway.
+## --exit-zero: what ruff cannot fix is shown when you run `ruff check`, and
+## must not abort the revision. Note: ruff removes the `op`/`sa` imports
+## from an EMPTY migration (unused); add them back if you write one by hand.
+# [post_write_hooks]
+# hooks = ruff_fix, ruff_format
+# ruff_fix.type = exec
+# ruff_fix.executable = ruff
+# ruff_fix.options = check --fix --unsafe-fixes --exit-zero REVISION_SCRIPT_FILENAME
+# ruff_format.type = exec
+# ruff_format.executable = ruff
+# ruff_format.options = format REVISION_SCRIPT_FILENAME

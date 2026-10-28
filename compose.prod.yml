@@ -1,0 +1,139 @@
+## =============================================================================
+## compose.prod.yml — PRODUCTION additions to compose.yml
+## =============================================================================
+## GUIDE STEP   4.5 (web, mcp), then one block per service when compose.yml
+##              gets it (5.1, 5.3, 6.1, 8.1, 9.0); used for every deploy
+##              from 12.2 on (12.2: migrate tolerates rollbacks; 12.3: Caddy's
+##              domain and the public ports).
+## PURPOSE      Turns the base stack into the production stack:
+##                - every app service runs the image built and scanned by CI,
+##                  pulled from GitHub Container Registry, with an exact tag
+##                  (the git commit SHA in TE_IMAGE_TAG) — never `latest`;
+##                - Caddy too runs the image the release workflow built;
+##                - `migrate` tolerates a database that is newer than the
+##                  image (rollback, guide 12.2);
+##                - services restart after crashes and reboots;
+##                - nothing is built on the server, no source bind mounts,
+##                  no debug ports, no auto-reload;
+##                - ONLY Caddy publishes ports (80, 443, and 443/udp for
+##                  HTTP/3; from guide 12.3).
+##              Used explicitly, never automatically (docs/operations.md §1):
+##                docker compose -f compose.yml -f compose.prod.yml pull
+##                docker compose -f compose.yml -f compose.prod.yml run --rm migrate
+##                docker compose -f compose.yml -f compose.prod.yml up -d
+## USED BY      The production server (docs/operations.md: deploy and rollback),
+##              deploy/postgres/backup.sh.
+## DEPENDS ON   compose.yml, .env on the server with TE_IMAGE_TAG=<commit sha>
+##              (and CADDY_SITE_ADDRESS from 12.3), ./secrets/ on the server,
+##              the images pushed by .github/workflows/release.yml.template,
+##              and a checkout of the repository at the SAME commit as
+##              TE_IMAGE_TAG (this file, compose.yml, deploy/ are read from
+##              it; docs/operations.md §0).
+## WHY          Guide 12.2: the server never builds code; what runs is exactly
+##              the image that passed CI. Rollback = previous tag + same
+##              command (which is why `migrate` must tolerate a newer schema).
+## ACTIVATE     Uncomment the 4.5 code, then each later block at its step.
+##              Check (TE_IMAGE_TAG is set inline until .env has it, 12.2):
+##                TE_IMAGE_TAG=test docker compose -f compose.yml -f compose.prod.yml config
+##              shows no `build:`, no bind-mounted source, and ports only on caddy.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your YAML between this list and the SOLUTION marker below. Lines
+## starting with "|" are short illustrations. Service names must match
+## compose.yml exactly; the image names must match the ones pushed by
+## .github/workflows/release.yml.template.
+##
+## Guide 4.5 (written now; used from 12.2 on)
+## [ ] 1. The anchor `x-prod-app: &prod-app` with the registry image and
+##        restart: unless-stopped. The `:?` form stops Compose when
+##        TE_IMAGE_TAG is missing:
+##          | image: ghcr.io/soweluavanzo/te-verifier:${TE_IMAGE_TAG:?...}
+## [ ] 2. `services:`: web and mcp each get `<<: *prod-app`.
+## [ ] 3. Check:
+##          | TE_IMAGE_TAG=test docker compose -f compose.yml \
+##          |     -f compose.prod.yml config
+##        shows the registry image, no `build:` and no published ports.
+##
+## Later (one block per service, when compose.yml has it)
+## [ ] 4. Guide 5.1: postgres gets restart: unless-stopped.
+## [ ] 5. Guide 5.3: migrate gets `<<: *prod-app`, then restart: "no" (a
+##        one-shot job must not restart).
+## [ ] 6. Guide 6.1: worker gets `<<: *prod-app`; redis gets restart:
+##        unless-stopped.
+## [ ] 7. Guide 8.1: agent gets `<<: *prod-app`.
+## [ ] 8. Guide 9.0: caddy gets the Caddy image of the release workflow
+##        (same tag) and restart: unless-stopped.
+## [ ] 9. Guide 12.2: migrate gets the command of compose.yml with
+##        `-x skip_if_newer=true` before `upgrade` (after a rollback the
+##        database is newer than the image; te_platform/db/migrations/env.py
+##        then reports it and exits 0 instead of failing).
+## [ ] 10. Guide 12.3: caddy gets CADDY_SITE_ADDRESS (your domain,
+##        required with `:?`) and the ONLY published ports of the system:
+##        "80:80", "443:443" and "443:443/udp" (HTTP/3).
+## [ ] 11. Check after each block: the command of step 3; from 12.3 the
+##        ports appear only on caddy.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## The same image for every app role (D1). ${TE_IMAGE_TAG:?...} makes Compose
+## stop with this message if the variable is missing, instead of silently
+## pulling an untagged image.
+x-prod-app: &prod-app
+  image: ghcr.io/soweluavanzo/te-verifier:${TE_IMAGE_TAG:?set TE_IMAGE_TAG to the commit SHA to deploy}
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *prod-app
+  mcp:
+    <<: *prod-app
+##   Guide 5.1
+  postgres:
+    restart: unless-stopped
+##   Guide 5.3
+  migrate:
+    <<: *prod-app
+    # A one-shot job must not be restarted after it finishes.
+    restart: "no"
+##     Guide 12.2: rollbacks. After a rollback to an older image the
+##     database already holds migrations that image does not know, and a
+##     plain `upgrade head` fails ("Can't locate revision"): `migrate` would
+##     never complete, so mcp, worker and agent (which wait for it) would
+##     never start. With skip_if_newer=true, env.py reports the newer
+##     revision and exits 0 without changing anything; real migration
+##     errors still fail. The older code works on the newer schema because
+##     migrations only add (docs/operations.md §1). Development keeps the
+##     strict command of compose.yml.
+    command: ["alembic", "-c", "te_platform/db/alembic.ini", "-x", "skip_if_newer=true",
+              "upgrade", "head"]
+##   Guide 6.1
+  worker:
+    <<: *prod-app
+  redis:
+    restart: unless-stopped
+##   Guide 8.1
+  agent:
+    <<: *prod-app
+##   Guide 9.0: the Caddy image built by the release workflow from
+##   deploy/caddy/Dockerfile, with the same tag as the app image. Until
+##   12.3 it publishes nothing and serves the Caddyfile's default address.
+  caddy:
+    image: ghcr.io/soweluavanzo/te-verifier-caddy:${TE_IMAGE_TAG:?set TE_IMAGE_TAG to the commit SHA to deploy}
+    restart: unless-stopped
+##     Guide 12.3: the public domain and the only published ports.
+    environment:
+      # Your domain, e.g. te.example.org: Caddy obtains its certificate.
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:?set CADDY_SITE_ADDRESS to your domain}
+    # The ONLY published ports of the whole system (guide 12.3 "done when").
+    ports:
+      - "80:80"        # HTTP: only redirects to HTTPS and answers certificate checks
+      - "443:443"      # HTTPS
+      - "443:443/udp"  # HTTP/3 (QUIC)

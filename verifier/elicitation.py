@@ -513,10 +513,13 @@ def coherence_violations(
         nfrs.governance_maturity == GovernanceMaturity.IMMEDIATE
         and te.governance.rule_structure
     ):
+        # The FM6 module's unilateral set (local import: no cycle).
+        from verifier.failure_modes.fm6_governance import UNILATERAL_ACTORS
+
         unilateral = sum(
             1
             for actor in te.governance.rule_structure.values()
-            if actor in {ControllingActor.SINGLE_ENTITY, ControllingActor.COMMITTEE}
+            if actor in UNILATERAL_ACTORS
         )
         total = len(te.governance.rule_structure)
         if total > 0 and unilateral / total >= 1.0:
@@ -595,10 +598,13 @@ def coherence_violations(
     # risk_level == red_critical (no burn) AND Γ ≈ 1.0 (governance
     # offers no corrective lever).
     if verdicts is not None and te.governance.rule_structure:
+        # The FM6 module's unilateral set (local import: no cycle).
+        from verifier.failure_modes.fm6_governance import UNILATERAL_ACTORS
+
         unilateral = sum(
             1
             for actor in te.governance.rule_structure.values()
-            if actor in {ControllingActor.SINGLE_ENTITY, ControllingActor.COMMITTEE}
+            if actor in UNILATERAL_ACTORS
         )
         total = len(te.governance.rule_structure)
         gamma = unilateral / total if total > 0 else 0.0

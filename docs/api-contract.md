@@ -83,6 +83,12 @@ Complementary to `status`. The SMT-derived `status` answers "does
 `risk_level` answers "at the **midpoint** of the box, how bad is it?".
 Both are useful and they are reported side-by-side. Bands per
 Simulator.pdf §4 (FM1 ros, FM2 τ̄ in days, FM3 ρ, FM5 rcm, FM6 Γ).
+Both layers compute the same quantities with the same definitions. They
+can still differ for two documented reasons: a `fail` can be GREEN at the
+midpoint when only corners of the box violate, and a `pass` can be below
+GREEN where a Simulator band is stricter than the verdict's threshold (for
+example FM5 BORDERLINE while N < 2·N*). A `pass_as_intended` verdict
+(FM2, FM3, FM6) is always GREEN.
 
 ### `Counterexample`
 

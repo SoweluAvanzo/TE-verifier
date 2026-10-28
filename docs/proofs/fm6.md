@@ -8,7 +8,7 @@ For a token economy with governance rule structure assigning each of
 `T` decision levers to a controlling actor (single entity, committee,
 token-holder vote, smart contract, or not adjustable), let `U` be the
 number of decisions controlled unilaterally (single entity or
-committee). Define the **centralization index**
+trusted committee, `committee_trusted`). Define the **centralization index**
 
 > `Γ = U / T`.
 
@@ -33,9 +33,18 @@ its threshold is a calibration with paper citation in `config.py`.
 1. **(Discrete decision levers.)** The governance rule structure is a
    finite list of distinct decision types. Paper §3.6 enumerates 7+;
    the verifier uses the user's declared list.
-2. **(Unilateral = single_entity ∪ committee.)** Paper §3.6 defines
-   unilateral as "decisions that can be taken unilaterally by a single
-   actor or small group." Committee qualifies as a small group.
+2. **(Unilateral = single_entity ∪ committee_trusted.)** Paper §3.6
+   defines unilateral as "decisions that can be taken unilaterally by a
+   single actor or small group." A trusted committee that ratifies by
+   fiat qualifies as such a group. A plain `committee` (an elected
+   board, a multisig, a voting committee) decides by internal vote, so
+   no single actor or fixed group can take the decision unilaterally:
+   it is not counted (`verifier/failure_modes/fm6_governance.py`,
+   `UNILATERAL_ACTORS`). The risk band (`verifier/risk.py`) and the
+   coherence checks (`verifier/elicitation.py`) use the same set.
+   The risk band also reads the effective Gini at its midpoint, the
+   verdict's second channel: above the threshold it is at least AMBER,
+   so a typical case that violates the Gini signal never reads GREEN.
 3. **(Token-balance Gini orthogonal to Γ.)** A system can have low Γ
    on paper but high effective Γ if vote weight is balance-weighted
    and balances are concentrated. Paper §3.6 last paragraph.
@@ -57,9 +66,10 @@ are alternative routes to capture. ∎
 ## Critical-value formulas
 
 - `Γ* = Γ_threshold` — the configurable threshold.
-- `n_demote* = ⌊T/2⌋ + 1 − U` — minimum number of currently-unilateral
-  decisions that must be demoted to non-unilateral control to bring
-  `Γ` to or below `Γ*`. This is integer programming; Z3 supports
+- `n_demote* = max(0, ⌈U − T · Γ*⌉)` — minimum number of currently-
+  unilateral decisions that must be demoted to non-unilateral control
+  to bring `Γ` to or below `Γ*`: `(U − n)/T ≤ Γ*` iff `n ≥ U − T·Γ*`,
+  and the least non-negative integer satisfying it is the ceiling. This is integer programming; Z3 supports
   `Int` directly.
 
 **Proof.** By definition `Γ = U / T`. Demoting `n` decisions

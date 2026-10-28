@@ -53,6 +53,19 @@ def initial_state(*, token_ids: list[str], t: int = 0) -> State:
     }
 
 
+def mint_room(state: State, token_id: str) -> float | None:
+    """How much more of a capped token may be created now (None: no cap).
+
+    ``state["caps"]`` holds the outstanding supply cap sampled for this run
+    (engine._build_initial_state). Every creation site clips to this room,
+    so M(t) <= C holds in every run (docs/proofs/outstanding_cap.md).
+    """
+    cap = state.get("caps", {}).get(token_id)
+    if cap is None:
+        return None
+    return max(0.0, cap - state["tokens"][token_id]["M"])
+
+
 def derived_variable(state: State, var: str) -> float:
     """Resolve a predicate variable name to a state value.
 

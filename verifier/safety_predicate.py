@@ -68,3 +68,10 @@ class SafetyPredicate(BaseModel):
     # Provenance.
     paper_section: str | None = None
     failure_mode: str | None = None  # FM id, set by the FM emitter
+
+    # Predicates of one failure mode that share a group are ALTERNATIVES:
+    # the group holds if any of them holds (FM5: well-mixed N OR network
+    # degree, docs/proofs/topology.md). The failure mode's safety condition
+    # is the conjunction of its ungrouped predicates and of its groups
+    # (verifier/abm/predicates.py, fm_safe).
+    alternative_group: str | None = None

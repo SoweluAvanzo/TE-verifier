@@ -32,7 +32,7 @@ from schema import (
     Topology,
 )
 from verifier import verify
-from verifier.failure_modes.base import RiskLevel
+from verifier.failure_modes.base import RiskLevel, Status
 from verifier.risk import OverallRiskBand
 
 
@@ -312,3 +312,71 @@ def test_overall_risk_critical_for_broken_design() -> None:
     })
     r = verify(te)
     assert r.overall_risk.band in (OverallRiskBand.HIGH, OverallRiskBand.CRITICAL)
+
+
+def _fm6_with(actor: ControllingActor):
+    tokens = [Token(id="T", function=[TokenFunction.MEDIUM_OF_EXCHANGE],
+                    emission_rules=[_emit(c=1)],
+                    offer_variety_K=NumberRange.point(5))]
+    rules = {k: actor for k in "abcdef"}
+    rules["g"] = ControllingActor.TOKEN_HOLDER_VOTE
+    te = _make_te(tokens=tokens).model_copy(update={
+        "governance": GovernanceSpec(type=GovernanceType.HYBRID, rule_structure=rules)
+    })
+    return _fm(verify(te), "FM6", subject="system")
+
+
+def test_fm6_band_and_verdict_agree_for_an_elected_committee() -> None:
+    """A plain COMMITTEE is not unilateral in the verdict, so not in the band either."""
+    v = _fm6_with(ControllingActor.COMMITTEE)
+    assert v.status == Status.PASS
+    assert v.risk_level == RiskLevel.GREEN
+
+
+def test_fm6_band_and_verdict_agree_for_a_trusted_committee() -> None:
+    """COMMITTEE_TRUSTED is unilateral: 6/7 fails the verdict and is RED in the band."""
+    v = _fm6_with(ControllingActor.COMMITTEE_TRUSTED)
+    assert v.status == Status.FAIL
+    assert v.risk_level == RiskLevel.RED
+
+
+def _fm6_gini(lo: float, hi: float):
+    tokens = [Token(id="T", function=[TokenFunction.MEDIUM_OF_EXCHANGE],
+                    emission_rules=[_emit(c=1)],
+                    offer_variety_K=NumberRange.point(5))]
+    rules = {k: ControllingActor.TOKEN_HOLDER_VOTE for k in "abcdefg"}
+    te = _make_te(tokens=tokens).model_copy(update={
+        "governance": GovernanceSpec(
+            type=GovernanceType.DAO,
+            rule_structure=rules,
+            token_balance_gini=NumberRange(min=lo, max=hi),
+        )
+    })
+    return _fm(verify(te), "FM6", subject="system")
+
+
+def test_fm6_band_sees_concentrated_holdings_in_the_typical_case() -> None:
+    """Γ = 0 but Gini 0.8–0.95 (live Bitcoin session): the verdict fails on the
+    Gini channel and so does the midpoint (0.875 > 0.6); the band must not read
+    GREEN. Banded AMBER (docs/simulator-mapping.md, FM6 row)."""
+    v = _fm6_gini(0.8, 0.95)
+    assert v.status == Status.FAIL
+    assert v.risk_level == RiskLevel.AMBER
+
+
+def test_fm6_band_green_when_only_a_corner_of_the_gini_range_fails() -> None:
+    """Gini 0.4–0.7: the worst case fails, the midpoint 0.55 does not."""
+    v = _fm6_gini(0.4, 0.7)
+    assert v.status == Status.FAIL
+    assert v.risk_level == RiskLevel.GREEN
+
+
+def test_fm3_capped_supply_without_burn_is_green() -> None:
+    """Bitcoin pattern: PASS_AS_INTENDED (supply stops at the cap) bands GREEN, not RED_CRITICAL."""
+    import yaml
+    from schema import TokenEconomy
+
+    te = TokenEconomy.model_validate(yaml.safe_load(open("examples/bitcoin.yaml")))
+    v = _fm(verify(te), "FM3", subject="BTC")
+    assert v.status == Status.PASS_AS_INTENDED
+    assert v.risk_level == RiskLevel.GREEN

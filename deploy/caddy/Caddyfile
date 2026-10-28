@@ -1,0 +1,216 @@
+## =============================================================================
+## deploy/caddy/Caddyfile — the edge: HTTPS, routing, security headers, limits
+## =============================================================================
+## GUIDE STEP   9.0 (development: the single address http://localhost:8080
+##              for the pages and the agent API; the `caddy` service of
+##              compose.yml arrives here), 12.3 (production: the e-mail for
+##              the certificate authority and HSTS, two lines commented twice)
+## PURPOSE      Caddy is the ONLY container reachable from the internet. For
+##              every request it:
+##                1. terminates TLS in production (decrypts HTTPS;
+##                   certificates are obtained and renewed automatically from
+##                   Let's Encrypt/ZeroSSL; development uses plain HTTP);
+##                2. applies edge rules: body size limit, header timeouts,
+##                   per-IP rate limit, security headers;
+##                3. forwards the request over the private `edge` network to
+##                   the right service:
+##                     /mcp*     -> mcp:8000    (MCP server, streaming)
+##                     /agent/*  -> agent:8000  (chat API, SSE streaming)
+##                     anything  -> web:8000    (Flask: /, /chat, /yaml, /explore, /api/*)
+## USED BY      compose.yml service `caddy` (mounted at /etc/caddy/Caddyfile).
+## DEPENDS ON   deploy/caddy/Dockerfile (Caddy built with the rate-limit
+##              plugin), the variable CADDY_SITE_ADDRESS (set by
+##              compose.override.yml in development and by compose.prod.yml
+##              from .env in production), DNS record of your domain pointing
+##              at the server, ports 80/443 open in the firewall (guide 12.1).
+## WHY          Architecture D13 and §6: one entry point (small attack surface),
+##              one origin for all components (no CORS needed, cookies work
+##              everywhere), TLS configured once, protection from slow clients
+##              for the synchronous gunicorn workers, uniform security headers.
+## ACTIVATE     9.0: uncomment block by block (the two "Guide 12.3" lines
+##              stay commented), then:
+##                docker compose run --rm --no-deps caddy caddy validate \
+##                    --config /etc/caddy/Caddyfile
+##              (`run` works before Caddy has ever started; while it runs,
+##              use `docker compose exec caddy caddy validate ...`.)
+##              Done when (9.0): http://localhost:8080/login loads and
+##              http://localhost:8080/agent/health answers.
+##              12.3: put your real e-mail address in the `email` line,
+##              uncomment it and the HSTS line, validate again.
+##              Done when (guide 12.3): SSL Labs grade A, and the services are
+##              reachable only through Caddy.
+## SYNTAX NOTE  In a Caddyfile, `#` starts a comment, so this file follows the
+##              same `## ` / `# ` convention as the Python files.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your configuration between this list and the SOLUTION marker below.
+## Do the steps in order and validate after each block. Lines starting with
+## "|" are short illustrations, not the full file. The upstream names
+## (web:8000, agent:8000, mcp:8000) must match the services in compose.yml.
+##
+## Guide 9.0 (development; the same file serves production from 12.3)
+## [ ] 1. The global options block `{ ... }` at the top: `order rate_limit
+##        before basic_auth` (the plugin's directive needs a position), and
+##        `servers { timeouts { ... } }` with read_header 10s and idle 2m,
+##        but NO write timeout (streams). No `trusted_proxies`: Caddy is the
+##        edge (the SOLUTION says why).
+## [ ] 2. The site block: the address read from the environment, with
+##        localhost as default, followed by `{`. Everything below goes
+##        inside it:
+##          | {$CADDY_SITE_ADDRESS:localhost} {
+## [ ] 3. request_body with max_size 1MB.
+## [ ] 4. rate_limit with one zone `per_ip`: key {remote_host}, 300 events
+##        per 1m window (needs the plugin from deploy/caddy/Dockerfile).
+## [ ] 5. A `header { ... }` block with four security headers of guide
+##        12.3 (CSP, nosniff, X-Frame-Options DENY, Referrer-Policy), plus
+##        `-Server` to remove the Server header. Copy the CSP string from
+##        the SOLUTION and read its note about form.html first.
+## [ ] 6. `handle /mcp*` forwarding to mcp:8000 without buffering:
+##          | reverse_proxy mcp:8000 {
+##          |     flush_interval -1
+##          | }
+## [ ] 7. `handle /agent/*` forwarding to agent:8000, also with
+##        flush_interval -1 and no `encode` (compression delays SSE).
+## [ ] 8. A last `handle` without a path (everything else): `encode zstd
+##        gzip`, then reverse_proxy web:8000.
+## [ ] 9. Check:
+##          | docker compose run --rm --no-deps caddy caddy validate \
+##          |     --config /etc/caddy/Caddyfile
+##        (while Caddy runs: `docker compose exec caddy caddy validate ...`),
+##        then `docker compose up` and open http://localhost:8080/login (the
+##        development address of compose.override.yml);
+##        `curl -fsS http://localhost:8080/agent/health` answers.
+##
+## Guide 12.3 (production: what only a real domain with HTTPS needs)
+## [ ] 10. In the global options: `email` with your real address (the
+##        certificate authority's expiry warnings).
+## [ ] 11. In the header block: Strict-Transport-Security (HSTS), now that
+##        HTTPS works.
+## [ ] 12. Check: validate again; done when SSL Labs gives grade A and the
+##        services are reachable only via Caddy.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## Global options (apply to the whole server)
+## -----------------------------------------------------------------------------
+{
+##     Guide 12.3: contact address the certificate authority uses for expiry
+##     warnings (only a real domain gets a certificate).
+    # email you@unito.it
+
+    # The rate-limit directive comes from a plugin; plugins' directives must
+    # be given a position in Caddy's processing order.
+    order rate_limit before basic_auth
+
+    servers {
+        timeouts {
+            # A client must send all request headers within 10 s. Defeats
+            # "slowloris" attacks that tie up connections by sending headers
+            # one byte at a time.
+            read_header 10s
+            # Close idle keep-alive connections after 2 minutes.
+            idle 2m
+            # NO write timeout: chat (SSE) and MCP streams stay open for as
+            # long as the answer takes.
+        }
+        # No `trusted_proxies` here, on purpose: Caddy is the edge, nothing
+        # in front of it may set X-Forwarded-For. Caddy replaces any header
+        # a client sends with the real client address before forwarding.
+        # (Trusting "private_ranges" would be wrong: a client whose traffic
+        # reaches Caddy through Docker's port proxy appears with a private
+        # address and could then fake its IP to dodge the rate limit.)
+    }
+}
+
+## -----------------------------------------------------------------------------
+## The site. {$CADDY_SITE_ADDRESS:localhost} is replaced, when Caddy reads
+## this file, by the environment variable CADDY_SITE_ADDRESS (or by
+## `localhost` if it is unset). Development sets `http://localhost`
+## (compose.override.yml, guide 9.0): plain HTTP, no certificate.
+## Production sets it to your domain (compose.prod.yml, guide 12.3): a
+## domain here makes Caddy obtain a certificate and redirect HTTP to HTTPS.
+## -----------------------------------------------------------------------------
+{$CADDY_SITE_ADDRESS:localhost} {
+
+    # ---- Request body limit ----
+    # Specs are a few KB; reject anything above 1 MB before it reaches Python.
+    # The apps keep their own limits too (defence in depth).
+    request_body {
+        max_size 1MB
+    }
+
+    # ---- Per-IP rate limit (needs the caddy-ratelimit plugin) ----
+    # A COARSE first line of defence against floods: 300 requests per minute
+    # per client IP. The authoritative, per-user/per-key quotas are enforced
+    # by the application in Redis (te_platform/security/quotas.py), which
+    # knows who the caller is and how expensive the tool is.
+    rate_limit {
+        zone per_ip {
+            key    {remote_host}
+            events 300
+            window 1m
+        }
+    }
+
+    # ---- Security headers on every response ----
+    header {
+        # Scripts only from this site and the CDN that serves Chart.js,
+        # Cytoscape, marked and DOMPurify; no inline scripts (form.html's
+        # only inline handler was removed for this, guide 12.3). Second line
+        # of defence against XSS behind DOMPurify (guide 9.2).
+        # style-src allows 'unsafe-inline' because flow_graph.js and
+        # explore.js build legend swatches and heat-map cells with inline
+        # style="..." attributes, which 'self' alone blocks. Inline STYLES
+        # cannot run code; scripts stay strict. The login and chat pages
+        # send their own, stricter policy (webapp/chat_routes.py, guide
+        # 9.2); the browser enforces both, so they stay strict.
+        Content-Security-Policy "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        # The browser must not guess file types (a text file is never run as a script).
+        X-Content-Type-Options "nosniff"
+        # No other site may embed our pages (clickjacking).
+        X-Frame-Options "DENY"
+        # Do not leak full URLs (e.g. signed report links) to other sites.
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Do not advertise the server software.
+        -Server
+##         Guide 12.3: browsers must use HTTPS for this domain for a year
+##         (defeats SSL stripping). Enable only once HTTPS works reliably:
+##         over plain HTTP (development) browsers ignore it anyway.
+        # Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+
+    # ---- MCP server: streamed responses must pass through immediately ----
+    handle /mcp* {
+        reverse_proxy mcp:8000 {
+            # -1 = flush every chunk at once (no buffering), so streamed MCP
+            # responses are not held back.
+            flush_interval -1
+        }
+    }
+
+    # ---- Agent API: Server-Sent Events, same reason ----
+    # No `encode` (compression) here: compressors collect data before
+    # sending, which would delay the stream.
+    handle /agent/* {
+        reverse_proxy agent:8000 {
+            flush_interval -1
+        }
+    }
+
+    # ---- Everything else: the Flask web app ----
+    handle {
+        # Compress pages, CSS and JS (smaller downloads); safe here because
+        # the web app does not stream.
+        encode zstd gzip
+        reverse_proxy web:8000
+    }
+}

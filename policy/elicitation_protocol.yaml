@@ -1,0 +1,794 @@
+## =============================================================================
+## policy/elicitation_protocol.yaml — the interview rules (WHAT to ask)
+## =============================================================================
+## GUIDE STEP   7.1 (schema), 7.2 (stages and slots); 7.3 replays the case
+##              studies through it (tests only, nothing to add here)
+## PURPOSE      The normative list of everything the interview must collect,
+##              grouped in stages, with where each answer goes in the TE-IR and
+##              which failure modes need it. HOW to ask (one question at a
+##              time, ranges not points, no anchoring, ...) is NOT here: it is
+##              in te_platform/agent/prompts/interview.md.
+## USED BY      te_platform/elicitation/protocol.py (load_protocol validates
+##              this file; any unknown key is an error), elicitation/ranking.py
+##              (what to ask next), elicitation/answers.py (where answers go,
+##              in which shape), elicitation/coverage.py + tests (proof that
+##              nothing the six failure modes need is missing),
+##              mcp_server/resources.py (published as te://protocol/elicitation,
+##              so every MCP client interviews the same way),
+##              tests/platform_tests/test_platform_elicitation.py (7.3: every
+##              examples/*.yaml is reproduced by answering this protocol).
+## SOURCES      Stage structure: docs/specification-flow.md (stages 0-11).
+##              Field paths: schema/te_ir.py. "Why we ask" text:
+##              verifier/paper.py (referenced by key, never copied). Answer
+##              types and the meaning of "unknown": the header of
+##              te_platform/elicitation/protocol.py.
+## OUT OF SCOPE Stages 0 (orientation), 10 (confirmation) and 11 (verdict
+##              presentation) of the specification flow are agent behaviour
+##              (te_platform/agent/prompts/interview.md), not slots.
+##              Stage 6 (external signals: a signal's range, worst-case rate
+##              of change, oracle latency, stale-feed behaviour) has NO field
+##              in the TE-IR (the flow calls ExternalSignal a new IR
+##              construct), so the verifier could not use its answers: it is
+##              not part of the protocol until the schema gains the field.
+##              Designs it concerns (stablecoins, tokens anchored "pegged" or
+##              "market_price") are detected by the routing rule
+##              pegged_or_external_anchor (elicitation/routing.py), which will
+##              gate Stage 6 then.
+## WHY          Architecture §4.1 and D16: rules as data that co-authors can
+##              review and code can test.
+## ACTIVATE     Active, with every stage of guide 7.2 (the scaffold had
+##              stages 1 and 8 only). To rebuild it yourself, follow the TO-DO
+##              below in the order of guide 7.2, running the coverage tests
+##              after each stage.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your data between this list and the SOLUTION marker below. Do the
+## steps in order and run each "Check" before moving on. Lines starting with
+## "|" are short illustrations, not the full data. Slot ids are referenced
+## by routing.py and by recorded answers: once used, never rename them.
+## Activate te_platform/elicitation/protocol.py first (it validates this
+## file; any unknown key is an error).
+##
+## Guide 7.1
+## [ ] 1. Top-level keys `protocol` (name) and `version` (e.g. 0.1.0), then
+##        `stages:` as a list. Check: test_real_protocol_loads passes.
+##
+## Guide 7.2 (the SOLUTION has every stage; stages 1 and 8 were the original
+## skeleton, the others follow the steps below)
+## [ ] 2. Stage 1 (S1_archetype, order 1): meta.name (text, bookkeeping:
+##        Meta.name is required by the schema) and the decisive enum slot
+##        meta.archetype; its choices must equal schema/te_ir.py Archetype.
+## [ ] 3. Stage 8 (S8_participants, order 8): N, d, topology and the
+##        network degree (applies_when: network_topology). Every slot needs
+##        id, ir_path, criticality, answer_type, intent, why_we_ask; a slot
+##        that allows unknown also needs unknown_range or unknown_value.
+##        Copy their shape for every new slot:
+##          | - id: participants.Q
+##          |   ir_path: participants.expected_Q
+##          |   feeds: [FM1]
+## [ ] 4. Stage 2 (S2_tokens, order 2). First the token names, a `list`
+##        slot that creates the tokens (the TE-IR has no token-count field:
+##        the count is the length of `tokens`):
+##          | - id: tokens.ids        # routing.py's multi_token reads it
+##          |   ir_path: tokens[].id
+##          |   answer_type: list
+##          |   allow_unknown: false
+##        Then, per token (paths "tokens[]...", asked once per token):
+##        tokens.function (enum with the TokenFunction values: written as a
+##        list, multi-select), tokens.value_anchor (enum ValueAnchor; slot id
+##        read by pegged_or_external_anchor), and Group 1.2, 1.4-1.6 of
+##        docs/elicitation-mapping.md: earning_mechanisms,
+##        holding_incentives, contribution_verification and
+##        redemption_mechanism (the last two have an "unspecified" member,
+##        the natural unknown_value).
+## [ ] 5. Back to Stage 8, Q8.2-Q8.5 and mapping Group 5: offer variety K
+##        (tokens[].offer_variety_K, per token, range, FM4/FM5),
+##        participants.expected_Q (range, FM1), participants.growth_g (FM3:
+##        an AsymptoticClass object, so a `table` slot; "unknown" is e.g.
+##          | unknown_value: {family: unspecified, parameter_ranges:
+##          |                 {value: {min: -0.5, max: 1.0}}}
+##        so the sweep includes decline) and participants.agent_types (FM2,
+##        FM4: holding time, balance share, role and fraction of each agent
+##        type, one `table` slot).
+## [ ] 6. Stage 7 (S7_governance, order 7), Q7.1-Q7.4 and mapping Group 4:
+##        governance.type (enum GovernanceType, FM6), governance.
+##        rule_structure (table, FM6: Γ), governance.
+##        monitoring_capacity_gamma (range inside [0, 1], FM4: γ), governance.
+##        sanction_structure (table, FM4: S), governance.token_balance_gini
+##        (range, FM6 secondary signal). Check after stages 1, 2, 7, 8:
+##          | uv run pytest tests/platform_tests/test_platform_elicitation.py -q
+## [ ] 7. Stage 3 (order 3) per token: tokens[].emission_rules (FM1, FM3,
+##        decisive; dsl_expression, translated by the LLM, CLAUDE.md 2.2;
+##        "unknown" = a rule whose asymptotic class is "unspecified") and
+##        tokens[].initial_distribution (Q3.4, table). Event-catalog
+##        triggers also need the top-level `events` (a table slot).
+## [ ] 8. Stage 4 (order 4) per token: tokens[].burn_rules (FM1, FM3).
+## [ ] 9. Stage 5 (order 5, applies_when: multi_token): cross_token_flows.
+## [ ] 10. Stage 6 is out of scope (header, OUT OF SCOPE): no slots.
+## [ ] 11. Stage 9 (order 9): the seven NFRs under meta.nfrs (why_we_ask:
+##        FM2 for circulation_speed, FM6 for governance_maturity). Enum
+##        values must match CirculationSpeed and GovernanceMaturity. The
+##        1-5 ratings are ints: a `number` slot per rating writes an int
+##        (answers.py). One slot per declaration (not one `table` slot), so
+##        each estimate is a separate form question.
+## [ ] 12. Rules for every new slot: why_we_ask is a key of verifier/paper.py
+##        ALL_CONDITIONS (FM1..FM6), never copied text; every applies_when
+##        name must exist in elicitation/routing.py and read only EARLIER
+##        slots; allow_unknown only when the field can say "unknown"
+##        honestly (a range to sweep, an "unspecified" value, a rule of
+##        class "unspecified"), otherwise allow_unknown: false.
+## [ ] 13. Check after each stage: the coverage tests, and the list of
+##        parameters still missing:
+##          | uv run pytest tests/platform_tests/test_platform_elicitation.py -q
+##          | uv run pytest tests/platform_tests/test_platform_elicitation.py
+##          |   -k parameter_is_asked --runxfail
+##        A variable counts as asked when ALWAYS-applying slots fill the IR
+##        fields it is computed from (coverage.PAPER_VARIABLE_SOURCES). When
+##        the list is empty the xfail test passes "unexpectedly" and turns
+##        red: then delete its xfail marker (test file, guide 7.2).
+##
+## [ ] 13b. (Extension, short interview) `approach` per slot: "ask" only
+##        for the few facts the designer alone can give and that decide
+##        verdicts (participants.N, participants.d, tokens.emission,
+##        tokens.burn, governance.type); "estimate" for
+##        every other slot: the agent derives a defensible value from the
+##        conversation and shows it pre-filled, changeable with a click.
+##        tokens.K is "estimate": the agent counts the kinds of offer the
+##        designer describes, which is more natural and more accurate than
+##        asking for a count.
+##        "ask" lists what the designer's answers must COVER: the agent
+##        writes a few broad questions that cover several slots at once,
+##        never one question per slot (agent/prompts/interview.md).
+##
+## Guide 7.3
+## [ ] 14. Nothing to write here: case-study answers are NOT part of this
+##        file (protocol.py forbids unknown keys). The 7.3 tests replay each
+##        examples/*.yaml through this protocol (every slot that applies is
+##        answered with the example's value at its ir_path) and compare
+##        spec hashes. A field no slot asks is either a missing slot (add it
+##        here, as in 7.2) or an intended difference, listed with its reason
+##        in tests/platform_tests/case_study_differences.yaml. Check:
+##          | uv run pytest tests/platform_tests/test_platform_elicitation.py -k case_study -v
+##        The real-protocol cases are xfail(strict=True) until this file is
+##        complete; when they pass "unexpectedly", delete their marker.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## protocol (every stage of guide 7.2), active so the interview can finish.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## Name and version are stored in every session, so a report can name the
+## exact protocol that produced it (architecture P5).
+protocol: TE-Elicitation-Protocol
+version: 0.1.0
+
+stages:
+
+## ---------------------------------------------------------------------------
+## Stage 1 — Archetype recognition (docs/specification-flow.md, Stage 1).
+## The most consequential single question: it decides which later stages and
+## defaults apply.
+## ---------------------------------------------------------------------------
+  - id: S1_archetype
+    title: Purpose of the token economy
+    order: 1                         # stage number in the specification flow
+    slots:
+      - id: meta.name                # schema/te_ir.py: Meta.name (required)
+        ir_path: meta.name
+        criticality: bookkeeping
+        answer_type: text
+        allow_unknown: true
+        # A name is not a quantity to sweep; "unknown" is a placeholder the
+        # user can change at any time.
+        unknown_value: Unnamed design
+        intent: What the design is called, so reports and sessions can name it.
+        why_we_ask: FM1
+        approach: estimate
+
+      - id: meta.archetype           # unique slot id (routing rules refer to it)
+        ir_path: meta.archetype      # schema/te_ir.py: Meta.archetype (enum Archetype)
+        feeds: [FM1, FM2, FM3, FM4, FM5, FM6]   # it re-weights all of them
+        criticality: decisive
+        answer_type: enum
+        # Must equal the values of schema/te_ir.py Archetype exactly.
+        choices: [native_protocol_asset, stablecoin, governance_utility_pair,
+                  play_to_earn_dual, community_reward, other]
+        allow_unknown: true
+        unknown_value: other         # "other" = no archetype defaults; full questionnaire
+        intent: >
+          What the token economy is for: securing a network, tracking an external
+          value, pairing governance and utility, rewarding play or contribution,
+          or community exchange.
+        why_we_ask: FM1              # key into verifier/paper.py ALL_CONDITIONS
+        approach: estimate
+        probes:
+          - "Can you name an existing system that works most like yours?"
+          - "What do people get in exchange for the token, and who decides how many exist?"
+
+## ---------------------------------------------------------------------------
+## Stage 2 — Token count and roles (docs/specification-flow.md, Q2-Q2b;
+## docs/elicitation-mapping.md Group 1). tokens.ids creates the tokens; every
+## other slot here is asked once per token (paths "tokens[]...").
+## ---------------------------------------------------------------------------
+  - id: S2_tokens
+    title: Tokens and what they are for
+    order: 2
+    slots:
+      - id: tokens.ids                 # routing.py's multi_token reads it
+        ir_path: tokens[].id           # Token.id; the token count is len(tokens)
+        criticality: decisive
+        answer_type: list
+        # Every design has at least one token; there is nothing to sweep.
+        allow_unknown: false
+        intent: >
+          The short names of the distinct token types (one name per token).
+          Receipts, LP tokens and vouchers that only mirror another token are
+          not separate tokens.
+        why_we_ask: FM1
+        approach: estimate
+        probes:
+          - "Is there one kind of credit or token, or several that behave differently?"
+          - "What would you print on the token, e.g. HOUR, CREDIT, VOTE?"
+
+      - id: tokens.function
+        ir_path: tokens[].function     # Token.function: list[TokenFunction] (multi-select)
+        feeds: [FM1, FM2, FM3]
+        criticality: decisive
+        answer_type: enum
+        choices: [medium_of_exchange, unit_of_account, governance_right,
+                  access_right, store_of_value, reputation_marker]
+        # The role decides which failure modes apply (verifier/token_role.py):
+        # there is no honest "unknown" role to sweep.
+        allow_unknown: false
+        intent: >
+          What this token is used for (one or more): paying, pricing, voting,
+          unlocking access, saving, or signalling reputation.
+        why_we_ask: FM2
+        approach: estimate
+        probes:
+          - "What does someone do with this token once they have it?"
+
+      - id: tokens.value_anchor
+        ir_path: tokens[].value_anchor  # Token.value_anchor (enum ValueAnchor)
+        criticality: important
+        answer_type: enum
+        choices: [none, physical_quantity, market_price, pegged, service_or_access_unit]
+        allow_unknown: false
+        intent: >
+          What gives this token its value: nothing external, a physical
+          quantity (an hour, a kilo), a market price, a fixed peg to a
+          currency, or one unit of a service or access.
+        why_we_ask: FM1
+        approach: estimate
+        probes:
+          - "If someone asked what one token is worth, what would you answer?"
+
+      - id: tokens.earning
+        ir_path: tokens[].earning_mechanisms   # list[EarningMechanism] (multi-select)
+        criticality: bookkeeping
+        answer_type: enum
+        choices: [airdrop, behavioral_reward, resource_contribution,
+                  exchange_purchase, algorithmic_issuance]
+        allow_unknown: false
+        intent: >
+          How people get this token (one or more): given away, earned for an
+          action, earned for contributing a resource (hours, goods), bought,
+          or issued by an algorithm.
+        why_we_ask: FM4
+        approach: estimate
+
+      - id: tokens.holding
+        ir_path: tokens[].holding_incentives   # list[HoldingIncentive] (multi-select)
+        feeds: [FM2]
+        criticality: important
+        answer_type: enum
+        choices: [none, tiered_redemption, governance_rights, staking,
+                  reputation, time_locked_rewards]
+        allow_unknown: false
+        intent: >
+          What, if anything, rewards people for keeping the token rather than
+          spending it at once (better rewards for larger balances, voting
+          power, staking, reputation, locked rewards).
+        why_we_ask: FM2
+        approach: estimate
+        probes:
+          - "Is there any reason to keep tokens instead of spending them right away?"
+
+      - id: tokens.verification
+        ir_path: tokens[].contribution_verification   # enum, has "unspecified"
+        feeds: [FM4]
+        criticality: important
+        answer_type: enum
+        choices: [physical_presence, peer_verification, smart_contract_automation,
+                  self_reporting, third_party_certification, unspecified]
+        allow_unknown: true
+        # "unspecified": the verifier derives the widest monitoring range
+        # (verifier/elicitation.py gamma_range_from).
+        unknown_value: unspecified
+        intent: >
+          How a contribution is checked before tokens are earned: in person,
+          by other members, automatically, on the contributor's own word, or
+          by an outside certifier.
+        why_we_ask: FM4
+        approach: estimate
+        probes:
+          - "Who confirms that the work or the delivery really happened?"
+
+      - id: tokens.redemption
+        ir_path: tokens[].redemption_mechanism   # enum, has "unspecified"
+        feeds: [FM4]
+        criticality: important
+        answer_type: enum
+        choices: [specific_goods_or_services, time_based_borrowing, fungible_access,
+                  open_market_exchange, peer_to_peer_transfer, unspecified]
+        allow_unknown: true
+        unknown_value: unspecified
+        intent: >
+          What people can do with the token in the end: get specific goods or
+          services, borrow something for a time, get general access, sell it
+          on a market, or pass it to other members.
+        why_we_ask: FM4
+        approach: estimate
+        probes:
+          - "Where can a member spend this token, and on what?"
+
+## ---------------------------------------------------------------------------
+## Stage 3 — Emission per token (Q3.1-Q3.4; mapping Group 2). The rules are
+## the one place where the agent translates the user's words into the
+## schema's rule objects (CLAUDE.md: 2.2 is LLM-translated); next_questions
+## returns the field's JSON schema (value_schema) for this.
+## ---------------------------------------------------------------------------
+  - id: S3_emission
+    title: How tokens are created
+    order: 3
+    slots:
+      - id: events
+        # TokenEconomy.events: the catalog of things that happen (a service
+        # delivered, a trade, a login) and how often. Rules refer to them by
+        # event_id. An empty list is a valid answer (time-based rules only).
+        ir_path: events
+        criticality: important
+        answer_type: table
+        allow_unknown: false
+        intent: >
+          The events that create or destroy tokens (e.g. a service delivered,
+          a sale between members), and how often each happens per period, as
+          a range or a growth class.
+        why_we_ask: FM1
+        approach: estimate
+        probes:
+          - "What has to happen for new tokens to appear, or for tokens to be used up?"
+          - "In a typical week, how many times does that happen across the whole system?"
+
+      - id: tokens.emission
+        ir_path: tokens[].emission_rules    # list[Rule]
+        feeds: [FM1, FM3]
+        criticality: decisive
+        answer_type: dsl_expression
+        allow_unknown: true
+        # "I don't know": one rule of class "unspecified", which the verifier
+        # sweeps over every growth class (CLAUDE.md, underspecification).
+        unknown_value:
+          - trigger: {kind: time_based}
+            function: {asymptotic_class: {family: unspecified}}
+        intent: >
+          When new tokens of this kind are created and how many each time:
+          on a schedule or when an event happens; a fixed amount, a range, or
+          an amount that grows or shrinks; and any change of rule over time
+          (e.g. one rate for the first year, another after).
+        why_we_ask: FM1
+        elicitation_method: quartile_range
+        probes:
+          - "Who or what creates new tokens, and when?"
+          - "Each time, how many tokens: always the same, or does it depend on something?"
+          - "Is there a maximum number of tokens that can ever exist?"
+
+      - id: tokens.initial_distribution
+        ir_path: tokens[].initial_distribution   # InitialDistribution
+        criticality: bookkeeping
+        answer_type: table
+        allow_unknown: false
+        intent: >
+          How many tokens exist at launch and who holds them: none, a welcome
+          amount for each new member, a pre-minted reserve, or an allocation
+          to the founders.
+        why_we_ask: FM6
+        approach: estimate
+        probes:
+          - "On day one, does anyone already hold tokens? Who, and how many?"
+
+## ---------------------------------------------------------------------------
+## Stage 4 — Burn per token (Q4.1-Q4.3; mapping Group 3).
+## ---------------------------------------------------------------------------
+  - id: S4_burn
+    title: How tokens leave circulation
+    order: 4
+    slots:
+      - id: tokens.burn
+        ir_path: tokens[].burn_rules        # list[Rule]; [] = no burn (FM3: rho = 0)
+        feeds: [FM1, FM3]
+        criticality: decisive
+        answer_type: dsl_expression
+        allow_unknown: true
+        unknown_value:
+          - trigger: {kind: rule_driven}
+            function: {asymptotic_class: {family: unspecified}}
+        intent: >
+          Whether tokens are ever destroyed (spent and removed, expired,
+          charged as a fee) and how many each time. Destruction driven by real
+          use (redeeming for goods) is the structurally sound case.
+        why_we_ask: FM3
+        elicitation_method: quartile_range
+        probes:
+          - "When someone spends a token, does it disappear or move to someone else?"
+          - "Do tokens ever expire, or is there a fee that removes tokens?"
+
+      - id: tokens.outstanding_cap
+        # Token.outstanding_supply_cap: a bound on the tokens outstanding
+        # at once, enforced by the protocol (members' credit limits summed,
+        # a debt ceiling, a borrow cap). docs/proofs/outstanding_cap.md.
+        # "Unknown" = no cap declared (the field stays empty), which is the
+        # conservative case for FM1 and FM3.
+        ir_path: tokens[].outstanding_supply_cap
+        feeds: [FM1, FM3]
+        # bookkeeping: it decides a verdict only in credit / debt designs,
+        # where the ranking still marks it as mattering (it feeds FM1, FM3).
+        criticality: bookkeeping
+        answer_type: range
+        allow_unknown: true
+        unknown_means_absent: true
+        intent: >
+          Whether the rules limit how many tokens can be outstanding at once,
+          for example a credit limit per member (the cap is then the number of
+          members times the limit) or a ceiling on total debt; and if so, that
+          total.
+        why_we_ask: FM3
+        approach: estimate
+        probes:
+          - "Is there a limit on how far into negative a member can go, or on total debt?"
+
+## ---------------------------------------------------------------------------
+## Stage 5 — Cross-token flows (Q5), only for designs with several tokens.
+## ---------------------------------------------------------------------------
+  - id: S5_flows
+    title: How the tokens affect each other
+    order: 5
+    applies_when: multi_token
+    slots:
+      - id: cross_token_flows
+        ir_path: cross_token_flows          # list[CrossTokenFlow]; [] = none
+        criticality: important
+        answer_type: table
+        allow_unknown: false
+        intent: >
+          Whether something done with one token creates, destroys or moves
+          another token (e.g. burning token A mints token B), and in what
+          proportion.
+        why_we_ask: FM3
+        approach: estimate
+        probes:
+          - "If someone uses token A, does anything happen to token B?"
+
+## ---------------------------------------------------------------------------
+## Stage 7 — Governance (Q7.1-Q7.4; mapping Group 4).
+## ---------------------------------------------------------------------------
+  - id: S7_governance
+    title: Who decides and how rules are enforced
+    order: 7
+    slots:
+      - id: governance.type
+        ir_path: governance.type            # enum GovernanceType
+        feeds: [FM6]
+        criticality: decisive
+        answer_type: enum
+        choices: [centralized, committee, dao, algorithmic, hybrid]
+        allow_unknown: false
+        intent: >
+          Who controls the rules: one organisation, a small committee, the
+          token holders by vote, code with no human input, or a mix.
+        why_we_ask: FM6
+        probes:
+          - "If the rules had to change tomorrow, who would decide?"
+
+      - id: governance.rule_structure
+        # governance.rule_structure: who controls each decision lever
+        # (emission rate, burn rate, eligibility, ...); Gamma is computed
+        # from it. "I don't know" = no levers declared: FM6 then reports
+        # "inconclusive", which is the honest answer.
+        ir_path: governance.rule_structure
+        feeds: [FM6]
+        criticality: decisive
+        answer_type: table
+        allow_unknown: true
+        unknown_value: {}
+        intent: >
+          For each kind of decision (how many tokens are created or destroyed,
+          who may join, which businesses may accept the token, prices and
+          exchange ratios, rewards, the rules themselves): who controls it.
+        why_we_ask: FM6
+        approach: estimate
+        probes:
+          - "Could one person or organisation change this on their own?"
+
+      - id: governance.gamma
+        ir_path: governance.monitoring_capacity_gamma   # NumberRange inside [0, 1]
+        feeds: [FM4]
+        criticality: important
+        answer_type: range
+        allow_unknown: true
+        unknown_range: [0, 1]
+        intent: >
+          How likely someone who takes without contributing is to be noticed,
+          from 0 (never) to 1 (always). Low is about 0.1, medium 0.5, high 0.9.
+        why_we_ask: FM4
+        approach: estimate
+        probes:
+          - "If a member stopped contributing but kept spending, how soon would anyone notice?"
+
+      - id: governance.sanction
+        ir_path: governance.sanction_structure   # SanctionStructure
+        feeds: [FM4]
+        criticality: important
+        answer_type: table
+        allow_unknown: false
+        intent: >
+          What happens to someone caught not contributing: nothing, a warning,
+          a token penalty (how large), exclusion, or sanctions that escalate
+          step by step.
+        why_we_ask: FM4
+        approach: estimate
+        probes:
+          - "What happens the first time? And the third time?"
+
+      - id: governance.gini
+        ir_path: governance.token_balance_gini   # NumberRange inside [0, 1]
+        feeds: [FM6]
+        criticality: bookkeeping
+        answer_type: range
+        allow_unknown: true
+        unknown_range: [0, 1]
+        intent: >
+          How unequally tokens are expected to be held, from 0 (everyone holds
+          the same) to 1 (one holder has everything).
+        why_we_ask: FM6
+        approach: estimate
+
+## ---------------------------------------------------------------------------
+## Stage 8 — Participants and network (docs/specification-flow.md, Q8.1-Q8.6).
+## ---------------------------------------------------------------------------
+  - id: S8_participants
+    title: Participants and network
+    order: 8
+    slots:
+      - id: participants.N
+        ir_path: participants.count_N          # ParticipantsSpec.count_N (NumberRange)
+        feeds: [FM5]                           # N >= 2Kd + 1 (critical mass)
+        criticality: decisive
+        answer_type: range
+        allow_unknown: true
+        # What "I don't know" means: the verifier sweeps this whole interval.
+        unknown_range: [2, 100000]
+        intent: How many active participants the system expects, as a plausible low and high.
+        why_we_ask: FM5
+        # quartile_range: ask for a plausible low, a plausible high, then a
+        # middle value — this reduces overconfidence (O'Hagan et al. 2006).
+        elicitation_method: quartile_range
+        probes:
+          - "What is the smallest number of participants at which it would still work?"
+
+      - id: participants.d
+        ir_path: participants.average_demand_d   # ParticipantsSpec.average_demand_d (NumberRange)
+        feeds: [FM4, FM5]                        # phi < d/K and N < 2Kd + 1
+        criticality: decisive
+        answer_type: range
+        allow_unknown: true
+        unknown_range: [0.1, 20]
+        intent: How many redemption or exchange events a typical participant wants per period.
+        why_we_ask: FM5
+        elicitation_method: quartile_range
+        probes:
+          - "In a typical week, how often would one person spend or exchange the token?"
+
+      - id: participants.topology
+        ir_path: participants.topology           # ParticipantsSpec.topology (enum Topology)
+        feeds: [FM5]                             # the N bound is for well-mixed populations
+        criticality: important
+        answer_type: enum
+        choices: [well_mixed, spatial, network]
+        allow_unknown: true
+        # well_mixed gives the conservative (upper-bound) critical mass in
+        # the paper, so it is the safe meaning of "I don't know".
+        unknown_value: well_mixed
+        intent: How participants find each other (anyone with anyone, by location, or through a network).
+        why_we_ask: FM5
+        approach: estimate
+
+      - id: participants.network_degree
+        # topology_params is a dict of NumberRange; "average_degree" is the
+        # key FM5 reads (verifier/failure_modes/fm5_critical_mass.py) and the
+        # ABM uses (verifier/abm/topology.py).
+        ir_path: participants.topology_params.average_degree
+        feeds: [FM5]
+        criticality: bookkeeping
+        answer_type: range
+        allow_unknown: true
+        unknown_range: [1, 50]
+        applies_when: network_topology           # elicitation/routing.py
+        intent: How many other participants a typical participant interacts with.
+        why_we_ask: FM5
+        approach: estimate
+
+      - id: tokens.K
+        ir_path: tokens[].offer_variety_K        # Token.offer_variety_K (NumberRange)
+        feeds: [FM4, FM5]                        # phi < d/K and N < 2Kd + 1
+        criticality: decisive
+        answer_type: range
+        allow_unknown: true
+        unknown_range: [1, 100]
+        intent: >
+          How many different goods, services or exchange opportunities this
+          token can be spent on. Ask the designer to DESCRIBE what members
+          offer each other, then count the distinct kinds yourself and show
+          the count as an estimate ("you listed 7 kinds").
+        why_we_ask: FM5
+        approach: estimate
+        elicitation_method: quartile_range
+        probes:
+          - "What would members offer each other? Describe the goods and services."
+
+      - id: participants.Q
+        ir_path: participants.expected_Q         # ParticipantsSpec.expected_Q (NumberRange)
+        feeds: [FM1]                             # E(t) > P*Q/V
+        criticality: important
+        answer_type: range
+        allow_unknown: true
+        unknown_range: [0, 1000000000]
+        intent: >
+          How much real activity the token pays for per period (the volume of
+          goods or services exchanged), as a plausible low and high.
+        why_we_ask: FM1
+        approach: estimate
+        elicitation_method: quartile_range
+        probes:
+          - "In a typical month, how much trade would go through the token in total?"
+
+      - id: participants.growth_g
+        ir_path: participants.growth_g           # AsymptoticClass
+        feeds: [FM3]                             # E - B > g*M
+        criticality: important
+        answer_type: table
+        allow_unknown: true
+        # The sweep includes decline: assuming growth never stops is the
+        # mistake the Axie case study shows (docs/case-studies.md).
+        unknown_value:
+          family: unspecified
+          parameter_ranges:
+            value: {min: -0.5, max: 1.0}
+        intent: >
+          How the number of participants changes over time: stable, growing
+          slowly or fast, or possibly shrinking, including the worst decline
+          the design must survive.
+        why_we_ask: FM3
+        approach: estimate
+        probes:
+          - "What is the worst decline in members per period you could survive?"
+
+      - id: participants.agent_types
+        # Roles with their share of the population, holding time and share
+        # of the balances: FM2 (wealth-weighted holding time) and FM4 (share
+        # of contributors).
+        ir_path: participants.agent_types
+        feeds: [FM2, FM4]
+        criticality: important
+        answer_type: table
+        allow_unknown: false
+        intent: >
+          The kinds of participants that behave differently (e.g. contributors,
+          consumers, merchants), what share of the population each is, and how
+          long each typically keeps tokens before spending them.
+        why_we_ask: FM2
+        approach: estimate
+        probes:
+          - "Are there people who mostly earn tokens and others who mostly spend them?"
+          - "How long does a typical member of this group keep a token before using it?"
+
+## ---------------------------------------------------------------------------
+## Stage 9 — Non-functional requirement declarations (NFR1-NFR7). They are
+## declarations, not simulation inputs: they turn some failure modes from
+## risks into goals (e.g. circulation_speed "fast" makes FM2 intended).
+## ---------------------------------------------------------------------------
+  - id: S9_nfrs
+    title: What the design must achieve
+    order: 9
+    slots:
+      # One slot per declaration (NFR1-NFR7), so each estimate is its own
+      # form question the designer can change with a click. "I don't know"
+      # = the schema's neutral default (3, balanced, medium_term).
+      # why_we_ask: the failure mode each declaration re-weights
+      # (docs/proofs/nfr_reweighting.md, fm2.md, fm6.md).
+      - id: meta.nfrs.resilience
+        ir_path: meta.nfrs.resilience         # NFRs.resilience: int 1-5
+        criticality: bookkeeping
+        answer_type: number
+        allow_unknown: true
+        unknown_value: 3
+        intent: >
+          How important it is that the system survives shocks (a sudden drop in activity or members), 1 (not important) to 5 (essential); it tightens the burn coverage required.
+        why_we_ask: FM3
+        approach: estimate
+
+      - id: meta.nfrs.adaptability
+        ir_path: meta.nfrs.adaptability         # NFRs.adaptability: int 1-5
+        criticality: bookkeeping
+        answer_type: number
+        allow_unknown: true
+        unknown_value: 3
+        intent: >
+          How easily the rules must be changeable as the community learns, 1 to 5.
+        why_we_ask: FM6
+        approach: estimate
+
+      - id: meta.nfrs.accessibility
+        ir_path: meta.nfrs.accessibility         # NFRs.accessibility: int 1-5
+        criticality: bookkeeping
+        answer_type: number
+        allow_unknown: true
+        unknown_value: 3
+        intent: >
+          How easy it must be for anyone to join and contribute, 1 to 5 (high values favour light verification and open participation).
+        why_we_ask: FM4
+        approach: estimate
+
+      - id: meta.nfrs.transparency
+        ir_path: meta.nfrs.transparency         # NFRs.transparency: int 1-5
+        criticality: bookkeeping
+        answer_type: number
+        allow_unknown: true
+        unknown_value: 3
+        intent: >
+          How visible balances, rules and decisions must be to every member, 1 to 5.
+        why_we_ask: FM6
+        approach: estimate
+
+      - id: meta.nfrs.proportionality
+        ir_path: meta.nfrs.proportionality         # NFRs.proportionality: int 1-5
+        criticality: bookkeeping
+        answer_type: number
+        allow_unknown: true
+        unknown_value: 3
+        intent: >
+          How closely rewards must follow the effort each contributor puts in, 1 to 5; it tightens the contribution check.
+        why_we_ask: FM4
+        approach: estimate
+
+      - id: meta.nfrs.circulation_speed
+        ir_path: meta.nfrs.circulation_speed   # NFRs.circulation_speed (enum CirculationSpeed)
+        criticality: bookkeeping
+        answer_type: enum
+        choices: [circulate_fast, balanced, retain_value]
+        allow_unknown: true
+        unknown_value: balanced
+        intent: >
+          Whether tokens should be spent quickly, kept for a while, or held as
+          savings; "circulate fast" turns fast spending into a goal rather
+          than a risk.
+        why_we_ask: FM2
+        approach: estimate
+
+      - id: meta.nfrs.governance_maturity
+        ir_path: meta.nfrs.governance_maturity   # NFRs.governance_maturity (enum GovernanceMaturity)
+        criticality: bookkeeping
+        answer_type: enum
+        choices: [immediate, short_term, medium_term, indefinite]
+        allow_unknown: true
+        unknown_value: medium_term
+        intent: >
+          When decisions should be in the members' hands: from the start, soon,
+          in a few years, or never (the founders keep control).
+        why_we_ask: FM6
+        approach: estimate

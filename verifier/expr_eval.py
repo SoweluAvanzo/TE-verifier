@@ -518,6 +518,34 @@ def bind_param(solver: z3.Solver, name: str, rng) -> z3.ArithRef:
 # downstream (rate_per_period, _sample_rule_rate, etc.) keeps working.
 
 
+def reads_state(node: Expr) -> bool:
+    """True when the expression reads live state (``state.*``, ``asset.*``),
+    so its value changes from period to period and must be re-evaluated
+    against the current state rather than sampled once per run."""
+    if node.var is not None:
+        return node.var.ns in (VarNamespace.STATE, VarNamespace.ASSET)
+    if node.aggregator is not None:
+        return reads_state(node.aggregator.body)
+    return any(reads_state(a) for a in node.args)
+
+
+def dsl_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``state.*`` view of an engine state.
+
+    The engine keeps per-token quantities under ``state["tokens"][id]``;
+    the DSL documents them as ``state.M['ID']`` / ``state.E['ID']`` /
+    ``state.B['ID']`` (docs/dsl-reference.md). Every other slot passes
+    through unchanged.
+    """
+    tokens = state.get("tokens")
+    if not isinstance(tokens, Mapping):
+        return dict(state)
+    view = dict(state)
+    for key in ("M", "E", "B"):
+        view[key] = {tid: tok.get(key, 0.0) for tid, tok in tokens.items()}
+    return view
+
+
 def sample_params(parameters, sampler) -> dict[str, float]:
     """Draw one numeric value per declared rule parameter using the
     same sampler the engine uses elsewhere (so determinism by seed is

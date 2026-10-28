@@ -56,10 +56,10 @@ Risk bands are encoded in `verifier/risk.py`:
 |---|---|---|---|
 | FM1 | 4.1 | ros ≤ 1 GREEN; ≤1.5 AMBER; ≤2.5 RED; >2.5 RED_CRITICAL | `_risk_for_fm1` |
 | FM2 | 4.2 | τ̄ in days: >14 GREEN; >7 BORDERLINE; >3 AMBER; >1 RED; ≤1 RED_CRITICAL | `_risk_for_fm2` (converts periods→days via ×7) |
-| FM3 | 4.3 | ρ ≥ 1 GREEN; ≥0.5 AMBER; >0 RED; =0 RED_CRITICAL | `_risk_for_fm3` |
+| FM3 | 4.3 | ρ ≥ 1 GREEN; ≥0.5 AMBER; >0 RED; =0 RED_CRITICAL. A `pass_as_intended` verdict (supply cap, outstanding supply cap, governance-role relax per §4 multi-token rules) is GREEN: §4.3's RED_CRITICAL premise, supply growing monotonically with no corrective mechanism, does not hold. With an outstanding supply cap ρ uses E∞ = min(E, B) (`docs/proofs/outstanding_cap.md`). | `_risk_for_fm3` |
 | FM4 | 4.4 | Both clauses: GREEN; one fails: AMBER; both fail: RED; φ_required>0.8: RED_CRITICAL | `_risk_for_fm4` (uses counterexample's binding-constraint info) |
 | FM5 | 4.5 | rcm = N/N\*: ≥2 GREEN; ≥1.2 BORDERLINE; ≥1 AMBER; ≥0.5 RED; <0.5 RED_CRITICAL | `_risk_for_fm5` |
-| FM6 | 4.6 | Γ ≤ 0.30 GREEN; ≤0.50 BORDERLINE; ≤0.80 AMBER; >0.80 RED | `_risk_for_fm6` |
+| FM6 | 4.6 | Γ ≤ 0.30 GREEN; ≤0.50 BORDERLINE; ≤0.80 AMBER; >0.80 RED (Γ with the FM6 module's unilateral set, `UNILATERAL_ACTORS`). §4.6 bands only Γ; the verdict also fails on the effective Gini (secondary signal), so an effective-Gini midpoint above the threshold (0.6) raises the band to at least AMBER, as a moderate Γ violation | `_risk_for_fm6` |
 
 **Multi-token applicability rules** (Sim §4 multi-token preface)
 applied per token role in `verifier/token_role.py`. The dispatcher

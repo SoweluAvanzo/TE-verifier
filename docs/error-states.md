@@ -149,12 +149,40 @@ with structured guidance:
 >
 > [Change verification to physical_presence] [Lower NFR3 to ≤ 3]
 
+## FM1 / FM3: Impossible rate
+
+**Trigger:** an emission rule, a burn rule or an event frequency whose
+declared parameter range admits a negative value somewhere in
+`[0, horizon]` (`verifier/sign_validation.py`). A negative rate is outside
+the domain the proofs assume (`docs/proofs/fm3.md` Assumption 2:
+E ≥ 0, B ≥ 0), so a verdict computed on it would be meaningless (a negative
+emission would "pass" FM1).
+
+**Result:** FM1 and FM3 of each affected token are INCONCLUSIVE
+(`verifier/dispatcher.py`, `_inconclusive_on_impossible_rates`), with an
+error-level coherence issue naming the rule or event.
+
+**UI prompt:** "This rule can produce a negative number of tokens per
+period. Raise the lower bound of its coefficient so the rate stays at or
+above zero, or choose a different shape."
+
 ## Loading errors
 
 If the IR fails to parse (Pydantic validation error), the verifier
 returns exit code 2 and stderr message `error: failed to load <path>:
 <message>`. The UI surfaces this at the top of the questionnaire,
 linked to the offending field.
+
+Values outside the domains of `verifier/paper.py` are load errors
+(`schema/te_ir.py`, `tests/test_input_domains.py`): N and K below 1;
+Q, d, initial supply, holding times, activity frequency, coupling ratios
+and redemption costs below 0; γ, S and the token Gini outside [0, 1];
+vote-weighting parameters outside their range; agent balance shares
+(when all are given) not adding up to 1; an average network degree below
+0; inverted bounds and time windows; distribution
+parameters outside their domain. Before these checks such inputs reached
+the solver and could produce a vacuous PASS: an empty parameter box has no
+violation to find.
 
 If the config YAML fails to load, exit code 2 with message `error:
 failed to load <config-path>: <message>`. Webapp should validate

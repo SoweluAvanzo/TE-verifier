@@ -7,62 +7,81 @@ Run:
 then open http://127.0.0.1:5000.
 """
 
+## =============================================================================
+## Implementation guide, steps 1.6, 9.0, 12.3 (docs/agent-implementation-guide.md)
+## =============================================================================
+## Existing, working code. Guide 1.6 is done; the commented blocks that
+## remain are later steps, to uncomment when you reach them:
+##
+## Guide 1.6 (done): the routes call te_platform.service instead of schema/
+##   and verifier/ directly (webapp/service_adapter_notes.md has the
+##   route-by-route table); validation, verification and the input bounds
+##   live in the service.
+##   What stays the same: URLs, request fields, JSON answers, status codes
+##   and the error prefixes the pages show ("failed to parse TE-IR", ...).
+##   What changes, on purpose (explained where it happens):
+##   - error texts list each problem as "location: message" instead of
+##     Pydantic's multi-line dump;
+##   - a request whose "yaml" is not text, whose "ir" is not a JSON object,
+##     or whose body is not a JSON object gets 400 (before: a 500, or a
+##     JSON object sent as "yaml" was even accepted);
+##   - /api/verify and /api/build-and-verify also compute the structural
+##     triage (service.verify always does): a little more work per request
+##     (under 0.3 s on the examples), same answer.
+##
+## Guide 9.0 (lines commented TWICE, `# # `): register the login and chat
+##   pages of webapp/chat_routes.py. Leave them until you reach step 9.0.
+##
+## Guide 12.3 (lines commented TWICE): behind Caddy, read the client's real
+##   address from X-Forwarded-For (ProxyFix), so the per-IP rate limiter
+##   below counts each user, not Caddy. Leave them until step 12.3.
+## =============================================================================
+
 from __future__ import annotations
 
+import time as _time
+from collections import defaultdict as _defaultdict
 from pathlib import Path
+from typing import Any, NoReturn
 
-import yaml
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, abort, jsonify, make_response, render_template, request
+from flask.typing import ResponseReturnValue
+
+## Guide 12.3: ProxyFix, used right after `app` is created.
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from schema import (
     ActionKind,
-    AsymptoticClass,
     AsymptoticFamily,
-    AgentType,
     Archetype,
     BurnTriggerKind,
     CirculationSpeed,
     ContributionVerification,
     ControllingActor,
-    DistributionSpec,
     EmissionTriggerKind,
-    FunctionShape,
     FunctionSign,
     GovernanceMaturity,
-    GovernanceSpec,
     GovernanceType,
     HoldingIncentiveMechanism,
-    HoldingTimeDistribution,
-    Meta,
-    NFRs,
-    NumberRange,
-    ParticipantsSpec,
     PopulationEventKind,
     RedemptionMechanism,
-    Rule,
-    RuleTrigger,
     SanctionKind,
-    SanctionStructure,
     ThresholdOp,
     ThresholdVar,
-    Token,
     TokenEarningMechanism,
-    TokenEconomy,
     TokenFunction,
     Topology,
     ValueAnchor,
     VoteWeighting,
-    load_te,
 )
-from verifier import verify
-from verifier.abm import (
-    SimulationConfig,
-    export_cadcad_config,
-    run_explore,
-    run_simulation,
-)
-from verifier.minimal import minimal_verdicts
 from verifier.paper import ALL_CONDITIONS
+
+# Guide 1.6: the service layer (te_platform/service.py, guide 1.3-1.5). The
+# routes call it instead of schema/ and verifier/ directly.
+from te_platform import service
+
+## Guide 9.0: the blueprint with the login (9.0) and chat (9.1) pages.
+from webapp.chat_routes import chat_bp
 
 
 app = Flask(
@@ -71,6 +90,20 @@ app = Flask(
     static_folder="static",
 )
 
+## Guide 9.0: attach the pages of webapp/chat_routes.py (GET /login, and from
+## 9.1 GET /chat) to this app. They use this app's templates/ and static/.
+app.register_blueprint(chat_bp)
+
+## Guide 12.3: behind Caddy every request comes from Caddy's address, so
+## request.remote_addr would be the same for all users and they would share
+## one rate-limit bucket (_rate_limit below). ProxyFix (from Werkzeug, the
+## library Flask is built on) replaces it with the address Caddy writes into
+## X-Forwarded-For. x_for=1: trust exactly ONE proxy hop, the last one,
+## which is Caddy; anything a client wrote into the header itself sits
+## further left and is ignored. gunicorn listens only on the edge network
+## behind Caddy (compose.yml), so no other hop can reach the app.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)  # type: ignore[method-assign]
+
 # --- Hardening for public deployment ---------------------------------------
 # Cap request bodies — token-economy models are a few KB; reject anything big.
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024  # 512 KB
@@ -78,9 +111,12 @@ app.config["MAX_CONTENT_LENGTH"] = 512 * 1024  # 512 KB
 # In-memory per-IP rate limit on the compute (POST) endpoints, so one client
 # cannot flood the Z3 solver. Fixed 60 s window. (gunicorn --timeout is the
 # backstop for any single long-running request.)
-import time as _time
-from collections import defaultdict as _defaultdict
-
+## Guide 1.6 / 6.3: this limiter STAYS. Its counts live in one process (each
+## gunicorn worker counts separately, and they reset on restart), so it is a
+## per-worker backstop. The Redis quotas of guide 6.3 count per principal
+## (an API key or a logged-in user) for MCP and agent calls; the web form
+## has no principal. The per-IP limit across all processes comes from Caddy
+## (deploy/caddy/Caddyfile, rate_limit; in development from guide 9.0).
 _RL_WINDOW = 60   # seconds
 _RL_MAX = 30      # POST requests per window per IP
 _rl_hits: dict[str, list[float]] = _defaultdict(list)
@@ -102,6 +138,58 @@ def _rate_limit():  # type: ignore[no-untyped-def]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
+
+
+# Guide 1.6: helpers shared by the converted routes. -------------------------
+# The request fields that carry a spec: what type each must have, and the
+# error prefix the old routes used. The pages show these texts, and a test
+# checks that an invalid "ir" mentions "validate". `kind()` is the default
+# when the field is missing: str() is "" and dict() is {}, as before.
+_SPEC_FIELDS: dict[str, tuple[type, str]] = {
+    "yaml": (str, "failed to parse TE-IR"),
+    "ir": (dict, "failed to validate TE-IR"),
+}
+
+
+def _bad_request(message: str) -> NoReturn:
+    """Stop the request with HTTP 400 and {"error": message}.
+
+    The pages' JavaScript (form.js, app.js, explore.js) reads the `error`
+    key. abort() raises, so the route's remaining code never runs.
+    """
+    abort(make_response(jsonify(error=message), 400))
+
+
+def _valid_spec(body: Any, key: str) -> tuple[str | dict[str, Any], service.ValidationResult]:
+    """Return the spec in body[key] and its validation, or stop with HTTP 400.
+
+    service.validate accepts YAML text OR a parsed dict, so the type is
+    checked first: without that, a JSON object sent as "yaml" would be
+    accepted, and a text sent as "ir" would be parsed as YAML.
+    """
+    kind, prefix = _SPEC_FIELDS[key]
+    spec = body.get(key, kind()) if isinstance(body, dict) else None
+    if not isinstance(spec, kind):
+        wanted = "text" if kind is str else "a JSON object"
+        _bad_request(f"{prefix}: the request body must be a JSON object "
+                     f"whose '{key}' field is {wanted}")
+    result = service.validate(spec)
+    if not result.valid:
+        problems = "; ".join(
+            f"{e.location}: {e.message}" if e.location else e.message for e in result.errors
+        )
+        _bad_request(f"{prefix}: {problems}")
+    return spec, result
+
+
+def _optional_int(body: dict[str, Any], key: str) -> int | None:
+    """Read an optional integer field; a missing field, null and "" mean None.
+
+    int() raises ValueError/TypeError on anything else that is not a
+    number; the routes turn that into HTTP 400 "invalid config".
+    """
+    value = body.get(key)
+    return None if value in (None, "") else int(value)
 
 
 # ---------------------------------------------------------------------------
@@ -214,69 +302,35 @@ def example(name: str) -> dict:
     return jsonify(yaml=p.read_text(encoding="utf-8"))
 
 
+# Guide 1.6: /api/verify through the service. Validation first (a 400 with
+# the problems), then service.verify, which runs the same verifier.verify
+# and also the triage; the page receives the same Report JSON as before.
+# The ORIGINAL text is verified (not the normalised copy), exactly what the
+# CLI `te-verify` would read.
 @app.route("/api/verify", methods=["POST"])
-def verify_endpoint() -> dict:
-    """Accept a YAML body, parse to TE-IR, run verifier, return Report.
-
-    The webapp posts the user's edited YAML (built from the
-    questionnaire form). We reuse `schema.load_te` so the validation
-    errors are the same the user would see from the CLI.
-    """
-    body = request.get_json(force=True)
-    yaml_text = body.get("yaml", "")
-    try:
-        raw = yaml.safe_load(yaml_text)
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
-    report = verify(te)
-    return jsonify(report.model_dump(mode="json"))
+def verify_endpoint() -> ResponseReturnValue:
+    """Accept a YAML body, validate it, run the verifier, return the Report."""
+    spec, _ = _valid_spec(request.get_json(force=True), "yaml")
+    return jsonify(service.verify(spec).report)
 
 
+# Guide 1.6: /api/build-and-verify through the service. The YAML offered for
+# download is validate()'s, made with the same dump as before (service.py,
+# _dump_yaml), so it is byte-identical.
 @app.route("/api/build-and-verify", methods=["POST"])
-def build_and_verify() -> dict:
-    """Accept a JSON IR object (form-built), validate, run verifier.
-
-    The form-driven UI sends a nested dict matching the Pydantic model
-    shape directly. We validate via `TokenEconomy.model_validate` so
-    the user sees the same Pydantic error messages they'd get from
-    the CLI; on success we run the verifier and return the Report
-    plus a YAML serialization the UI can offer for download.
-    """
-    body = request.get_json(force=True)
-    raw = body.get("ir", {})
-    try:
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to validate TE-IR: {e}"), 400
-    report = verify(te)
-    yaml_text = yaml.safe_dump(
-        te.model_dump(mode="json", exclude_none=True),
-        sort_keys=False,
-        allow_unicode=True,
-    )
-    return jsonify(
-        report=report.model_dump(mode="json"),
-        yaml=yaml_text,
-    )
+def build_and_verify() -> ResponseReturnValue:
+    """Accept the form's JSON IR, validate it, verify it, return Report + YAML."""
+    spec, checked = _valid_spec(request.get_json(force=True), "ir")
+    return jsonify(report=service.verify(spec).report, yaml=checked.yaml)
 
 
+# Guide 1.6: /api/yaml-to-ir through the service. normalised_spec is the
+# same model_dump(mode="json", exclude_none=True) the old route returned.
 @app.route("/api/yaml-to-ir", methods=["POST"])
-def yaml_to_ir() -> dict:
-    """Convert a YAML TE-IR into a JSON dict the form can hydrate from.
-
-    Used by the form's "Load example" buttons: backend parses the YAML,
-    validates, and returns the validated dict. Frontend then populates
-    each form field from the dict.
-    """
-    body = request.get_json(force=True)
-    yaml_text = body.get("yaml", "")
-    try:
-        raw = yaml.safe_load(yaml_text)
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
-    return jsonify(ir=te.model_dump(mode="json", exclude_none=True))
+def yaml_to_ir() -> ResponseReturnValue:
+    """Convert a YAML TE-IR into the validated JSON dict the form loads."""
+    _, checked = _valid_spec(request.get_json(force=True), "yaml")
+    return jsonify(ir=checked.normalised_spec)
 
 
 @app.route("/api/conditions")
@@ -334,63 +388,49 @@ def conditions() -> dict:
 # the cadCAD export still consume it under the hood.
 
 
+# Guide 1.6: /api/minimal-verdicts through the service (service.minimal
+# returns the same ReachabilityVerdict dicts).
 @app.route("/api/minimal-verdicts", methods=["POST"])
-def minimal_verdicts_endpoint() -> dict:
-    """Return the minimal (reachability) verifier output.
-
-    Accepts a YAML body; emits the list of ``ReachabilityVerdict``
-    dicts (failure_mode, subject, structural_status, violation_reachable,
-    satisfaction_reachable, minimum_param_shift, witness,
-    safety_predicates).
-    """
-    body = request.get_json(force=True)
-    yaml_text = body.get("yaml", "")
-    try:
-        raw = yaml.safe_load(yaml_text)
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
-    verdicts = minimal_verdicts(te)
-    return jsonify(verdicts=[v.model_dump(mode="json") for v in verdicts])
+def minimal_verdicts_endpoint() -> ResponseReturnValue:
+    """Return the minimal (reachability) verifier output for a YAML spec."""
+    spec, _ = _valid_spec(request.get_json(force=True), "yaml")
+    return jsonify(verdicts=service.minimal(spec))
 
 
+# Guide 1.6: /api/simulate through the service. The route only reads the
+# request: the BOUNDS (n_runs <= 200, horizon <= 500) now live in
+# service.simulate, so they also hold for MCP clients and the agent. The
+# two flags are passed through (service.simulate has them since guide 1.5).
+# A number that isn't a number is still 400 "invalid config"; a failure
+# inside the simulator is still 500 "simulation failed".
 @app.route("/api/simulate", methods=["POST"])
-def simulate_endpoint() -> dict:
+def simulate_endpoint() -> ResponseReturnValue:
     """Run the reference ABM and return the simulation report.
 
-    Body:
-      - yaml: the TE-IR YAML text
-      - n_runs (int, default 200, max 5000): Monte Carlo replicates
-      - horizon_periods (int, default 260, max 5000): simulation length
-      - seed (int|None): determinism control
-      - skip_non_fragile (bool, default True): triage SOUND/BROKEN FMs
+    Body: yaml; n_runs (default 200), horizon_periods (default 260), seed,
+    skip_non_fragile (default true), record_trajectories (default false).
+    The service clamps the numbers.
     """
     body = request.get_json(force=True)
-    yaml_text = body.get("yaml", "")
+    spec, _ = _valid_spec(body, "yaml")
     try:
-        raw = yaml.safe_load(yaml_text)
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
-
-    # Bound the inputs to prevent the browser from triggering an
-    # arbitrarily-long server-side simulation.
+        n_runs = int(body.get("n_runs", 200))
+        horizon = int(body.get("horizon_periods", 260))
+        seed = _optional_int(body, "seed")
+    except (ValueError, TypeError) as e:
+        return jsonify(error=f"invalid config: {e}"), 400
     try:
-        cfg = SimulationConfig(
-            n_runs=min(max(1, int(body.get("n_runs", 200))), 200),
-            horizon_periods=min(max(1, int(body.get("horizon_periods", 260))), 500),
-            seed=(int(body["seed"]) if body.get("seed") not in (None, "") else None),
+        report = service.simulate(
+            spec,
+            n_runs=n_runs,
+            horizon=horizon,
+            seed=seed,
             skip_non_fragile=bool(body.get("skip_non_fragile", True)),
             record_trajectories=bool(body.get("record_trajectories", False)),
         )
-    except (ValueError, TypeError) as e:
-        return jsonify(error=f"invalid config: {e}"), 400
-
-    try:
-        report = run_simulation(te, config=cfg)
     except Exception as e:
         return jsonify(error=f"simulation failed: {e}"), 500
-    return jsonify(report.model_dump(mode="json"))
+    return jsonify(report)
 
 
 @app.route("/explore")
@@ -406,123 +446,73 @@ def explore_page() -> str:
     return render_template("explore.html", examples=examples)
 
 
+# Guide 1.6: /api/explore through the service (service.trajectory). The
+# horizon bound (10 000) and the max_agents bound (200) now live in the
+# service.
 @app.route("/api/explore", methods=["POST"])
-def explore_endpoint() -> dict:
+def explore_endpoint() -> ResponseReturnValue:
     """Run one trajectory and return the per-period snapshot series.
 
-    Body:
-      - yaml: TE-IR YAML text
-      - horizon_periods (int, default 100, max 300)
-      - seed (int|None)
-      - max_agents (int|None): explicit cap, otherwise auto-scaled
+    Body: yaml; horizon_periods (default 100, at most 10 000), seed,
+    max_agents (at most 200; missing means: chosen by the simulator).
     """
     body = request.get_json(force=True)
-    yaml_text = body.get("yaml", "")
+    spec, _ = _valid_spec(body, "yaml")
     try:
-        raw = yaml.safe_load(yaml_text)
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
-
-    try:
-        cfg = SimulationConfig(
-            n_runs=1,
-            # Trajectory mode runs ONE seeded simulation — no compute
-            # multiplier from replicates. Cap matches the schema's
-            # SimulationConfig.horizon_periods upper bound (10 000) so
-            # longer-horizon explorations (e.g. Bitcoin's 9000-week
-            # halving curve) aren't silently truncated at 300.
-            horizon_periods=min(max(1, int(body.get("horizon_periods", 100))), 10_000),
-            seed=(int(body["seed"]) if body.get("seed") not in (None, "") else None),
-            max_agents=(
-                min(max(1, int(body["max_agents"])), 200)
-                if body.get("max_agents") not in (None, "")
-                else None
-            ),
-        )
+        horizon = int(body.get("horizon_periods", 100))
+        seed = _optional_int(body, "seed")
+        max_agents = _optional_int(body, "max_agents")
     except (ValueError, TypeError) as e:
         return jsonify(error=f"invalid config: {e}"), 400
-
     try:
-        report = run_explore(te, sim_config=cfg)
+        report = service.trajectory(spec, horizon=horizon, seed=seed, max_agents=max_agents)
     except Exception as e:
         return jsonify(error=f"explore failed: {e}"), 500
-    return jsonify(report.model_dump(mode="json"))
+    return jsonify(report)
 
 
+# Guide 1.6: /api/ir-to-yaml through the service. It runs on every keystroke
+# of the form's preview: validate() adds the coherence checks and the hash,
+# a few milliseconds, and its `yaml` is the same dump as before.
 @app.route("/api/ir-to-yaml", methods=["POST"])
-def ir_to_yaml_endpoint() -> dict:
-    """Phase M — lightweight IR → YAML serialiser.
-
-    Used by the form's Stage-3.2 flow-graph preview to refresh on every
-    keystroke without running the (expensive) verifier. Pure validate +
-    serialise.
-    """
-    body = request.get_json(force=True)
-    raw = body.get("ir", {})
-    try:
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to validate TE-IR: {e}"), 400
-    yaml_text = yaml.safe_dump(
-        te.model_dump(mode="json", exclude_none=True),
-        sort_keys=False,
-        allow_unicode=True,
-    )
-    return jsonify(yaml=yaml_text)
+def ir_to_yaml_endpoint() -> ResponseReturnValue:
+    """Validate the form's JSON IR and return it as YAML (no verification)."""
+    _, checked = _valid_spec(request.get_json(force=True), "ir")
+    return jsonify(yaml=checked.yaml)
 
 
+# Guide 1.6: /api/flow-graph through the service (service.flow_graph calls
+# the same build_flow_graph; the import inside the old function goes away).
 @app.route("/api/flow-graph", methods=["POST"])
-def flow_graph_endpoint() -> dict:
-    """Phase M — declared-flow graph (Cytoscape-JSON payload).
-
-    Accepts the same YAML body the rest of the API uses. Returns a
-    compact, pure-spec graph (no simulation): nodes for mint pools,
-    burn sinks, role wallets, asset inventories, referenced events;
-    edges for emission, burn, redemption, cross-token flows. The form
-    Stage-3.2 preview and the /explore page both consume this.
-    """
-    from verifier.abm.flow_graph import build_flow_graph
-    body = request.get_json(force=True)
-    yaml_text = body.get("yaml", "")
+def flow_graph_endpoint() -> ResponseReturnValue:
+    """Return the declared-flow graph (Cytoscape JSON) of a YAML spec."""
+    spec, _ = _valid_spec(request.get_json(force=True), "yaml")
     try:
-        raw = yaml.safe_load(yaml_text)
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
-    try:
-        payload = build_flow_graph(te)
+        payload = service.flow_graph(spec)
     except Exception as e:
         return jsonify(error=f"flow-graph build failed: {e}"), 500
     return jsonify(payload)
 
 
+# Guide 1.6: /api/cadcad-export through the service. Its bounds (5000 runs,
+# 5000 periods) are larger than the simulation's on purpose: nothing runs
+# here, the numbers are only written into the exported configuration
+# (service.py, the note above MAX_MC_RUNS).
 @app.route("/api/cadcad-export", methods=["POST"])
-def cadcad_export_endpoint() -> dict:
-    """Return the cadCAD-compatible config dict for the given spec.
+def cadcad_export_endpoint() -> ResponseReturnValue:
+    """Return the cadCAD-compatible configuration for a YAML spec.
 
-    Same body shape as /api/simulate (n_runs, horizon_periods are
-    surfaced into the export's sim_config). The returned JSON is
-    intended to be saved to disk and consumed by a cadCAD pipeline
-    outside this app.
+    Body: yaml; n_runs (default 500), horizon_periods (default 260), seed.
     """
     body = request.get_json(force=True)
-    yaml_text = body.get("yaml", "")
+    spec, _ = _valid_spec(body, "yaml")
     try:
-        raw = yaml.safe_load(yaml_text)
-        te = TokenEconomy.model_validate(raw)
-    except Exception as e:
-        return jsonify(error=f"failed to parse TE-IR: {e}"), 400
-    try:
-        cfg = SimulationConfig(
-            n_runs=min(max(1, int(body.get("n_runs", 500))), 5000),
-            horizon_periods=min(max(1, int(body.get("horizon_periods", 260))), 5000),
-            seed=(int(body["seed"]) if body.get("seed") not in (None, "") else None),
-        )
+        n_runs = int(body.get("n_runs", 500))
+        horizon = int(body.get("horizon_periods", 260))
+        seed = _optional_int(body, "seed")
     except (ValueError, TypeError) as e:
         return jsonify(error=f"invalid config: {e}"), 400
-    config = export_cadcad_config(te, sim_config=cfg)
-    return jsonify(config)
+    return jsonify(service.export_cadcad(spec, n_runs=n_runs, horizon=horizon, seed=seed))
 
 
 def main() -> None:  # pragma: no cover

@@ -160,6 +160,31 @@ def validate_signs(te: TokenEconomy, *, horizon: float | None = None) -> list[Si
         te.meta.simulation_horizon or _DEFAULT_HORIZON
     )
     violations: list[SignViolation] = []
+    # Event frequencies: a negative number of occurrences per period is as
+    # impossible as a negative rate, and it multiplies every rule the event
+    # triggers. Reported on each token with a rule on that event.
+    for ev in te.events:
+        if ev.frequency is None:
+            continue
+        for t, worst in _evaluate_rate_at_corners(FunctionShape(asymptotic_class=ev.frequency), H):
+            if worst < -1e-9:
+                for token in te.tokens:
+                    rules = [*token.emission_rules, *token.burn_rules]
+                    if any(getattr(r.trigger, "event_id", None) == ev.id for r in rules):
+                        violations.append(SignViolation(
+                            token_id=token.id,
+                            rule_kind="event",
+                            rule_index=-1,
+                            family=ev.frequency.family.value,
+                            explanation=(
+                                f"Event '{ev.id}' (frequency family "
+                                f"{ev.frequency.family.value}) admits a negative "
+                                f"number of occurrences per period ({worst:.3f}) at "
+                                f"t={t:.1f} under the declared parameter range; it "
+                                f"triggers rules of token '{token.id}'."
+                            ),
+                        ))
+                break
     for token in te.tokens:
         for i, rule in enumerate(token.emission_rules):
             v = _check_rule(rule, H, token.id, "emission", i)

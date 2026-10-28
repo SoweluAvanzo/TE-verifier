@@ -1,0 +1,490 @@
+/* NOTE:
+=============================================================================
+webapp/static/chat.css — look of the login page (9.0) and the chat page (9.1)
+=============================================================================
+GUIDE STEP   9.0 (buttons + login page), 9.1 (chat page)
+PURPOSE      The rules the two new pages need on top of the existing look:
+             the two button styles both pages use (primary-btn,
+             secondary-btn), the centred login form, and the chat page's
+             two-column layout (conversation | spec panel), message bubbles,
+             tool-activity lines, confirmation buttons, slot status badges
+             and the job/report list. Colours and fonts come from the
+             existing style.css / form.css (loaded before this file), so the
+             new pages look like the rest of the app.
+USED BY      webapp/templates/login.html (9.0) and chat.html (9.1).
+DEPENDS ON   style.css, form.css (variables and base styles).
+WHY          Architecture §3.5. The button classes were defined only in
+             explore.css, which these pages do not load (it styles the
+             explorer), so they are defined here for the new pages. On
+             narrow screens the chat's panel moves below the conversation
+             (single column), so the page works on a phone.
+ACTIVATE     The rules sit in two blocks, each between an opening and a
+             closing marker line containing the word CODE. Guide 9.0: delete the two marker lines of the
+             first block. Guide 9.1: delete the two marker lines of the
+             block labelled "Guide 9.1". Reload the page after each.
+=============================================================================
+*/
+/* TO-DO LIST: build this file yourself, step by step
+-----------------------------------------------------------------------------
+Write your rules between this comment and the SOLUTION marker below. Do the
+steps in order and run each "Check" before moving on. Lines starting with
+"|" are short illustrations, not the full rules. The class names must be
+exactly those used by templates/login.html, templates/chat.html and
+static/chat.js. Colours and fonts already come from style.css and
+form.css: write only the rules these pages need.
+
+Guide 9.0
+[ ] 1. .primary-btn: the app's accent button (background and border
+       var(--color-accent), white bold text, var(--radius) corners,
+       pointer cursor), a darker :hover and a grey :disabled variant with
+       the "progress" cursor. .secondary-btn: white with a thin
+       var(--color-border) border, the same corners, a light :hover.
+       Then one :focus-visible rule (2px accent outline, offset 2px) for
+       the buttons, the starters, the chat textarea and the login input.
+[ ] 2. The login card: .login-body centres it on the screen
+         | min-height: 100vh; display: grid; place-items: center;
+       .login-page is a white card (max-width 26rem, padding, border,
+       10px corners, var(--shadow)); .login-product in the accent colour;
+       the h1 smaller than the app's page titles; the intro paragraph
+       muted; the form a flex column with a gap; the input in the body
+       font with padding and a border; #login-error in the --color-fail
+       colour; .login-alt small, its link in the accent colour.
+[ ] 3. Check: with templates/login.html and static/login.js active, reload
+       /login: a centred card with a blue button.
+
+Guide 9.1
+[ ] 4. `.chat-page .header-row nav`: a flex row with a gap, so the two
+       links and the logout button are evenly spaced. .chat-layout: the
+       header's width (max-width 1100px, margin auto, side padding 2rem,
+       so the edges line up) and a grid with two columns:
+         | grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+       Then a media query (max-width: 900px) that switches it to ONE column
+       (header WHY: the panel moves below the chat on phones).
+[ ] 5. .chat-column: the conversation card (white, border, 10px corners,
+       shadow, overflow hidden), a flex column with a fixed height
+         | height: max(28rem, calc(100vh - 15rem));
+       (75vh on phones). .chat-log: flex 1, vertical scrolling
+       (overflow-y: auto), a flex column with a gap and padding, and
+       display: none while :empty.
+[ ] 5b. .chat-empty: flex 1 with padding, hidden as soon as the log has a
+       message:
+         | .chat-column:has(.chat-log:not(:empty)) .chat-empty { display: none; }
+       its h2, a muted paragraph, .starter-list a column of .starter pills
+       (accent-soft background, accent text, round ends).
+[ ] 6. Message bubbles: .msg (max-width 85%, padding, 12px corners,
+       overflow-wrap: anywhere), .msg.user on the right (align-self:
+       flex-end, accent background, white text, white-space: pre-wrap),
+       .msg.assistant on the left (light warm grey). The empty assistant
+       bubble shows a pulsing "…" while the answer streams in (no
+       animation under prefers-reduced-motion). Then the Markdown inside
+       an answer: paragraph and list margins, small headings, code, pre
+       with horizontal scrolling, tables, links.
+[ ] 7. Tool activity: .tool-line (small muted text, on the left), and two
+       ::before markers set by chat.js classes: .tool-line.ok gets a
+       --color-pass tick, .tool-line.err a --color-warn dot (not red: see
+       chat.js).
+[ ] 8. .confirm-box: a light amber card (border, 10px corners, padding);
+       its buttons get a right margin, the first ("Yes, run it") in the
+       accent colour.
+[ ] 9. .chat-form: the composer at the bottom of the card, a grid
+       (textarea | button, then .composer-hint across both columns) with a
+       top border; the textarea in the body font (not style.css's
+       monospace), no manual resizing, growing with its text
+       (field-sizing: content, up to a max-height); .composer-hint small
+       and muted.
+[ ] 10. The panel: .spec-panel a white card, sticky (top 1rem) with its own
+        scrolling (max-height: calc(100vh - 2rem)), static on phones; its
+        h2, .panel-state muted with #session-state in bold;
+        .panel-section separated by a thin top border, with small h3s.
+        Each empty list shows its data-empty text:
+          | .slot-list:empty::before { content: attr(data-empty); }
+        (the same for .job-list and #verdict-cards). .slot-list and
+        .job-list without bullets; .slot-list li a flex row with
+        space-between; .job-list li with a small vertical padding and its
+        links (the report downloads) after a small gap; #verdict-cards a
+        column with a gap, its .verdict-card (from verdict.js) with
+        smaller type and padding than in the form; #open-in-form full
+        width; .badge a small pill;
+        then one background and text colour per status class that chat.js
+        sets: .badge.committed, .badge.unknown, .badge.default,
+        .badge.conflict.
+[ ] 11. .visually-hidden: hides the textarea's label on screen but keeps it
+        for screen readers (absolute, 1px by 1px, overflow hidden, clip).
+[ ] 12. Check: reload /chat: two columns aligned with the header, the
+        starters until the first message; make the window narrower than
+        900px and the panel moves below the chat.
+
+Forms extension (structured questions; te_platform/agent/forms.py)
+[ ] 12b. (conversation history extension) Three columns: `.chat-page
+        .page-header` and .chat-layout get max-width 1360px, the grid
+        conversations | chat | panel; under 1150px .conv-panel spans the
+        full row above; under 900px one column. .conv-panel sticky; the
+        .new-chat button full width; .conv-list without bullets, scrolling,
+        its data-empty text while empty; each .conv-item a plain button
+        (light hover, aria-current="true" in accent-soft) with .conv-title
+        (one line, ellipsis) and .conv-time (small, muted).
+[ ] 13. .ask-form: a white card in the log (border, 10px corners), its h3,
+        .ask-intro muted; each .ask-question a fieldset without the browser
+        frame, separated by a thin line, its legend bold, .ask-help small
+        and muted, .ask-error in --color-fail; .ask-choice a label per
+        option (radio/checkbox + text, a light hover), .ask-unknown muted;
+        .ask-numbers a row (number inputs, the unit); .ask-other and
+        .ask-text inputs in the body font. .ask-form.is-answered and
+        .is-skipped greyed out; .form-summary (the answers as the user's
+        bubble): each question small and lighter, its answer below.
+[ ] 14. History: .ask-asked, a compact card for a form already answered
+        (its title and the questions asked); .msg.user.failed faded, with a
+        .msg-note under it (a message the server did not keep).
+[ ] 15. Estimates: .ask-estimate, a small accent-soft note with the basis;
+        .ask-question.is-estimate keeps a thin accent bar on the left until
+        the designer changes the value.
+
+Stuck, or want to compare? The SOLUTION below is the complete reference
+code. Activate it only if you decide to use it as it is.
+----------------------------------------------------------------------------- */
+/* =============================================================================
+SOLUTION: complete reference code (deactivated on purpose, see ACTIVATE)
+============================================================================= */
+/* NOTE: Guide 9.0 — buttons (both pages) and the login page. */
+/* The app's accent blue (style.css), as on the form's Verify button. */
+.primary-btn {
+  padding: 0.6em 1.3em;
+  background: var(--color-accent);
+  color: #fff;
+  font-weight: 600;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.primary-btn:hover { background: #174975; }
+.primary-btn:disabled { background: #8ea6ba; border-color: #8ea6ba; cursor: progress; }
+
+.secondary-btn {
+  background: #fff;
+  color: var(--color-fg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.4em 0.9em;
+  cursor: pointer;
+}
+.secondary-btn:hover { background: #f0f0e9; }
+
+/* Visible keyboard focus on everything these pages add. */
+.primary-btn:focus-visible,
+.secondary-btn:focus-visible,
+.starter:focus-visible,
+.chat-form textarea:focus-visible,
+.login-page input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* The login page: one card in the middle of the screen. */
+.login-body { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem; }
+.login-page {
+  width: 100%;
+  max-width: 26rem;
+  padding: 2rem 2.25rem;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.login-page .login-product { margin: 0 0 0.4rem; color: var(--color-accent); font-weight: 600; }
+.login-page h1 { margin: 0 0 0.5rem; font-size: 1.45rem; font-weight: 600; letter-spacing: -0.01em; }
+.login-page > p { color: var(--color-muted); margin: 0 0 1.25rem; }
+.login-page form { display: flex; flex-direction: column; gap: 0.6rem; }
+.login-page label { font-weight: 600; font-size: 0.95rem; }
+.login-page input {
+  font: inherit;
+  padding: 0.65em 0.8em;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: #fdfcf7;
+}
+.login-page .primary-btn { margin-top: 0.4rem; padding: 0.7em; }
+#login-error { color: var(--color-fail); margin: 0; }
+.login-page .login-alt { margin: 1.25rem 0 0; font-size: 0.9rem; }
+.login-alt a { color: var(--color-accent); }
+/* NOTE: Guide 9.1 — the chat page. */
+/* The header row: nav items in a row with even gaps (links and the button). */
+.chat-page .header-row nav { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; }
+
+/* Three columns: conversations | the conversation | the design panel. The
+   header gets the same width, so the edges line up. */
+.chat-page .page-header { max-width: 1360px; }
+.chat-layout {
+  max-width: 1360px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(190px, 230px) minmax(0, 1fr) minmax(260px, 320px);
+  gap: 1.5rem;
+  padding: 1.5rem 2rem 2.5rem;
+}
+/* Medium screens: the conversation list moves above, as a full-width row. */
+@media (max-width: 1150px) {
+  .chat-layout { grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); }
+  .conv-panel { grid-column: 1 / -1; }
+  .conv-panel .conv-list { max-height: 9.5rem; }
+}
+@media (max-width: 900px) {
+  .chat-layout { grid-template-columns: 1fr; padding: 1rem; }
+}
+
+/* The conversation list (static/chat.js renderConversations). */
+.conv-panel { align-self: start; position: sticky; top: 1rem; min-width: 0; }
+@media (max-width: 1150px) { .conv-panel { position: static; } }
+.new-chat { width: 100%; font-weight: 600; padding: 0.6em 0.9em; }
+.conv-panel h2 { margin: 1.1rem 0 0.4rem; font-size: 0.9rem; font-weight: 600; color: var(--color-muted); }
+.conv-list { list-style: none; margin: 0; padding: 0; max-height: calc(100vh - 12rem); overflow-y: auto; }
+.conv-list:empty::before { content: attr(data-empty); display: block; color: var(--color-muted); font-size: 0.86rem; line-height: 1.45; }
+.conv-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.45rem 0.6rem;
+  margin: 0 0 0.15rem;
+  cursor: pointer;
+  color: var(--color-fg);
+}
+.conv-item:hover { background: #f0f0e9; }
+.conv-item[aria-current="true"] { background: var(--color-accent-soft); }
+.conv-item:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.conv-title { display: block; font-size: 0.9rem; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-time { display: block; font-size: 0.76rem; color: var(--color-muted); margin-top: 0.1rem; }
+
+/* The conversation: one card; the log scrolls, the composer stays at the bottom. */
+.chat-column {
+  display: flex;
+  flex-direction: column;
+  height: max(28rem, calc(100vh - 15rem));
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+@media (max-width: 900px) {
+  .chat-column { height: 75vh; }
+}
+.chat-log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem 1.25rem 1rem;
+}
+.chat-log:empty { display: none; }
+
+/* Shown until the first message: what to do, and three ways to begin. */
+.chat-empty { flex: 1; overflow-y: auto; padding: 2.25rem 2rem; }
+.chat-column:has(.chat-log:not(:empty)) .chat-empty { display: none; }
+.chat-empty h2 { margin: 0 0 0.5rem; font-size: 1.3rem; font-weight: 600; }
+.chat-empty p { margin: 0 0 1.25rem; color: var(--color-muted); max-width: 34rem; line-height: 1.55; }
+.starter-list { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+.starter {
+  text-align: left;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  border: 1px solid #c6ddef;
+  border-radius: 999px;
+  padding: 0.45em 1em;
+}
+.starter:hover { background: #d3e6f5; }
+
+.msg { max-width: 85%; padding: 0.65rem 0.95rem; border-radius: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: var(--color-accent); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.msg.assistant { align-self: flex-start; background: #f3f3ee; border-bottom-left-radius: 4px; }
+/* An empty assistant bubble while the answer streams in: three pulsing dots. */
+.msg.assistant:empty::before { content: "…"; letter-spacing: 0.2em; color: var(--color-muted); animation: chat-pulse 1.2s ease-in-out infinite; }
+@keyframes chat-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .msg.assistant:empty::before { animation: none; } }
+/* Markdown inside an answer (rendered by marked, cleaned by DOMPurify). */
+.msg.assistant > :first-child { margin-top: 0; }
+.msg.assistant > :last-child { margin-bottom: 0; }
+.msg.assistant p, .msg.assistant ul, .msg.assistant ol { margin: 0 0 0.6em; }
+.msg.assistant ul, .msg.assistant ol { padding-left: 1.3em; }
+.msg.assistant h1, .msg.assistant h2, .msg.assistant h3 { font-size: 1.02rem; margin: 0.8em 0 0.35em; }
+.msg.assistant code { font-family: var(--font-mono); font-size: 0.86em; background: #e8e8e1; padding: 0.1em 0.35em; border-radius: 4px; }
+.msg.assistant pre { overflow-x: auto; background: #fff; border: 1px solid var(--color-border); border-radius: var(--radius); padding: 0.6em 0.8em; }
+.msg.assistant pre code { background: none; padding: 0; }
+.msg.assistant table { border-collapse: collapse; margin: 0 0 0.6em; font-size: 0.92em; }
+.msg.assistant th, .msg.assistant td { border: 1px solid var(--color-border); padding: 0.3em 0.55em; text-align: left; }
+.msg.assistant a { color: var(--color-accent); }
+
+.tool-line { align-self: flex-start; font-size: 0.85rem; color: var(--color-muted); padding-left: 0.2rem; }
+.tool-line.ok::before { content: "✓ "; color: var(--color-pass); font-weight: 600; }
+.tool-line.err::before { content: "• "; color: var(--color-warn); font-weight: 600; }
+
+.confirm-box {
+  align-self: flex-start;
+  max-width: 85%;
+  background: #fffaf0;
+  border: 1px solid #ecd9a9;
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+}
+.confirm-box p { margin: 0 0 0.6rem; }
+.confirm-box button { margin-right: 0.5rem; }
+.confirm-box button:first-of-type { background: var(--color-accent); color: #fff; border-color: var(--color-accent); font-weight: 600; }
+
+/* The composer, attached to the bottom of the card. */
+.chat-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.4rem 0.6rem;
+  align-items: end;
+  padding: 0.85rem 1rem 0.7rem;
+  border-top: 1px solid var(--color-border);
+  background: #fcfcf9;
+}
+.chat-form textarea {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.45;
+  background: #fff;
+  resize: none;
+  min-height: 2.9rem;
+  max-height: 12rem;
+  field-sizing: content;
+}
+.chat-form .primary-btn { height: 2.9rem; }
+.composer-hint { grid-column: 1 / -1; margin: 0; font-size: 0.78rem; color: var(--color-muted); }
+
+/* The panel: a quieter card beside the conversation, scrolling on its own. */
+.spec-panel {
+  position: sticky;
+  top: 1rem;
+  align-self: start;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  padding: 1.25rem 1.25rem 1.4rem;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+}
+@media (max-width: 900px) {
+  .spec-panel { position: static; max-height: none; }
+}
+.spec-panel h2 { margin: 0 0 0.3rem; font-size: 1.1rem; font-weight: 600; }
+.panel-state { color: var(--color-muted); margin: 0 0 1rem; font-size: 0.92rem; }
+#session-state { color: var(--color-fg); font-weight: 600; }
+.panel-section { padding: 0.85rem 0; border-top: 1px solid #ecebe4; }
+.panel-section h3 { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; }
+/* Each list explains itself while it is empty (its data-empty text). */
+.slot-list:empty::before,
+.job-list:empty::before,
+#verdict-cards:empty::before { content: attr(data-empty); display: block; color: var(--color-muted); font-size: 0.88rem; line-height: 1.45; }
+.slot-list, .job-list { list-style: none; padding: 0; margin: 0; }
+.slot-list li { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #f0efe9; font-size: 0.88rem; overflow-wrap: anywhere; }
+.slot-list li:last-child { border-bottom: none; }
+.job-list li { padding: 0.3rem 0; font-size: 0.9rem; }
+.job-list li a { margin-left: 0.5rem; color: var(--color-accent); font-weight: 600; }
+#verdict-cards { display: flex; flex-direction: column; gap: 0.5rem; }
+/* verdict.js's cards (style.css) are sized for the form's wide verdict
+   pane: smaller type and padding in this narrow panel. */
+#verdict-cards .verdict-card { font-size: 0.86rem; padding: 0.7em 0.85em; margin: 0; box-shadow: none; }
+#verdict-cards .verdict-card h3 { font-size: 0.95rem; margin-top: 0; }
+/* Long field paths (e.g. participants.agent_types[holder]...) wrap instead of being cut off. */
+#verdict-cards .verdict-card * { overflow-wrap: anywhere; }
+#verdict-cards .verdict-card pre { white-space: pre-wrap; }
+#open-in-form { margin-top: 0.5rem; width: 100%; }
+.badge { font-size: 0.75rem; padding: 0.12rem 0.5rem; border-radius: 999px; white-space: nowrap; }
+.badge.committed { background: #e6f4ea; color: var(--color-pass); }
+.badge.unknown { background: #fff4e5; color: #8a5a00; }
+.badge.default { background: #eef1f6; color: #44546a; }
+.badge.conflict { background: #fde8e8; color: var(--color-fail); }
+
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Forms: structured questions from the assistant (static/chat.js showForm). */
+.ask-form {
+  align-self: stretch;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--color-accent);
+  border-radius: 10px;
+  padding: 0.9rem 1.1rem 0.8rem;
+}
+.ask-form h3 { margin: 0 0 0.3rem; font-size: 1rem; font-weight: 600; }
+.ask-intro { margin: 0 0 0.4rem; color: var(--color-muted); font-size: 0.92rem; }
+.ask-question { border: none; margin: 0; padding: 0.75rem 0 0.6rem; min-width: 0; }
+.ask-question + .ask-question { border-top: 1px solid #ecebe4; }
+.ask-question legend { padding: 0; font-weight: 600; font-size: 0.97rem; }
+.ask-help { margin: 0.2rem 0 0.4rem; color: var(--color-muted); font-size: 0.85rem; line-height: 1.45; }
+.ask-estimate {
+  margin: 0.2rem 0 0.5rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  background: var(--color-accent-soft);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.ask-estimate strong { color: var(--color-accent); font-weight: 600; }
+.ask-question.is-estimate { box-shadow: inset 3px 0 0 var(--color-accent); padding-left: 0.6rem; }
+.ask-footer button[hidden] { display: none; }
+.ask-body { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.35rem; }
+.ask-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  line-height: 1.35;
+}
+.ask-choice:hover { background: #f3f3ee; }
+.ask-choice input { margin: 0; accent-color: var(--color-accent); flex: none; }
+.ask-unknown { color: var(--color-muted); }
+.ask-other, .ask-text, .ask-numbers input {
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 0.4em 0.6em;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: #fdfcf7;
+}
+.ask-other { flex: 1; min-width: 0; }
+.ask-text { width: 100%; font-family: var(--font-body); resize: vertical; }
+.ask-numbers { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; padding: 0.2rem 0.5rem; }
+.ask-numbers input { width: 8rem; }
+.ask-numlabel, .ask-unit { color: var(--color-muted); font-size: 0.9rem; }
+.ask-other:focus-visible, .ask-text:focus-visible, .ask-numbers input:focus-visible,
+.ask-choice input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ask-error { margin: 0.3rem 0 0; color: var(--color-fail); font-size: 0.86rem; }
+.ask-error:empty { display: none; }
+.ask-question[aria-invalid="true"] legend { color: var(--color-fail); }
+.ask-footer { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; padding-top: 0.6rem; border-top: 1px solid #ecebe4; }
+.ask-footer .ask-error { margin: 0; }
+.ask-form.is-answered, .ask-form.is-skipped { border-left-color: var(--color-border); opacity: 0.6; }
+.ask-form.is-answered .ask-choice, .ask-form.is-skipped .ask-choice { cursor: default; }
+.ask-note { margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--color-muted); }
+
+/* The answers, shown as the user's own message: question small, answer below. */
+.msg.user.form-summary { white-space: normal; }
+.form-summary p { margin: 0; }
+.form-summary .q { font-size: 0.82rem; opacity: 0.8; }
+.form-summary .a { font-weight: 600; margin-bottom: 0.45rem; }
+.form-summary .a:last-child { margin-bottom: 0; }
+
+/* Conversation history: a form already answered, shown compactly, and a
+   message that could not be sent (its text is back in the composer). */
+.ask-asked {
+  align-self: flex-start;
+  max-width: 85%;
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--color-border);
+  border-radius: 10px;
+  padding: 0.55rem 0.9rem;
+  background: #fff;
+  font-size: 0.9rem;
+}
+.ask-asked h3 { margin: 0 0 0.25rem; font-size: 0.92rem; font-weight: 600; }
+.ask-asked ul { margin: 0; padding-left: 1.2em; color: var(--color-muted); }
+.msg.user.failed { opacity: 0.55; }
+.msg-note { align-self: flex-end; margin: -0.4rem 0 0; font-size: 0.8rem; color: var(--color-muted); }
+

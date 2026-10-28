@@ -224,6 +224,8 @@ def _psub_for_verdict(v: ReachabilityVerdict) -> dict[str, Any]:
             ),
             "formula": p.formula,
             "inputs": p.inputs,
+            # Same group = alternatives (OR); the rest are AND-ed.
+            "alternative_group": p.alternative_group,
         }
     return {
         "label": f"{v.failure_mode}[{v.subject}]",

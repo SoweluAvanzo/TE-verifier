@@ -1,0 +1,130 @@
+## =============================================================================
+## evals/scenarios/tool_selection.yaml — does the agent choose tools as the policy says?
+## =============================================================================
+## GUIDE STEP   13.3
+## PURPOSE      Each scenario prepares a situation (a session with or without a
+##              spec, verified or not), sends ONE user message to the agent,
+##              and records the tools it calls in that turn. A scenario passes
+##              when:
+##                - every tool in `expect` was called, in that order (other
+##                  calls may be interleaved), and
+##                - no tool in `forbid` was called.
+##              The expectations restate policy/tool_policy.yaml (use_when,
+##              do_not_use_when, preconditions, suggested_next). If the policy
+##              changes, update these scenarios in the same pull request.
+## USED BY      evals/run.py (run_scenarios).
+## FIELDS       id         unique name
+##              spec       example file to load as the session's spec (optional)
+##              preverified  true = verify.run.v1 already ran on that spec
+##              user       the user's message
+##              expect     tool ids, in order
+##              forbid     tool ids that must not be called
+##              why        the policy rule being tested
+## WHY          Architecture §3.9 / guide 13.3: tool choice is tested like any
+##              other behaviour; every new tool adds at least three scenarios.
+## ACTIVATE     Uncomment with run.py. Note: examples/bitcoin.yaml carries
+##              error-level coherence issues on purpose (they ARE findings);
+##              coherence issues do not block verification.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your YAML between this list and the SOLUTION marker below. Do the
+## steps in order and run the "Check" at the end. Use the field names of the
+## header's FIELDS table exactly (evals/run.py reads them), and copy every
+## tool id exactly from policy/tool_policy.yaml.
+##
+## Guide 13.3
+## [ ] 1. One top-level key `scenarios:` holding a list; each item has
+##        id, user, expect, forbid and why, plus spec and preverified when
+##        the session needs a design.
+## [ ] 2. fresh-session-starts-interview: no spec; expect
+##        [elicit.next_questions.v1]; forbid verify.run.v1,
+##        sim.monte_carlo.v1 and sim.trajectory.v1.
+## [ ] 3. verify-before-simulate: spec examples/bitcoin.yaml, preverified
+##        false, a request to simulate; expect [verify.run.v1]; forbid
+##        sim.monte_carlo.v1.
+## [ ] 4. what-if-uses-verify-on-copy: examples/axie_infinity.yaml,
+##        preverified true, a what-if question; expect [verify.run.v1];
+##        forbid elicit.record_answer.v1 and sim.monte_carlo.v1.
+## [ ] 5. evidence-question-searches-literature: axie_infinity, preverified;
+##        expect [lit.search.v1]; forbid sim.monte_carlo.v1, export.cadcad.v1.
+## [ ] 6. report-requested-after-verification: examples/makerdao.yaml,
+##        preverified; expect [report.render_pdf.v1]; forbid export.cadcad.v1.
+## [ ] 7. cadcad-only-on-request: examples/curve_vecrv.yaml, preverified,
+##        an open question; expect [] (nothing required); forbid
+##        export.cadcad.v1.
+## [ ] 8. Give every item a folded `why: >` naming the policy rule it tests
+##        (use_when, do_not_use_when, a precondition or a cost class), so a
+##        reviewer can check it against the policy.
+## [ ] 9. Check: with evals/run.py active and the stack running:
+##          | uv run python -m evals.run --scenarios-only
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+scenarios:
+
+  - id: fresh-session-starts-interview
+    user: "I want to design a token for my neighbourhood time bank."
+    expect: [elicit.next_questions.v1]
+    forbid: [verify.run.v1, sim.monte_carlo.v1, sim.trajectory.v1]
+    why: >
+      State `eliciting`: verification needs the decisive slots resolved
+      (precondition decisive_slots_resolved); the interview comes first.
+
+  - id: verify-before-simulate
+    spec: examples/bitcoin.yaml
+    preverified: false
+    user: "Can you simulate how this economy behaves over five years?"
+    expect: [verify.run.v1]
+    forbid: [sim.monte_carlo.v1]
+    why: >
+      Formal verification comes first (architecture P2): sim tools require
+      verified_spec. The agent verifies, explains, and asks before any
+      expensive simulation (cost class `expensive`, ask_user_first).
+
+  - id: what-if-uses-verify-on-copy
+    spec: examples/axie_infinity.yaml
+    preverified: true
+    user: "What if the offer variety K were 10 instead of 5?"
+    expect: [verify.run.v1]
+    forbid: [elicit.record_answer.v1, sim.monte_carlo.v1]
+    why: >
+      verify.run.v1 use_when: a what-if question is run on a modified COPY of
+      the spec; the user's spec is not changed without confirmation.
+
+  - id: evidence-question-searches-literature
+    spec: examples/axie_infinity.yaml
+    preverified: true
+    user: "Is there research showing why play-to-earn economies inflate?"
+    expect: [lit.search.v1]
+    forbid: [sim.monte_carlo.v1, export.cadcad.v1]
+    why: >
+      lit.search.v1 use_when: the user asks whether there is evidence; cite
+      passages, never answer from memory.
+
+  - id: report-requested-after-verification
+    spec: examples/makerdao.yaml
+    preverified: true
+    user: "Please give me a PDF I can share with my co-founders."
+    expect: [report.render_pdf.v1]
+    forbid: [export.cadcad.v1]
+    why: >
+      report.render_pdf.v1 use_when: the user asks for something to share;
+      preconditions verified_spec and verification_ref_matches_spec hold.
+
+  - id: cadcad-only-on-request
+    spec: examples/curve_vecrv.yaml
+    preverified: true
+    user: "What should I look at next?"
+    expect: []
+    forbid: [export.cadcad.v1]
+    why: >
+      export.cadcad.v1 is used only when explicitly requested, never offered
+      unprompted.

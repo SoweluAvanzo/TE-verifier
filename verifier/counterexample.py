@@ -30,6 +30,8 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^(?P<tok>[A-Za-z0-9_]+?)__Q$"), "{tok}.Q (transaction volume)"),
     (re.compile(r"^(?P<tok>[A-Za-z0-9_]+?)__E_total$"), "{tok}.E_total (per-period emission)"),
     (re.compile(r"^(?P<tok>[A-Za-z0-9_]+?)__B_total$"), "{tok}.B_total (per-period burn)"),
+    # Outstanding supply cap C (docs/proofs/outstanding_cap.md)
+    (re.compile(r"^(?P<tok>[A-Za-z0-9_]+?)__cap$"), "{tok}.outstanding_supply_cap"),
     # Per-rule emission / burn parameters
     (
         re.compile(

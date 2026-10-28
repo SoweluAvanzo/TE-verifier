@@ -1,0 +1,31 @@
+extend = "../pyproject.toml"   # inherit line length, target version, excludes
+
+[lint]
+select = ["ALL"]               # every rule ruff has
+ignore = [
+    "ERA001",  # commented-out code: the whole scaffold IS commented code; remove when activation is complete
+    "RUF100",  # "unused noqa": a noqa in commented scaffold code (e.g. errors.py, N818) only
+               # matches its rule once the line is uncommented; remove together with ERA001
+    "D100", "D104",  # module/package docstrings: the ## header block plays that role
+    "D105", "D107",  # magic methods and __init__ are documented by their class docstring
+    "COM812",  # trailing commas: conflicts with ruff format (ruff docs recommend ignoring it)
+    "D203", "D213",  # incompatible with D211/D212, which we keep
+    "CPY001",  # copyright notice in every file: the project's licence covers the whole repository
+    "TRY003", "EM101", "EM102",  # exception messages are written where they are raised: clearer to read,
+                                 # and our errors reach users as structured ToolErrors, not tracebacks
+    "ANN401",  # Any is allowed for JSON data (tool payloads, model output); Pydantic validates it at the boundary
+]
+
+[lint.per-file-ignores]
+"cli.py" = ["T201"]            # a command-line program prints its results
+"db/migrations/*" = ["INP001"] # Alembic loads migrations by path; the folder is deliberately not a package
+# service.simulate (guide 1.5/1.6) takes 7 arguments, all after `*` but the
+# spec: keyword-only, so every call names them (seed=1, n_runs=50, ...).
+"service.py" = ["PLR0913"]
+# The paper's symbols (γ, −) in elicitation/coverage.py: strings once activated
+# (their noqa: RUF001 covers them), comments while still commented out.
+"elicitation/coverage.py" = ["RUF003"]
+
+[lint.flake8-bugbear]
+# FastAPI's Depends(...) in a default argument is the framework's documented pattern.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header"]

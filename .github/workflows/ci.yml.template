@@ -1,0 +1,250 @@
+## =============================================================================
+## .github/workflows/ci.yml.template — continuous integration (checks on every push/PR)
+## =============================================================================
+## GUIDE STEP   0.5 (lint, tests, audit, bandit), 4.3 (image job), 5.1 / 5.3
+##              (PostgreSQL for the tests), 6.1 (Redis), 10.1 (PDF libraries)
+## PURPOSE      GitHub Actions runs this workflow on a fresh virtual machine for
+##              every push and pull request. Its jobs (each a separate machine):
+##                lint        ruff (lint + format check) and mypy
+##                tests       fast test suite (everything except the slow ABM tests)
+##                tests-abm   the slow agent-based-model tests, in parallel
+##                audit       pip-audit (known vulnerabilities in dependencies)
+##                bandit      insecure patterns in te_platform/
+##                image       build Dockerfile.platform and scan it with Trivy
+##              With branch protection on `main` (guide 0.1), a PR can only be
+##              merged when all jobs pass.
+## WHY THE .template SUFFIX
+##              GitHub reads every file in .github/workflows/ as a workflow. A
+##              file that is entirely comments has no `on:` trigger, and GitHub
+##              would report it as an invalid workflow on every push. Keeping the
+##              suffix makes GitHub ignore it. ACTIVATION = uncomment, then
+##              rename to ci.yml (git mv ci.yml.template ci.yml).
+## USED BY      GitHub; branch protection rules (required checks).
+## DEPENDS ON   uv.lock (guide 0.2), the [tool.ruff]/[tool.mypy] sections and
+##              the dev extra of pyproject.toml (guide 0.3), Dockerfile.platform
+##              (job `image`, 4.3), deploy/postgres/ and
+##              te_platform/db/alembic.ini (the test database, 5.1 / 5.3).
+## WHY          Guide §2.1-§2.2: quality and security checks that nobody can
+##              forget, on a clean machine (no "works on my laptop").
+## ACTIVATE     Uncomment the 0.5 code (commented once), rename, push a branch
+##              and open a PR to see the checks run. Each later block
+##              (commented twice, under a `## Guide X.Y` line) at its step.
+##              Lint locally before pushing (actionlint is a linter for
+##              workflow files):
+##                docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12
+## ACTIONS      Third-party actions are pinned to a full commit SHA (the
+##              version is in the comment next to it): a tag can be moved to
+##              other code by whoever controls the action's repository, a
+##              commit SHA cannot. Dependabot updates the SHA and the comment.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your workflow between this list and the SOLUTION marker below, then
+## rename the file to ci.yml (see WHY THE .template SUFFIX). Lines starting
+## with "|" are short illustrations, not the full file. Keep the job ids
+## (lint, tests, tests-abm, audit, bandit, image): branch protection lists
+## them as required checks.
+##
+## Guide 0.5
+## [ ] 1. `name: CI` and the `on:` triggers: push to main, every
+##        pull_request.
+## [ ] 2. `permissions: contents: read` (least privilege for GITHUB_TOKEN)
+##        and a `concurrency` group ci-${{ github.ref }} with
+##        cancel-in-progress: true.
+## [ ] 3. `jobs:` → `lint` on ubuntu-latest: checkout, setup-uv with the
+##        cache keyed by uv.lock (both pinned to a commit SHA, see ACTIONS
+##        above), then four `run:` steps:
+##          | - run: uv sync --frozen --all-extras
+##          | - run: uv run ruff check .
+##        then `ruff format --check .` and `mypy te_platform`.
+## [ ] 4. `tests`: the same three setup steps, then pytest -x ignoring the
+##        ABM tests (--ignore-glob='tests/test_abm_*.py').
+## [ ] 5. `tests-abm`: same setup, then pytest -x on tests/test_abm_*.py
+##        only (a separate job runs in parallel; fast feedback first).
+## [ ] 6. `audit`: checkout, setup-uv, `uv export --frozen --all-extras
+##        --no-emit-project --no-hashes` into requirements-audit.txt, then
+##        pip-audit on it, pinned, without pip (the list is already
+##        complete, every version exact):
+##          | uvx pip-audit@2.10.1 --disable-pip --no-deps \
+##          |     -r requirements-audit.txt
+## [ ] 7. `bandit`: checkout, setup-uv, `uvx bandit@1.9.4 -r te_platform -ll`.
+## [ ] 8. Check: push a branch and open a PR; all jobs appear and must
+##        pass, and a failing test blocks the merge.
+##
+## Guide 4.3 (Dockerfile.platform exists)
+## [ ] 9. `image`: checkout, `docker build -f Dockerfile.platform -t
+##        te-platform:ci .`, then aquasecurity/trivy-action on that image
+##        with severity HIGH,CRITICAL, ignore-unfixed true, exit-code "1".
+##
+## Guide 5.1 / 5.3 (the database tests need a real PostgreSQL)
+## [ ] 10. In `tests`: a job-level `env:` with TE_DATABASE_URL (the app
+##        role) and TE_MIGRATION_DATABASE_URL (the migration role) on
+##        127.0.0.1:5432, and before pytest a step that writes the three
+##        throw-away password files (db_admin_password, db_app_password,
+##        db_migrator_password, readable by the container's postgres user)
+##        into $RUNNER_TEMP/pg-secrets, starts postgres:16 with that folder
+##        at /run/secrets, POSTGRES_PASSWORD_FILE and the repository's
+##        deploy/postgres scripts (as compose.yml mounts them), and waits
+##        for it:
+##          | until docker exec te-ci-pg pg_isready -h 127.0.0.1 \
+##          |     -U te_admin -d te; do sleep 1; done
+##        (A GitHub `services:` container cannot be used here: it starts
+##        before the checkout, so it cannot mount the init scripts.)
+## [ ] 11. Guide 5.3: a step `uv run alembic -c te_platform/db/alembic.ini
+##        upgrade head` after it.
+##
+## Guide 6.1 (Redis)
+## [ ] 12. In `tests`: TE_REDIS_URL in the env, and a `services:` entry
+##        redis:7 with port 6379 and a redis-cli ping health check.
+##
+## Guide 10.1 (PDF reports)
+## [ ] 13. In `tests`, before pytest: apt-get install the WeasyPrint
+##        libraries (libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b).
+## [ ] 14. Check after each block: actionlint (ACTIVATE above), then a PR.
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## Workflow name shown in the GitHub "Actions" tab.
+# name: CI
+
+## When to run: every push to main, and every pull request.
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+
+## Least privilege for the automatic GITHUB_TOKEN: these jobs only read code.
+# permissions:
+#   contents: read
+
+## A new push to the same PR cancels the still-running checks of the old one.
+# concurrency:
+#   group: ci-${{ github.ref }}
+#   cancel-in-progress: true
+
+# jobs:
+
+#   lint:
+#     runs-on: ubuntu-latest
+#     steps:
+#       # Download the repository at the commit being checked.
+#       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+#       # Install uv (and Python) and cache downloaded packages between runs,
+#       # keyed by uv.lock, so unchanged dependencies are not re-downloaded.
+#       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+#         with:
+#           enable-cache: true
+#           cache-dependency-glob: uv.lock
+#       # --frozen: install exactly uv.lock; fail if pyproject.toml and the
+#       # lock disagree (someone forgot `uv lock`).
+#       - run: uv sync --frozen --all-extras
+#       - run: uv run ruff check .
+#       - run: uv run ruff format --check .
+#       - run: uv run mypy te_platform
+
+#   tests:
+#     runs-on: ubuntu-latest
+##     Guide 5.1: where the tests find the database started below. The
+##     passwords are throw-away values for this CI machine only.
+#     # env:
+#     #   TE_DATABASE_URL: postgresql+psycopg://te_app:ci-app@127.0.0.1:5432/te
+#     #   TE_MIGRATION_DATABASE_URL: postgresql+psycopg://te_migrator:ci-migration@127.0.0.1:5432/te
+##     Guide 6.1: Redis for the job and quota tests (service below).
+#     #   TE_REDIS_URL: redis://127.0.0.1:6379/0
+##     Guide 6.1: a Redis container next to the job (it needs no files from
+##     the repository, so a GitHub "service container" is enough).
+#     # services:
+#     #   redis:
+#     #     image: redis:7
+#     #     ports: ["6379:6379"]
+#     #     options: >-
+#     #       --health-cmd "redis-cli ping" --health-interval 5s
+#     #       --health-timeout 3s --health-retries 10
+#     steps:
+#       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+#       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+#         with:
+#           enable-cache: true
+#           cache-dependency-glob: uv.lock
+#       - run: uv sync --frozen --all-extras
+##       Guide 5.1: PostgreSQL with the repository's own init scripts, mounted
+##       exactly as compose.yml mounts them (so CI tests the real roles).
+##       Waiting with -h 127.0.0.1 (TCP) skips the image's temporary
+##       first-start server, which listens on a local socket only.
+#       # - name: Start PostgreSQL
+#       #   run: |
+#       #     # The same secret files as compose.yml, with the throw-away
+#       #     # passwords of the env above; 644 so uid 999 can read them.
+#       #     mkdir -p "$RUNNER_TEMP/pg-secrets"
+#       #     echo ci-admin > "$RUNNER_TEMP/pg-secrets/db_admin_password"
+#       #     echo ci-app > "$RUNNER_TEMP/pg-secrets/db_app_password"
+#       #     echo ci-migration > "$RUNNER_TEMP/pg-secrets/db_migrator_password"
+#       #     chmod 644 "$RUNNER_TEMP"/pg-secrets/*
+#       #     docker run -d --name te-ci-pg -p 127.0.0.1:5432:5432 \
+#       #       -e POSTGRES_USER=te_admin -e POSTGRES_DB=te \
+#       #       -e POSTGRES_PASSWORD_FILE=/run/secrets/db_admin_password \
+#       #       -v "$RUNNER_TEMP/pg-secrets:/run/secrets:ro" \
+#       #       -v "$PWD/deploy/postgres/10-init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro" \
+#       #       -v "$PWD/deploy/postgres/init-roles.sql:/docker-init/init-roles.sql:ro" \
+#       #       postgres:16
+#       #     until docker exec te-ci-pg pg_isready -h 127.0.0.1 -U te_admin -d te; do sleep 1; done
+##       Guide 5.3: create the schema with the migrations, as the role that owns it.
+#       # - run: uv run alembic -c te_platform/db/alembic.ini upgrade head
+##       Guide 10.1: the system libraries WeasyPrint needs to render PDFs.
+#       # - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b
+##       -x: stop at the first failure (fast feedback).
+##       --ignore-glob: the ABM tests run in their own job below.
+#       - run: uv run pytest -x --ignore-glob='tests/test_abm_*.py'
+
+#   tests-abm:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+#       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+#         with:
+#           enable-cache: true
+#           cache-dependency-glob: uv.lock
+#       - run: uv sync --frozen --all-extras
+#       - run: uv run pytest -x tests/test_abm_*.py
+
+#   audit:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+#       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+#       # Export the exact locked versions (not the project itself) and check
+#       # them against the public vulnerability databases (CVEs).
+#       # --disable-pip --no-deps: the list is complete and pinned, so
+#       # pip-audit checks it as it is instead of resolving it again.
+#       - run: uv export --frozen --all-extras --no-emit-project --no-hashes > requirements-audit.txt
+#       - run: uvx pip-audit@2.10.1 --disable-pip --no-deps -r requirements-audit.txt
+
+#   bandit:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+#       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+#       # -r: recursive; -ll: report medium severity and above.
+#       - run: uvx bandit@1.9.4 -r te_platform -ll
+
+##   Guide 4.3: build the image of Dockerfile.platform and scan it. Before
+##   4.3 that file is all comments, so the job would fail.
+#   # image:
+#   #   runs-on: ubuntu-latest
+#   #   steps:
+#   #     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+#   #     - run: docker build -f Dockerfile.platform -t te-platform:ci .
+#   #     # Fail the job on HIGH or CRITICAL vulnerabilities that have a fix.
+#   #     - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+#   #       with:
+#   #         image-ref: te-platform:ci
+#   #         severity: HIGH,CRITICAL
+#   #         ignore-unfixed: true
+#   #         exit-code: "1"

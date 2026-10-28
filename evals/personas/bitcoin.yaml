@@ -1,0 +1,86 @@
+## =============================================================================
+## evals/personas/bitcoin.yaml — persona of the simulated designer for the Bitcoin case
+## =============================================================================
+## GUIDE STEP   13.1
+## PURPOSE      Describes the imaginary person the SimulatedDesigner plays when
+##              the hidden spec is examples/bitcoin.yaml: who they are, what
+##              they know well, and what they are UNSURE about. Uncertainty is
+##              essential: a real designer does not know every number, and the
+##              interviewer must handle "I don't know" (sweeps) correctly.
+## USED BY      evals/simulated_designer.py (loaded and placed in the
+##              designer's system prompt), evals/run.py (one case per persona
+##              file; the file name must equal the example's name).
+## HIDDEN SPEC  examples/bitcoin.yaml. The interviewer never sees it.
+## WHY          Guide 13.1: personas reviewed by a co-author with domain
+##              knowledge make the simulated interviews realistic.
+## ACTIVATE     Uncomment, have a co-author review it, then write one persona
+##              per file in examples/ with the same fields.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your YAML between this list and the SOLUTION marker below. Do the
+## steps in order and run the "Check" at the end. This is data, not code:
+## the keys below are what the other persona files reuse ("same fields",
+## header ACTIVATE). Every fact must agree with examples/bitcoin.yaml.
+##
+## Guide 13.1
+## [ ] 1. `name` and `role`: one line each, who this imaginary designer is.
+## [ ] 2. `background`: a folded text (`>`) of two or three sentences: what
+##        they are strong in, how they see the token, what they never
+##        formalised.
+## [ ] 3. `communication_style`: a folded text on how they answer (short and
+##        technical about the protocol, not about economics).
+## [ ] 4. `knows_well`: a list of the facts they can state firmly (issuance
+##        schedule, informal off-chain governance, no holding incentive,
+##        fees paid to miners, so no burn).
+## [ ] 5. `unsure_about`: a list of what they do NOT know (holding time,
+##        early participant count, transaction volume growth), with a
+##        comment saying the verifier must sweep these. This list is the
+##        important part: the interviewer must cope with "I don't know".
+## [ ] 6. `goals`: a folded text with what the design is for.
+## [ ] 7. `approves_expensive_tools: true`, with a comment: a harness
+##        setting, not part of the role (simulated_designer.py removes it
+##        from the prompt). It is the designer's answer when the agent asks
+##        before an expensive tool; false makes run.py decline, which tests
+##        how the agent handles a "No".
+## [ ] 8. Check: a co-author with domain knowledge reviews the file (guide
+##        13.1 "Done when"). It is used for real by
+##          | uv run python -m evals.run --cases bitcoin
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+name: Satoshi-like protocol designer
+role: Designer of a peer-to-peer electronic cash system with a fixed supply schedule.
+background: >
+  Strong in cryptography and distributed systems; thinks of the token as
+  money for the network, not as a reward for a specific community. Has not
+  formalised any economic model beyond the issuance schedule.
+communication_style: >
+  Short, precise answers; uses technical words for the protocol but not for
+  economics. Prefers to describe mechanisms rather than numbers.
+knows_well:
+  - The issuance schedule (block reward, halvings, the hard cap).
+  - That governance is informal and off-chain (improvement proposals),
+    with no central monitoring or sanctioning body.
+  - That there is no protocol-level holding incentive.
+  - That fees are paid to miners (no burn).
+unsure_about:
+  # The designer answers "I don't know" or gives a wide range for these,
+  # so the verifier must sweep them.
+  - How long typical holders keep their coins (holding time).
+  - The number of active participants in the first years.
+  - Expected transaction volume growth.
+goals: >
+  A currency whose supply cannot be inflated by anyone; long-term holding is
+  acceptable and even expected.
+## Harness setting, not part of the role (simulated_designer.py takes it out
+## of the prompt): the designer's answer when the agent asks before running
+## an expensive tool. false makes evals/run.py decline those requests.
+approves_expensive_tools: true

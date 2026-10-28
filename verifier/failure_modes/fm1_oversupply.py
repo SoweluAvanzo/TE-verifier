@@ -42,6 +42,15 @@ from verifier.asymptotic import (
     rule_rate_per_period,
 )
 from verifier.conditions import rule_contributes
+from verifier.outstanding_cap import cap_var
+
+
+def _has_xt_mint(te: TokenEconomy, token: Token) -> bool:
+    """True if a cross-token flow mints into this token (it then has emission)."""
+    return any(
+        flow.target_token == token.id and flow.target_action == CrossTokenAction.MINT
+        for flow in te.cross_token_flows
+    )
 
 
 def _declared_emission_upper_bound(token: Token, te=None) -> float:
@@ -318,6 +327,12 @@ class FM1Oversupply(FailureMode):
         # form M_consistent = Q/V at V = 1).
         net_emission = E_total - B_total
         solver.add(net_emission > Q)
+        # Outstanding supply cap C: realized net creation per period is at
+        # most min(E − B, C), so a violation also needs C > Q
+        # (docs/proofs/outstanding_cap.md, Lemma 2). No cap: unchanged.
+        cap = cap_var(solver, f"{token.id}__cap", token)
+        if cap is not None:
+            solver.add(cap > Q)
 
         # Critical value — closed-form: E* = Q_lo is the worst-case
         # upper bound on net emission. (Net emission must clear *every* Q
@@ -341,6 +356,22 @@ class FM1Oversupply(FailureMode):
                 source="closed_form",
             )
         ]
+        if cap is not None:
+            critical_values.append(
+                CriticalValue(
+                    parameter="outstanding_supply_cap",
+                    value=Q_lo,
+                    direction="<=",
+                    formula=f"C* = min(Q) = {Q_lo:g}",
+                    explanation=(
+                        f"With the cap on tokens outstanding at or below "
+                        f"{Q_lo:g}, oversupply is impossible whatever the "
+                        f"creation and burn rates (supply never exceeds what "
+                        f"the lowest transaction volume absorbs)."
+                    ),
+                    source="closed_form",
+                )
+            )
         # Swept fields — Q range is swept if not point; emission/burn rules
         # whose parameter ranges are wide are swept.
         swept_fields: list[str] = []
@@ -408,7 +439,11 @@ class FM1Oversupply(FailureMode):
                 failure_mode=self.name,
                 subject=token.id,
                 status=Status.FAIL,
-                formal_condition="(E − B) > P·Q / V (Fisher consistency)",
+                formal_condition=(
+                    "min(E − B, C) > P·Q / V (Fisher consistency, capped)"
+                    if cap is not None
+                    else "(E − B) > P·Q / V (Fisher consistency)"
+                ),
                 explanation=(
                     f"There exist parameter values within the declared ranges "
                     f"under which net emission of {token.id} exceeds the "
@@ -417,7 +452,16 @@ class FM1Oversupply(FailureMode):
                 ),
                 counterexample=ce,
                 margin=margin,
-                suggestions=self._suggestions(token, has_burn=bool(token.burn_rules)),
+                suggestions=self._suggestions(token, has_burn=bool(token.burn_rules))
+                + (
+                    [
+                        f"Lower the cap on {token.id} outstanding to at most "
+                        f"{Q_lo:g}: the stock then never exceeds what the "
+                        f"lowest transaction volume absorbs."
+                    ]
+                    if cap is not None
+                    else []
+                ),
                 critical_values=critical_values,
                 recommendation=recommendation,
                 swept_fields=swept_fields,
@@ -428,10 +472,17 @@ class FM1Oversupply(FailureMode):
             failure_mode=self.name,
             subject=token.id,
             status=Status.PASS,
-            formal_condition="(E − B) ≤ P·Q / V",
+            formal_condition=(
+                "min(E − B, C) ≤ P·Q / V" if cap is not None else "(E − B) ≤ P·Q / V"
+            ),
             explanation=(
                 f"For all parameter values in the declared ranges, net emission "
-                f"of {token.id} stays within the transaction-absorption capacity."
+                f"of {token.id} stays within the transaction-absorption capacity"
+                + (
+                    " (the cap on tokens outstanding included)."
+                    if cap is not None
+                    else "."
+                )
             ),
             critical_values=critical_values,
             swept_fields=swept_fields,
@@ -512,7 +563,7 @@ class FM1Oversupply(FailureMode):
         token = next((t for t in te.tokens if t.id == subject), None)
         if token is None or not token.transferable:
             return "unknown"
-        if not token.emission_rules:
+        if not token.emission_rules and not _has_xt_mint(te, token):
             return "true"  # no emission → trivially safe
 
         solver = self.make_solver()
@@ -568,7 +619,11 @@ class FM1Oversupply(FailureMode):
         Q_lo, Q_hi = te.participants.expected_Q.min, te.participants.expected_Q.max
         Q = z3.Real(f"Q_sat_{token.id}")
         solver.add(Q >= Q_lo, Q <= Q_hi)
-        solver.add(E_total - B_total <= Q)  # safety
+        cap = cap_var(solver, f"Q_sat_cap_{token.id}", token)
+        if cap is None:
+            solver.add(E_total - B_total <= Q)  # safety
+        else:  # outstanding_cap.md, Lemma 2: min(E − B, C) ≤ Q
+            solver.add(z3.Or(E_total - B_total <= Q, cap <= Q))
         result = solver.check()
         if result == z3.sat:
             return "true"
@@ -583,7 +638,7 @@ class FM1Oversupply(FailureMode):
         if (
             token is None
             or not token.transferable
-            or not token.emission_rules
+            or (not token.emission_rules and not _has_xt_mint(te, token))
         ):
             return []
         Q_lo = te.participants.expected_Q.min

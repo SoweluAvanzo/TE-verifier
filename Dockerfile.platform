@@ -1,0 +1,244 @@
+## =============================================================================
+## Dockerfile.platform — one image for every platform role (web, agent, mcp, worker, migrate)
+## =============================================================================
+## GUIDE STEP   4.3 (multi-stage Dockerfile), 10.3 (report folder); used
+##              by 4.4-4.6 and 12.2
+## PURPOSE      The recipe Docker follows to build the platform's image. It has
+##              two STAGES (a stage is one FROM ... section; only the last one
+##              becomes the final image):
+##                1. builder — has uv, installs the exact locked dependencies
+##                             into a virtual environment (/app/.venv);
+##                2. runtime — a slim base with only the system libraries the
+##                             app needs at run time, the virtual environment
+##                             copied from the builder, and the source code.
+##              Compilers, caches and uv itself stay in the builder stage, so
+##              the final image is smaller and has less to attack.
+## USED BY      compose.yml / compose.override.yml (build: dockerfile:
+##              Dockerfile.platform), .github/workflows/release.yml.template
+##              (builds and pushes it to GHCR), .github/workflows/ci.yml.template
+##              (builds it and scans it with Trivy).
+## DEPENDS ON   pyproject.toml + uv.lock (guide 0.2: `uv lock` must have been run
+##              after every change of pyproject.toml), gunicorn in the webapp
+##              extra (guide 4.3, te_platform/pyproject_additions.toml), the
+##              source folders schema/, verifier/, te_platform/, webapp/,
+##              policy/, examples/. .dockerignore keeps everything else out
+##              of the build context.
+## WHY          Architecture D1 (one repository, one package, ONE image for all
+##              roles: each Compose service only chooses its `command:`, so
+##              all roles always run exactly the same code version) and D13
+##              (stateless, environment-configured, health-checked containers
+##              that also work on Kubernetes later).
+## RELATION TO ./Dockerfile
+##              ./Dockerfile is the CURRENT production image of the web app
+##              (gunicorn on port 8000, used by infra/compose.yml and the
+##              README). It stays untouched while this file is being built.
+##              When phase 4 is complete and compose.yml works with this file,
+##              replace ./Dockerfile with this one (git mv Dockerfile.platform
+##              Dockerfile), update the README and infra/compose.yml in the
+##              same pull request, and delete the old one.
+## ACTIVATE     Uncomment stage by stage. Check:
+##                docker build -f Dockerfile.platform -t te-platform:dev .
+##                docker run --rm te-platform:dev te-verify examples/bitcoin.yaml
+##                trivy image te-platform:dev   (no HIGH/CRITICAL findings)
+##              Check also: `docker run --rm te-platform:dev sh -c 'which uv gcc'`
+##              finds nothing (no build tools in the runtime stage), and the
+##              image runs with `--read-only --tmpfs /tmp` as user 1000. It is
+##              LARGER than ./Dockerfile's image (330 MB): about 370 MB at
+##              guide 4.3 and 560 MB once every phase's extras are in, when
+##              this scaffold was checked, because it adds PDF rendering,
+##              the database driver and the LLM SDK; compare it with a
+##              single-stage build of the same dependencies, not with the old image.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: build this file yourself, step by step
+## -----------------------------------------------------------------------------
+## Write your instructions between this list and the SOLUTION marker below.
+## Do the steps in order and run each "Check" before moving on. Lines
+## starting with "|" are short illustrations, not the full file. Keep the
+## stage names `builder` and `runtime` and the path /app/.venv exactly:
+## the COPY --from line and the PATH setting depend on them.
+##
+## Guide 4.3 (stage 1: builder)
+## [ ] 1. Start the builder stage from the pinned slim base image:
+##          | FROM python:3.12-slim-bookworm AS builder
+## [ ] 2. Copy the uv binary from its official image, at the exact version
+##        you use (`uv --version`; an older uv cannot read a newer uv.lock),
+##        into /usr/local/bin/uv, instead of installing uv with pip:
+##          | COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /usr/local/bin/uv
+## [ ] 3. One ENV line with UV_COMPILE_BYTECODE=1, UV_LINK_MODE=copy,
+##        UV_PYTHON_DOWNLOADS=0 and UV_PROJECT_ENVIRONMENT=/app/.venv (the
+##        SOLUTION's `##` lines say why), then WORKDIR /app.
+## [ ] 4. Copy ONLY pyproject.toml and uv.lock, then RUN `uv sync --frozen
+##        --no-dev --no-install-project --all-extras --no-extra dev`: every
+##        extra that exists at your step (webapp, platform, mcp now; db,
+##        jobs, ... as later phases add them) except the dev tools. Add the
+##        cache mount so uv's downloads stay out of the image:
+##          | RUN --mount=type=cache,target=/root/.cache/uv \
+##          |     uv sync --frozen --no-dev --no-install-project \
+##          |         --all-extras --no-extra dev
+## [ ] 5. Copy the six source folders one by one (schema/, verifier/,
+##        te_platform/, webapp/, policy/, examples/), then run the same
+##        `uv sync` again WITHOUT --no-install-project.
+##
+## Guide 4.3 (stage 2: runtime)
+## [ ] 6. A second FROM on the same base image, named `runtime`.
+## [ ] 7. One RUN with apt-get update, install --no-install-recommends of
+##        the PDF libraries (pango, pangoft2, harfbuzz), fonts-dejavu-core,
+##        curl and ca-certificates, then delete /var/lib/apt/lists/*.
+## [ ] 8. Create the non-root user `appuser` with uid 1000 (useradd
+##        --system --uid 1000 --create-home), then WORKDIR /app.
+## [ ] 9. Copy the whole /app folder from the builder, owned by appuser:
+##          | COPY --from=builder --chown=appuser:appuser /app /app
+## [ ] 10. ENV: put /app/.venv/bin first on PATH, and set PYTHONUNBUFFERED=1,
+##         PYTHONDONTWRITEBYTECODE=1, MPLCONFIGDIR=/tmp/matplotlib.
+## [ ] 11. USER appuser, EXPOSE 8000, and no HEALTHCHECK (read why in the
+##         SOLUTION: it is per service in compose.yml).
+## [ ] 12. Default CMD = the web role: gunicorn webapp.app:app bound to
+##         0.0.0.0:8000, 1 worker, timeout 60 (JSON list form).
+## [ ] 13. Check (the commands of the ACTIVATE field above):
+##          | docker build -f Dockerfile.platform -t te-platform:dev .
+##          | docker run --rm te-platform:dev te-verify examples/bitcoin.yaml
+##          | trivy image te-platform:dev
+##         and `which uv gcc` inside the image finds nothing. The MCP role
+##         answers, read-only and as uid 1000 (guide 4.3 "done when"):
+##          | docker run --rm --read-only --tmpfs /tmp te-platform:dev \
+##          |     sh -c 'id -u && te-mcp --help'
+##
+## Guide 10.3 (later: the report folder)
+## [ ] 14. Right after the useradd line (still as root): create /data/reports
+##         owned by appuser. A new named volume mounted there (compose.yml
+##         `reports`) copies this owner; without it the folder belongs to
+##         root and the worker (uid 1000) cannot write the PDFs.
+##          | RUN mkdir -p /data/reports && chown appuser:appuser /data/reports
+##
+## Stuck, or want to compare? The SOLUTION below is the complete reference
+## file. Uncomment it only if you decide to use it as it is.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## Stage 1: builder
+## -----------------------------------------------------------------------------
+## Pin the base image. In production, pin by DIGEST (python:3.12-slim-bookworm@sha256:...)
+## so the base can never change silently (guide §2.2, dependency hygiene);
+## Dependabot (dependabot.yml.template) proposes digest updates.
+FROM python:3.12-slim-bookworm AS builder
+
+## Copy the uv binary from its official image instead of `pip install uv`:
+## one exact, verified version, no extra layer of pip state.
+## Use the same version as on your machine and in CI (`uv --version`): uv.lock
+## has a format revision, and an older uv refuses a lock file written by a
+## newer one.
+COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /usr/local/bin/uv
+
+## UV_COMPILE_BYTECODE: precompile .py files to .pyc now, so containers start
+##   faster (no compilation on first import, and the root filesystem is
+##   read-only at run time, so Python could not write .pyc files anyway).
+## UV_LINK_MODE=copy: copy files from uv's cache instead of hard-linking them,
+##   because the cache lives in a different layer.
+## UV_PYTHON_DOWNLOADS=0: use the image's own Python 3.12; never download
+##   another interpreter (it would live outside /app and be lost in stage 2).
+## UV_PROJECT_ENVIRONMENT: where the virtual environment is created.
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0 \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+WORKDIR /app
+
+## Install dependencies FIRST, from the lock file only, before copying the
+## source code. Docker caches each step ("layer"): as long as pyproject.toml
+## and uv.lock do not change, this slow step is reused on every rebuild, and
+## editing a .py file only re-runs the cheap steps below.
+## --frozen: use uv.lock exactly; fail instead of silently re-resolving.
+## --no-install-project: dependencies only; the project itself comes later.
+## --all-extras --no-extra dev: every optional dependency group of
+##   pyproject.toml ("extras": webapp, platform, mcp, and db, jobs, agent,
+##   reports, literature, evals as their phases add them; all roles share
+##   one image, D1), except `dev`, the test and lint tools. Listing the
+##   extras by name instead would break the build at every step where one of
+##   them does not exist yet ("Extra `db` is not defined").
+## --no-dev: also skip uv's separate "dependency groups" ([dependency-groups]
+##   in pyproject.toml; none today), which uv installs by default.
+## The --mount=type=cache keeps uv's download cache between builds on the
+## build machine, without putting it into the image.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project --all-extras --no-extra dev
+
+## Now the source code, then install the project itself into the venv.
+## Only the folders the platform needs are copied (explicit list = nothing
+## unexpected, e.g. a stray secret file, ends up in the image). uv installs
+## the project in editable mode: the venv points at /app/te_platform etc.,
+## so `docker compose watch` (compose.override.yml) can update the code.
+COPY schema/ schema/
+COPY verifier/ verifier/
+COPY te_platform/ te_platform/
+COPY webapp/ webapp/
+COPY policy/ policy/
+COPY examples/ examples/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --all-extras --no-extra dev
+
+## -----------------------------------------------------------------------------
+## Stage 2: runtime
+## -----------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm AS runtime
+
+## System libraries needed AT RUN TIME:
+## - libpango-1.0-0, libpangoft2-1.0-0, libharfbuzz0b: text layout and font
+##   shaping used by WeasyPrint to draw text into PDFs (phase 10). Without
+##   them, PDF rendering fails with "cannot load library 'pango'".
+## - fonts-dejavu-core: at least one font family, so PDFs render the same on
+##   every machine (no fallback to whatever fonts happen to be installed).
+## - curl: used only by the health checks in compose.yml.
+## --no-install-recommends + deleting the apt lists keep the image small.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b fonts-dejavu-core curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+## A normal (non-root) user with a fixed uid 1000: files in mounted volumes
+## get a predictable owner, and a compromised process has no admin rights
+## (guide §2.2, least privilege).
+RUN useradd --system --uid 1000 --create-home appuser
+
+## Guide 10.3: the folder the worker writes PDF reports into
+## (TE_REPORT_STORAGE_DIR). compose.yml mounts the named volume `reports`
+## here; a NEW volume takes over the owner of the folder in the image, so
+## creating it owned by appuser lets the worker (uid 1000) write to it.
+RUN mkdir -p /data/reports && chown appuser:appuser /data/reports
+
+WORKDIR /app
+
+## Copy the finished virtual environment and the source from the builder.
+## --chown makes the app user the owner (it only needs read access, the root
+## filesystem is mounted read-only by Compose anyway).
+COPY --from=builder --chown=appuser:appuser /app /app
+
+## Put the venv first on PATH, so `te-mcp`, `te-worker`, `gunicorn`,
+## `uvicorn`, `alembic` are the venv's programs. PYTHONUNBUFFERED: log lines
+## appear immediately in `docker logs` instead of being held in a buffer.
+## MPLCONFIGDIR: matplotlib (report charts) wants a writable cache folder;
+## the container's filesystem is read-only, and /tmp is the writable tmpfs
+## Compose mounts (found by running the image read-only).
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    MPLCONFIGDIR=/tmp/matplotlib
+
+USER appuser
+
+## Documentation only: every role listens on 8000 INSIDE its container.
+## Nothing is published to the host here; only Caddy publishes ports (compose.prod.yml).
+EXPOSE 8000
+
+## HEALTHCHECK note: a Dockerfile can define ONE health check, but the roles
+## differ (web/agent/mcp answer HTTP, the worker does not). The checks are
+## therefore defined per service in compose.yml, and none is set here.
+
+## Default command = the web role. Every Compose service overrides it with
+## its own `command:` (agent, mcp, worker, migrate).
+CMD ["gunicorn", "webapp.app:app", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "60"]

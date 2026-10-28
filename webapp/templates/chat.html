@@ -1,0 +1,198 @@
+{# NOTE:
+=============================================================================
+webapp/templates/chat.html — the chat page (Jinja template)
+=============================================================================
+GUIDE STEP   9.1 (page), 9.2 (Markdown libraries), 9.3 (open in form)
+PURPOSE      Two columns: the conversation on the left, the live spec panel
+             on the right (answers given / unknown / contradictory, current
+             session state, latest verdicts, job progress, report links).
+             The header has the navigation and a "Log out" button.
+USED BY      webapp/chat_routes.py (renders it at GET /chat).
+DEPENDS ON   static/style.css + form.css (existing look), static/chat.css
+             (both of its blocks),
+             static/verdict.js (existing verdict cards: window.renderVerdict),
+             static/chat.js (all behaviour), marked + DOMPurify (CDN).
+WHY          Architecture §3.5: the form and the chat edit the same session
+             spec; the panel makes what the agent recorded visible at all
+             times, so the user can catch mistakes (P5 provenance).
+SECURITY     - No inline <script> and no inline event handlers (onclick=...):
+               the Content-Security-Policy (guide 9.2 / 12.3) forbids them.
+             - Third-party scripts are PINNED to an exact version. Before
+               going public, add Subresource Integrity: an `integrity`
+               attribute with the file's hash (copy it from jsDelivr's
+               "SRI hash" button) plus crossorigin="anonymous"; the browser
+               then refuses a modified file.
+ACTIVATE     The markup sits in five blocks, each between an opening and a
+             closing marker line containing the word CODE. Each block is labelled by the NOTE just
+             above it with the guide step it belongs to. At each step delete
+             the two marker lines of THAT step's blocks only, then reload
+             /chat: 9.1 the three "Guide 9.1" blocks, 9.2 the scripts of
+             marked and DOMPurify, 9.3 the "Open in form" button.
+=============================================================================
+#}
+{# TO-DO LIST: build this page yourself, step by step
+-----------------------------------------------------------------------------
+Write your markup between this comment and the SOLUTION marker below. Do the
+steps in order and run each "Check" before moving on. Lines starting with
+"|" are short illustrations, not the full markup. Keep every id exactly as
+written here: static/chat.js looks the elements up by id, and chat.css
+styles the classes.
+
+Guide 9.1
+[ ] 1. The page skeleton: DOCTYPE, html lang="en", a head with the charset
+       and viewport meta tags and the title
+       "Token Economy Verifier — Design assistant".
+[ ] 2. In the head, the icon link (static/favicon.svg) and three
+       stylesheet links built with url_for('static', ...), in this order:
+       style.css, form.css, chat.css. The body gets class="chat-page".
+[ ] 3. A header class="page-header compact" holding a div class="header-row"
+       (an h1 "Design assistant" and a nav with two class="nav-link" links,
+       "/" Questionnaire and "/explore" Trajectory explorer, then the
+       logout button), then a p class="subtitle" with two or three
+       sentences about the assistant:
+         | button type="button" id="logout-btn" class="secondary-btn"
+[ ] 4. main class="chat-layout" with the LEFT column first:
+       section class="chat-column" aria-label="Conversation", holding
+       first a div class="chat-empty" (an h2, a short paragraph on how to
+       start, and a div class="starter-list" of button class="starter"
+       elements, each with the message to send in data-prompt; chat.css
+       hides the whole div once the conversation has a message), then
+         | div id="chat-log" class="chat-log" aria-live="polite"
+       and a form id="chat-form" class="chat-form" with a label
+       class="visually-hidden" for="chat-input", a textarea
+       id="chat-input" (rows 2, maxlength 8000, a placeholder), a submit
+       button id="chat-send" class="primary-btn" ("Send") and a
+       p class="composer-hint" saying that Enter sends and Shift+Enter
+       starts a new line.
+[ ] 4b. (conversation history extension) Before that section, the LEFT
+       column: nav class="conv-panel" aria-label="Your conversations" with
+       a button id="new-chat" class="secondary-btn new-chat" ("New
+       conversation"), an h2 "Conversations" and
+       ul id="conv-list" class="conv-list" with a data-empty text.
+[ ] 5. The RIGHT column after the section: aside class="spec-panel"
+       aria-label="Your design so far", with an h2, then
+       p class="panel-state" containing span id="session-state" ("not
+       started"), then three section class="panel-section", each an h3
+       and its list: "Recorded answers" with ul id="slot-list"
+       class="slot-list", "Verdicts" with div id="verdict-cards",
+       "Simulations and reports" with ul id="job-list" class="job-list".
+       Each list carries a data-empty="..." text that chat.css shows
+       while the list is still empty. Close the aside and main.
+[ ] 6. At the end of the body, verdict.js and then chat.js through
+       url_for('static', ...); chat.js comes last because it uses
+       verdict.js. No inline script and no onclick=... anywhere (header
+       SECURITY).
+[ ] 7. Check: with webapp/chat_routes.py and the Guide 9.1 parts of
+       static/chat.js and chat.css active, reload /chat: two columns, and
+       a conversation with the agent works (guide 9.1 "Done when").
+
+Guide 9.2
+[ ] 8. Before the verdict.js script, the scripts of marked and DOMPurify
+       from cdn.jsdelivr.net, each PINNED to an exact version:
+         | .../npm/marked@12.0.2/marked.min.js
+         | .../npm/dompurify@3.1.6/dist/purify.min.js
+[ ] 9. Check: with the Guide 9.2 part of static/chat.js active, reload
+       /chat and send the test message from guide 9.2 (an img tag with
+       onerror=alert(1)): it must render as harmless text or an inert
+       image.
+
+Guide 9.3
+[ ] 10. Last item inside the aside, after the job list:
+          | button type="button" id="open-in-form" class="secondary-btn"
+        with the text "Open in the questionnaire".
+[ ] 11. Check: after a few answers in the chat, click "Open in form": the
+        questionnaire at "/" opens (guide 9.3).
+
+Stuck, or want to compare? The SOLUTION below is the complete reference
+markup. Activate it only if you decide to use it as it is.
+#}
+{# =========================================================================
+SOLUTION: complete reference markup (deactivated on purpose, see ACTIVATE)
+========================================================================= #}
+{# NOTE: Guide 9.1 — the page up to the job list. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Economy Verifier — Design assistant</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='form.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}" />
+</head>
+<body class="chat-page">
+  <header class="page-header compact">
+    <div class="header-row">
+      <h1>Design assistant</h1>
+      <nav>
+        <a href="/" class="nav-link">Questionnaire</a>
+        <a href="/explore" class="nav-link">Trajectory explorer</a>
+        <button type="button" id="logout-btn" class="secondary-btn">Log out</button>
+      </nav>
+    </div>
+    <p class="subtitle">
+      Describe your token economy in conversation. The assistant asks what the
+      verifier needs, runs the checks, and explains the results. Everything it
+      records appears in the panel beside the conversation.
+    </p>
+  </header>
+
+  <main class="chat-layout">
+    <nav class="conv-panel" aria-label="Your conversations">
+      <button type="button" id="new-chat" class="secondary-btn new-chat">New conversation</button>
+      <h2>Conversations</h2>
+      <ul id="conv-list" class="conv-list" data-empty="Your conversations will be listed here."></ul>
+    </nav>
+    <section class="chat-column" aria-label="Conversation">
+      <div class="chat-empty">
+        <h2>Start with what your community does</h2>
+        <p>
+          Tell the assistant who takes part, what people earn tokens for and
+          what they can spend them on. It asks for the rest, one question at
+          a time. Or begin with one of these:
+        </p>
+        <div class="starter-list">
+          <button type="button" class="starter" data-prompt="I want to design a token for a community garden: members earn tokens for volunteering hours and spend them on produce.">A community garden that rewards volunteering</button>
+          <button type="button" class="starter" data-prompt="We run a time bank: one hour of help earns one credit. Can you check whether it is sustainable?">Check a time bank</button>
+          <button type="button" class="starter" data-prompt="How does this assistant work, and what will it ask me?">How does this work?</button>
+        </div>
+      </div>
+      <div id="chat-log" class="chat-log" aria-live="polite"></div>
+      <form id="chat-form" class="chat-form">
+        <label for="chat-input" class="visually-hidden">Your message</label>
+        <textarea id="chat-input" rows="2" maxlength="8000"
+                  placeholder="Describe your token economy, or answer the question above"></textarea>
+        <button type="submit" id="chat-send" class="primary-btn">Send</button>
+        <p class="composer-hint">Enter sends the message; Shift+Enter starts a new line.</p>
+      </form>
+    </section>
+
+    <aside class="spec-panel" aria-label="Your design so far">
+      <h2>Your design so far</h2>
+      <p class="panel-state">Stage: <span id="session-state">not started</span></p>
+      <section class="panel-section">
+        <h3>Recorded answers</h3>
+        <ul id="slot-list" class="slot-list" data-empty="The assistant records each answer here as you go."></ul>
+      </section>
+      <section class="panel-section">
+        <h3>Verdicts</h3>
+        <div id="verdict-cards" data-empty="Verdicts for the six failure modes appear once the design is verified."></div>
+      </section>
+      <section class="panel-section">
+        <h3>Simulations and reports</h3>
+        <ul id="job-list" class="job-list" data-empty="Simulations and PDF reports you ask for are listed here."></ul>
+      </section>
+{# NOTE: Guide 9.3 — the "Open in form" button (static/chat.js, 9.3 part). #}
+      <button type="button" id="open-in-form" class="secondary-btn">Open in the questionnaire</button>
+{# NOTE: Guide 9.1 — closing the panel and the layout. #}
+    </aside>
+  </main>
+{# NOTE: Guide 9.2 — the Markdown libraries, pinned (header SECURITY). #}
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+{# NOTE: Guide 9.1 — the page's own scripts; chat.js last. #}
+  <script src="{{ url_for('static', filename='verdict.js') }}"></script>
+  <script src="{{ url_for('static', filename='chat.js') }}"></script>
+</body>
+</html>

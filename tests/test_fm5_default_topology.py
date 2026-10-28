@@ -150,24 +150,30 @@ def test_fm5_network_without_avg_degree_uses_default() -> None:
     )
 
 
-def test_fm5_network_with_high_avg_degree_passes() -> None:
-    """When the user supplies an explicit avg_degree ≥ 2·K·d, the
-    network condition holds and FM5 passes even when the well-mixed
-    bound would fail.
+def test_fm5_network_degree_cannot_exceed_the_population() -> None:
+    """avg_degree ≤ N − 1: an impossible degree never passes FM5.
 
-    Setup: N=100 (small), K=50, d=5 → well-mixed threshold 2·K·d+1=501
-    is not met by N=100 (fails). The network rule says
-    avg_degree ≥ 2·K·d = 500.
+    This test used to build N = 100-200 with avg_degree 600-800 and expect
+    the network rule to pass "even when the well-mixed bound would fail".
+    That input is impossible (nobody has more neighbours than there are
+    other members); for any possible input the network rule implies the
+    well-mixed one (docs/proofs/topology.md, corrected). The network rule
+    is now applied only to possible degrees, so the well-mixed rule decides.
     """
-    # avg_degree 200 < 500 → well-mixed fails AND network rule fails
-    # → INCONCLUSIVE (network topology + supplied degree below
-    # threshold). Note: ideally this would be FAIL since the user
-    # supplied a degree that demonstrably falls short, but FM5
-    # currently only returns FAIL for well_mixed topologies. A
-    # follow-up fix could tighten this — see audit doc.
-    te = _minimal_te(
+    impossible = _minimal_te(
         _minimal_participants(
             N=(100, 200),
+            topology=Topology.NETWORK,
+            topology_params={"average_degree": NumberRange(min=600, max=800)},
+        ),
+        K=(10, 50),
+    )
+    assert FM5CriticalMass().check(impossible)[0].status.value != "pass"
+    # A consistent network whose degree falls short of 2·K·d = 500 while the
+    # well-mixed bound also fails (N = 400-450 < 501): not a PASS.
+    te = _minimal_te(
+        _minimal_participants(
+            N=(400, 450),
             topology=Topology.NETWORK,
             topology_params={"average_degree": NumberRange(min=200, max=300)},
         ),
@@ -176,10 +182,11 @@ def test_fm5_network_with_high_avg_degree_passes() -> None:
     v = FM5CriticalMass().check(te)[0]
     assert v.status.value in ("fail", "inconclusive")
 
-    # avg_degree 600 > 500 → network rule alone passes
+    # avg_degree 600 > 500 → the network rule passes (with N = 700-900,
+    # so the degree is possible; the well-mixed rule then holds too).
     te = _minimal_te(
         _minimal_participants(
-            N=(100, 200),
+            N=(700, 900),
             topology=Topology.NETWORK,
             topology_params={"average_degree": NumberRange(min=600, max=800)},
         ),

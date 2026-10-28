@@ -156,6 +156,24 @@ class Report(BaseModel):
         return "\n".join(lines)
 
 
+def _inconclusive_on_impossible_rates(verdicts: list[Verdict], violations: list) -> None:
+    """Replace FM1/FM3 verdicts of tokens with an impossible rate by INCONCLUSIVE (in place)."""
+    bad = {sv.token_id: sv.explanation for sv in violations}
+    for i, v in enumerate(verdicts):
+        fm = v.failure_mode.split(":")[0].strip()
+        if fm in ("FM1", "FM3") and v.subject in bad and v.status != Status.NOT_APPLICABLE:
+            verdicts[i] = Verdict(
+                failure_mode=v.failure_mode,
+                subject=v.subject,
+                status=Status.INCONCLUSIVE,
+                formal_condition=v.formal_condition,
+                explanation=(
+                    f"Not decided: {bad[v.subject]} The verdict would be computed on "
+                    f"an impossible input, so it is withheld until the rule is fixed."
+                ),
+            )
+
+
 def verify(
     te: TokenEconomy,
     *,
@@ -210,6 +228,16 @@ def verify(
     # A token's role (governance / reputation / resource / utility)
     # may make some per-token FM verdicts structurally inapplicable.
     apply_role_applicability(te, verdicts)
+    # Sign soundness: a rate or event frequency that can be negative is an
+    # impossible input, outside the domain the FM1/FM3 proofs assume
+    # (docs/proofs/fm3.md Assumption 2: E ≥ 0, B ≥ 0). A PASS or FAIL
+    # computed on it would be meaningless (a negative emission "passes"),
+    # so the affected tokens' FM1 and FM3 verdicts become INCONCLUSIVE
+    # (docs/error-states.md, "Impossible rate"); the error-level coherence
+    # issue below says which rule to fix.
+    from verifier.sign_validation import validate_signs
+    sign_violations = validate_signs(te)
+    _inconclusive_on_impossible_rates(verdicts, sign_violations)
     # P1 — rewrite Z3 internal variable names in counterexamples to
     # IR-path-style names users can decode. Drops the precompute
     # duplicates from the proportional-coupling helper.
@@ -227,11 +255,14 @@ def verify(
     # box admits a strictly-negative rate (mathematically impossible
     # mint) as an error-level coherence issue. Burn rules dual.
     from verifier.elicitation import CoherenceIssue as _CI
-    from verifier.sign_validation import validate_signs
-    for sv in validate_signs(te):
+    for sv in sign_violations:
         issues.append(_CI(
             severity="error",
-            location=f"tokens.{sv.token_id}.{sv.rule_kind}_rules[{sv.rule_index}].function",
+            location=(
+                f"events (triggering token {sv.token_id})"
+                if sv.rule_kind == "event"
+                else f"tokens.{sv.token_id}.{sv.rule_kind}_rules[{sv.rule_index}].function"
+            ),
             message=sv.explanation,
             suggestion=(
                 "Set the leading-coefficient lower bound such that the "

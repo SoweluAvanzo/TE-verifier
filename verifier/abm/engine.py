@@ -66,6 +66,7 @@ from verifier.abm.agents import (
     spawn_agents,
     step_agents,
     tau_bar_from_agents,
+    wealth_weighted_holding_time,
 )
 from verifier.abm.analytics import (
     action_mix,
@@ -81,10 +82,12 @@ from verifier.abm.events import apply_population_events
 from verifier.abm.exit import any_exit_enabled, apply_exit_decisions
 from verifier.abm.regimes import active_function_for_rule
 from verifier.events_resolver import resolve_trigger
+from verifier.expr_eval import reads_state
 from verifier.abm.topology import build_neighbor_graph
 from verifier.abm.predicates import evaluate as eval_predicate
+from verifier.abm.predicates import fm_safe
 from verifier.abm.samplers import Sampler
-from verifier.abm.state import State, initial_state
+from verifier.abm.state import State, initial_state, mint_room
 from verifier.abm.report import (
     FMSimulationResult,
     PredicateOutcome,
@@ -119,7 +122,9 @@ _DEFAULT_HORIZON = 260
 # ---------------------------------------------------------------------------
 
 
-def _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler: Sampler) -> float:
+def _sample_stochastic_rule_value(
+    rule, freq_ac, freq_dist, sampler: Sampler, state=None
+) -> float:
     """One per-period sample of a stochastic rule's realized rate.
 
     Shared by ``actions.prepare_pools`` (agent-driven branch) and the
@@ -137,12 +142,12 @@ def _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler: Sampler) ->
         value = max(0.0, _sample_ac(rule.function.asymptotic_class, sampler))
     else:
         # DSL-expression rule routed here because its event declares
-        # stochastic arrivals. Sample the expression without TE
-        # context; state-dependent expressions fall back to 0.
-        try:
-            value = max(0.0, _sample_rule_rate(rule, sampler))
-        except Exception:
-            value = 0.0
+        # stochastic arrivals: evaluate the function part against the
+        # current state (the frequency is applied below).
+        from verifier.expr_eval import dsl_state, evaluate_function_shape
+        value = max(0.0, evaluate_function_shape(
+            rule.function, state=dsl_state(state or {}), sampler=sampler,
+        ))
     if freq_ac is not None:
         value *= max(0.0, _sample_ac(freq_ac, sampler))
     elif freq_dist is not None:
@@ -201,6 +206,50 @@ def _sample_ac(ac: AsymptoticClass, sampler: Sampler) -> float:
     return 0.0
 
 
+def _rule_draws(rule, sampler: Sampler, te=None) -> dict[str, Any]:
+    """The per-run random draws behind a rule's rate: event payload,
+    DSL parameters, function value (legacy class) and frequency, drawn
+    in the order the engine always used so seeded runs are unchanged."""
+    from verifier.expr_eval import sample_event_payload, sample_params
+    event_def = None
+    if te is not None and rule.trigger.event_id is not None:
+        try:
+            event_def = te.get_event(rule.trigger.event_id)
+        except KeyError:
+            event_def = None
+    draws: dict[str, Any] = {"event": None, "params": {}, "base": None, "freq": 1.0}
+    if event_def is not None and event_def.payload:
+        draws["event"] = sample_event_payload(event_def, sampler)
+    if rule.function.expression is not None:
+        draws["params"] = sample_params(rule.function.parameters, sampler)
+    else:
+        draws["base"] = _sample_ac(rule.function.asymptotic_class, sampler)
+    # Frequency multiplier: prefer the event catalog when an event_id
+    # is set (Phase-H semantics), otherwise the legacy inline.
+    frequency_ac = event_def.frequency if event_def is not None else None
+    if frequency_ac is None:
+        frequency_ac = rule.trigger.event_frequency
+    if frequency_ac is not None:
+        draws["freq"] = _sample_ac(frequency_ac, sampler)
+    return draws
+
+
+def _rate_from_draws(rule, draws: dict[str, Any], te=None, state=None) -> float:
+    """Per-period rate of a rule for fixed draws against ``state``."""
+    from verifier.expr_eval import dsl_state, evaluate_function_shape
+    if rule.function.expression is not None:
+        base = evaluate_function_shape(
+            rule.function,
+            state=dsl_state(state or {}),
+            event=draws["event"],
+            params=draws["params"],
+            tokens=[t.id for t in te.tokens] if te is not None else None,
+        )
+    else:
+        base = draws["base"]
+    return base * draws["freq"]
+
+
 def _sample_rule_rate(rule, sampler: Sampler, te=None, state=None) -> float:
     """Per-period rate (function × frequency if event-based).
 
@@ -210,44 +259,14 @@ def _sample_rule_rate(rule, sampler: Sampler, te=None, state=None) -> float:
     optional context for the DSL path (needed for state.* and
     sum_over(...) lookups).
     """
-    from verifier.expr_eval import evaluate_function_shape, sample_event_payload
-    # Sample the event payload once if the rule is event-driven. This
-    # supplies ``event.*`` references inside DSL expressions.
-    event_payload: dict | None = None
-    event_def = None
-    if te is not None and rule.trigger.event_id is not None:
-        try:
-            event_def = te.get_event(rule.trigger.event_id)
-        except KeyError:
-            event_def = None
-    if event_def is not None and event_def.payload:
-        event_payload = sample_event_payload(event_def, sampler)
-    if rule.function.expression is not None:
-        base = evaluate_function_shape(
-            rule.function,
-            state=state or {},
-            event=event_payload,
-            sampler=sampler,
-            tokens=[t.id for t in te.tokens] if te is not None else None,
-        )
-    else:
-        base = _sample_ac(rule.function.asymptotic_class, sampler)
-    # Frequency multiplier: prefer the event catalog when an event_id
-    # is set (Phase-H semantics), otherwise the legacy inline.
-    frequency_ac = event_def.frequency if event_def is not None else None
-    if frequency_ac is None:
-        frequency_ac = rule.trigger.event_frequency
-    if frequency_ac is not None:
-        freq = _sample_ac(frequency_ac, sampler)
-        base *= freq
-    return base
+    return _rate_from_draws(rule, _rule_draws(rule, sampler, te=te), te=te, state=state)
 
 
 def _sample_rate_with_function(rule, function_shape, sampler: Sampler, te=None, state=None) -> float:
     """Per-period rate using a caller-supplied FunctionShape (typically
     the active regime's function instead of the rule's base function).
     Frequency multiplier inherits from the rule's trigger. K5: DSL-aware."""
-    from verifier.expr_eval import evaluate_function_shape, sample_event_payload
+    from verifier.expr_eval import dsl_state, evaluate_function_shape, sample_event_payload
     event_payload: dict | None = None
     event_def = None
     if te is not None and rule.trigger.event_id is not None:
@@ -260,7 +279,7 @@ def _sample_rate_with_function(rule, function_shape, sampler: Sampler, te=None, 
     if function_shape.expression is not None:
         base = evaluate_function_shape(
             function_shape,
-            state=state or {},
+            state=dsl_state(state or {}),
             event=event_payload,
             sampler=sampler,
             tokens=[t.id for t in te.tokens] if te is not None else None,
@@ -290,6 +309,12 @@ def _initial_supply(token: Token) -> float:
     return 0.0
 
 
+def _primary_supply(state: State, params: dict[str, Any]) -> float:
+    """M(0) of the token agents hold: EARN/REDEEM route to the primary token."""
+    tid = params.get("primary_token_id") or next(iter(state["tokens"]), None)
+    return float(state["tokens"][tid]["M"]) if tid is not None else 0.0
+
+
 def _Gamma_from_governance(te: TokenEconomy) -> float:
     rules = te.governance.rule_structure
     if not rules:
@@ -312,6 +337,13 @@ def _build_initial_state(
     # Initial M per token
     for t in te.tokens:
         state["tokens"][t.id]["M"] = _initial_supply(t)
+    # Outstanding supply caps, sampled once per run in their declared range
+    # (>= the initial supply: schema validator). Read through mint_room().
+    state["caps"] = {
+        t.id: sampler.sample_range(t.outstanding_supply_cap)
+        for t in te.tokens
+        if t.outstanding_supply_cap is not None
+    }
 
     # Phase-H: events catalog + non-tokenized asset state. These start
     # empty and are populated by ``_step_state`` per period.
@@ -362,6 +394,9 @@ def _build_initial_state(
     # re-checks each one's predicate every period and swaps the rule's
     # rate contribution in static_rates when a regime fires.
     regime_rules: list[tuple[str, str, Any, float]] = []
+    # Rules whose expression reads live state (supply-dependent removal,
+    # time-dependent creation): re-evaluated every period.
+    state_rules: list[dict[str, Any]] = []
     for token in te.tokens:
         for side, rules in (("E", token.emission_rules), ("B", token.burn_rules)):
             for rule in rules:
@@ -373,6 +408,21 @@ def _build_initial_state(
                     stochastic_rules.append(
                         (token.id, side, rule, rt.event_frequency,
                          rt.event_frequency_distribution)
+                    )
+                elif (
+                    rule.function.expression is not None
+                    and reads_state(rule.function.expression)
+                    and not getattr(rule, "regimes", None)
+                ):
+                    # Reads live state (e.g. state.M['BTC'] * param.rate):
+                    # draws fixed for the run, value re-evaluated every
+                    # period against the current state (_step_state).
+                    draws = _rule_draws(rule, sampler, te=te)
+                    rate = max(0.0, _rate_from_draws(rule, draws, te=te, state=state))
+                    static_rates[token.id][side] += rate
+                    state_rules.append(
+                        {"token": token.id, "side": side, "rule": rule,
+                         "draws": draws, "rate": rate}
                     )
                 else:
                     rate = _sample_rule_rate(rule, sampler, te=te, state=state)
@@ -459,6 +509,7 @@ def _build_initial_state(
         # (token_id, "E"/"B", rule) tuples for rules that opted into
         # per-period resampling via FunctionShape.distribution.
         "stochastic_rules": stochastic_rules,
+        "state_rules": state_rules,
         # Keep the sampler reference so ``_step_state`` can draw noise.
         "_sampler": sampler,
         # Phase A: agent_type lookup by id, so the per-period action
@@ -644,6 +695,18 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
                 )
                 current_contrib[rid] = new_rate
 
+    # State-dependent rules: re-evaluate against the state at the start
+    # of this period (M(t-1), t) and patch their share of the baseline.
+    for entry in params.get("state_rules") or []:
+        new_rate = max(0.0, _rate_from_draws(
+            entry["rule"], entry["draws"], te=params.get("_te"), state=state
+        ))
+        side_rates = static[entry["token"]]
+        side_rates[entry["side"]] = max(
+            0.0, side_rates[entry["side"]] - entry["rate"] + new_rate
+        )
+        entry["rate"] = new_rate
+
     # Phase C: fire any population events scheduled for this period
     # *before* the action loop runs, so the same period sees the new
     # population / utility cache.
@@ -757,6 +820,9 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
                 continue
             flow_amount = source_burn * amount
             if action == CrossTokenAction.MINT:
+                room = mint_room(state, tgt)
+                if room is not None:
+                    flow_amount = min(flow_amount, room)
                 realized[tgt]["E"] += flow_amount
                 state["tokens"][tgt]["E"] = realized[tgt]["E"]
                 state["tokens"][tgt]["M"] += flow_amount
@@ -808,16 +874,24 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
         # Live aggregates (Phase A): replace declared/static fallbacks
         # with values computed from current agent state.
         # ------------------------------------------------------------------
-        # tau_bar from per-agent holding times.
-        live_tau = tau_bar_from_agents(agents, state["t"], fallback=0.0)
+        # tau_bar: the wealth-weighted expected holding time (FM2's
+        # quantity, docs/proofs/fm2.md) with the live balances as weights.
         for tid in state["tau_bar"]:
             if state["tau_bar"][tid] > 0:
-                state["tau_bar"][tid] = live_tau
-        # Live effective Gini from agent balances.
+                state["tau_bar"][tid] = wealth_weighted_holding_time(
+                    agents, fallback=state["tau_bar"][tid]
+                )
+        # Live Gini of agent balances. It IS FM6's effective Gini only under
+        # linear vote weighting; other weightings transform it
+        # (fm6_governance._effective_gini_range), so the sampled effective
+        # value is kept and the balance Gini is stored apart.
         live_gini = gini([a.get("balance", 0.0) for a in agents])
+        state["balance_gini"] = live_gini
+        te_obj = params.get("_te")
+        linear = te_obj is None or te_obj.governance.vote_weighting == VoteWeighting.LINEAR
         # Only overwrite when the live value is meaningful (some
         # balance is present); otherwise keep the declared Gini.
-        if any(a.get("balance", 0.0) > 0 for a in agents):
+        if linear and any(a.get("balance", 0.0) > 0 for a in agents):
             state["effective_gini"] = live_gini
         # Live phi from active agents.
         state["phi"] = contributor_fraction(agents, state["t"])
@@ -845,7 +919,7 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
         per_period_B = {tid: static.get(tid, {}).get("B", 0.0) for tid in state["tokens"]}
         if stochastic and sampler is not None:
             for token_id, side, rule, freq_ac, freq_dist in stochastic:
-                v = _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler)
+                v = _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler, state)
                 if side == "E":
                     per_period_E[token_id] += v
                 else:
@@ -855,6 +929,9 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
             state["tokens"][tid]["B"] = per_period_B[tid]
 
         for tid, tok in state["tokens"].items():
+            room = mint_room(state, tid)
+            if room is not None:  # e = min(E, C − M + B)
+                tok["E"] = max(0.0, min(tok["E"], room + tok["B"]))
             dM = tok["E"] - tok["B"]
             tok["M"] = max(0.0, tok["M"] + dM)
 
@@ -904,7 +981,9 @@ def _run_once(
     # benefit from live aggregates.)
     if te.participants.agent_types:
         cap = params.get("effective_max_agents")
-        state["agents"] = spawn_agents(te, sampler, max_agents=cap)
+        state["agents"] = spawn_agents(
+            te, sampler, max_agents=cap, initial_supply=_primary_supply(state, params)
+        )
         # Phase B: build the interaction graph once per run; threaded
         # through params so the action loop's TRANSFER samples a peer
         # from the agent's neighbors instead of the full population.
@@ -932,6 +1011,7 @@ def _run_once(
 
     for t in range(horizon + 1):
         for key, preds in fm_predicates.items():
+            holds = []
             for pidx, p in enumerate(preds):
                 try:
                     value = derived_variable(state, p.variable)
@@ -939,8 +1019,10 @@ def _run_once(
                     value = float("nan")
                 if trajectories is not None:
                     trajectories[key][pidx][t] = value
-                if first_violation[key] is None and not _check_safety(p, value):
-                    first_violation[key] = t
+                holds.append(_check_safety(p, value))
+            # Alternatives (alternative_group) are OR-ed, the rest AND-ed.
+            if first_violation[key] is None and not fm_safe(preds, holds):
+                first_violation[key] = t
         state = _step_state(state, params)
 
     return first_violation, trajectories

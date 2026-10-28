@@ -26,6 +26,8 @@ profile it has.
 
 from __future__ import annotations
 
+import math
+
 import z3
 
 from schema import (
@@ -43,6 +45,7 @@ from verifier.asymptotic import (
     rule_rate_per_period,
 )
 from verifier.conditions import rule_contributes
+from verifier.outstanding_cap import cap_var, steady_state_creation
 from verifier.events_resolver import resolve_trigger
 from verifier.failure_modes.fm1_oversupply import _declared_emission_upper_bound
 from verifier.config import VerifierConfig
@@ -62,6 +65,38 @@ from verifier.failure_modes.base import (
 DEMAND_DRIVEN_BURN_KINDS: frozenset[BurnTriggerKind] = frozenset(
     {BurnTriggerKind.DEMAND_DRIVEN, BurnTriggerKind.THRESHOLD_DRIVEN}
 )
+
+
+def _has_inflow(te: TokenEconomy, token: Token) -> bool:
+    """True if a cross-token flow mints INTO this token.
+
+    Such a token has emission even with no emission_rules of its own (a
+    debt token minted alongside a credit token, a reward token minted when
+    another is burned). FM1 counts these inflows (fm1_oversupply.py); FM3
+    must too, or it would call the token "no emission" and pass it
+    vacuously. See docs/proofs/fm3.md, "Emission includes inflows".
+    """
+    return any(
+        flow.target_token == token.id and flow.target_action == CrossTokenAction.MINT
+        for flow in te.cross_token_flows
+    )
+
+
+def _all_emission_capped(te: TokenEconomy, token: Token) -> bool:
+    """True if every source of new tokens is a capped emission rule.
+
+    An inflow from another token has no supply cap, so a token with one is
+    never "capped" (and a token with no rules at all is not capped either:
+    all() of nothing would be vacuously true).
+    """
+    return (
+        bool(token.emission_rules)
+        and not _has_inflow(te, token)
+        and all(
+            r.schedule is not None and r.schedule.supply_cap is not None
+            for r in token.emission_rules
+        )
+    )
 
 
 class FM3BurnEmission(FailureMode):
@@ -97,7 +132,7 @@ class FM3BurnEmission(FailureMode):
 
         # No emission means no possibility of burn/emission imbalance from
         # emission. (If supply was pre-minted only, ρ is irrelevant.)
-        if not token.emission_rules:
+        if not token.emission_rules and not _has_inflow(te, token):
             return Verdict(
                 failure_mode=self.name,
                 subject=token.id,
@@ -136,54 +171,10 @@ class FM3BurnEmission(FailureMode):
             # emission rule has a supply_cap) is sustainable without
             # burn — Bitcoin pattern. Reclassify as PASS_AS_INTENDED
             # rather than FAIL.
-            if (
-                token.emission_rules
-                and all(
-                    r.schedule is not None and r.schedule.supply_cap is not None
-                    for r in token.emission_rules
-                )
-            ):
-                total_cap = sum(
-                    r.schedule.supply_cap for r in token.emission_rules
-                )
-                return Verdict(
-                    failure_mode=self.name,
-                    subject=token.id,
-                    status=Status.PASS_AS_INTENDED,
-                    formal_condition=(
-                        f"Capped supply ≤ {total_cap:g} (no burn required)"
-                    ),
-                    explanation=(
-                        f"Token {token.id} has no burn mechanism, but every "
-                        f"emission rule declares a supply_cap (total cap "
-                        f"= {total_cap:g} tokens). Once the cap is reached "
-                        f"emission stops — supply stability is achieved "
-                        f"by termination, not by burn. Sustainability is "
-                        f"now an FM1 question: does Q grow to absorb the "
-                        f"bounded supply? See the FM1 verdict and the "
-                        f"trajectory under Refined diagnosis."
-                    ),
-                    critical_values=[
-                        CriticalValue(
-                            parameter="supply_cap",
-                            value=total_cap,
-                            direction="<=",
-                            formula=(
-                                f"M_∞ ≤ {total_cap:g}   "
-                                f"(declared via Rule.schedule.supply_cap)"
-                            ),
-                            explanation=(
-                                "Terminal supply is bounded by the declared "
-                                "cap; FM3's burn-coverage condition does "
-                                "not apply to capped-supply tokens."
-                            ),
-                            source="closed_form",
-                        )
-                    ],
-                    committed_fields=[
-                        f"tokens[{token.id}].emission_rules[*].schedule.supply_cap"
-                    ],
-                )
+            if _all_emission_capped(te, token):
+                return self._verdict_capped_schedule(token, has_burn=False)
+            if token.outstanding_supply_cap is not None:
+                return self._verdict_cap_without_burn(token)
             return self._verdict_no_burn(token)
 
         # Case B: rule-driven (time-based) burn — flagged as structurally weak.
@@ -262,8 +253,31 @@ class FM3BurnEmission(FailureMode):
         rho_floor_effective = config.rho_floor * nfr1_mult
 
         # Violation: E - B > 0 (i.e. ρ = B / E < 1) for some parameter assignment.
-        solver.add(E_total > 0)  # avoid trivial 0/0 case
-        solver.add(B_total < E_total * rho_floor_effective)
+        # With an outstanding supply cap the steady-state creation is
+        # E∞ = min(E, B) (docs/proofs/outstanding_cap.md, Lemma 3); E∞ = E
+        # without one, so the query below is then the previous one.
+        cap = cap_var(solver, f"{token.id}__cap", token)
+        if cap is not None:
+            held_by_cap = self._verdict_if_held_by_cap(
+                solver, token, E_total, B_total, cap, rho_floor_effective
+            )
+            if held_by_cap is not None:
+                return held_by_cap
+        # Every source of new tokens is a rule with a schedule supply_cap:
+        # creation stops once the cap is emitted, so E∞ = 0 and the
+        # steady-state violation is unsatisfiable, with or without burn
+        # (fm3.md, "Capped emission"). When the burn alone would not cover
+        # emission, the cap is what holds FM3: PASS_AS_INTENDED.
+        if _all_emission_capped(te, token):
+            solver.push()
+            solver.add(E_total > 0, B_total < E_total * rho_floor_effective)
+            uncovered = solver.check() == z3.sat
+            solver.pop()
+            if uncovered:
+                return self._verdict_capped_schedule(token, has_burn=True)
+        E_steady = steady_state_creation(E_total, B_total, cap)
+        solver.add(E_steady > 0)  # avoid trivial 0/0 case
+        solver.add(B_total < E_steady * rho_floor_effective)
 
         # Critical value — ρ* is the configurable floor. The actionable
         # quantity is the implied burn rate: any model with ρ < ρ_floor
@@ -380,7 +394,12 @@ class FM3BurnEmission(FailureMode):
                 failure_mode=self.name,
                 subject=token.id,
                 status=Status.FAIL,
-                formal_condition=f"ρ = B/E < {RHO_BURN_COVERAGE_FLOOR} (insufficient burn coverage)",
+                formal_condition=(
+                    f"ρ = B/E∞ < {rho_floor_effective:g}, E∞ = min(E, B) "
+                    f"(capped; insufficient burn coverage)"
+                    if cap is not None
+                    else f"ρ = B/E < {RHO_BURN_COVERAGE_FLOOR} (insufficient burn coverage)"
+                ),
                 explanation=(
                     f"There exist parameter values for {token.id} under which "
                     f"burn coverage ratio ρ falls below {RHO_BURN_COVERAGE_FLOOR}, "
@@ -416,6 +435,160 @@ class FM3BurnEmission(FailureMode):
             critical_values=critical_values,
             swept_fields=swept_fields,
             committed_fields=committed_fields,
+        )
+
+    def _verdict_if_held_by_cap(
+        self,
+        solver: z3.Solver,
+        token: Token,
+        E_total: z3.ArithRef,
+        B_total: z3.ArithRef,
+        cap: z3.ArithRef,
+        rho_floor: float,
+    ) -> Verdict | None:
+        """PASS_AS_INTENDED if the cap, and only the cap, keeps FM3 holding.
+
+        docs/proofs/outstanding_cap.md, Lemma 3 and its Verdict paragraph:
+        the capped violation (B < ρ_floor·E∞) is unsatisfiable while the
+        uncapped one (B < ρ_floor·E) is satisfiable. Returns None in every
+        other case; the caller then runs the capped query as usual
+        (satisfiable: FAIL; unsatisfiable: PASS).
+        """
+        E_steady = steady_state_creation(E_total, B_total, cap)
+        solver.push()
+        solver.add(E_steady > 0, B_total < E_steady * rho_floor)
+        capped = solver.check()
+        solver.pop()
+        if capped != z3.unsat:
+            return None
+        solver.push()
+        solver.add(E_total > 0, B_total < E_total * rho_floor)
+        if solver.check() != z3.sat:
+            solver.pop()
+            return None
+        model = solver.model()
+        E_val = z3_value_to_float(model, E_total)
+        B_val = z3_value_to_float(model, B_total)
+        solver.pop()
+        cap_range = token.outstanding_supply_cap
+        assert cap_range is not None  # cap is not None
+        amount = token.initial_distribution.amount
+        M0 = amount.max if amount is not None else 0.0
+        periods = math.ceil((cap_range.min - M0) / (E_val - B_val)) if E_val > B_val else 0
+        return Verdict(
+            failure_mode=self.name,
+            subject=token.id,
+            status=Status.PASS_AS_INTENDED,
+            formal_condition=(
+                f"M(t) ≤ C = [{cap_range.min:g}, {cap_range.max:g}]; "
+                f"steady state ρ = B/min(E, B) ≥ {rho_floor:g}"
+            ),
+            explanation=(
+                f"Burn can fall short of creation for {token.id} (for example "
+                f"E ≈ {E_val:g} and B ≈ {B_val:g} tokens per period), but the "
+                f"cap on tokens outstanding stops the supply from growing "
+                f"without bound: at those rates, starting from an initial "
+                f"supply of {M0:g}, the lowest cap ({cap_range.min:g}) is "
+                f"reached after about {periods} periods. From then on new "
+                f"tokens are created only as fast as others are removed. The "
+                f"risk to watch is no longer inflation but holders at the "
+                f"cap who cannot receive new tokens (in a credit network: "
+                f"members at their credit limit who can no longer buy)."
+            ),
+            critical_values=[
+                CriticalValue(
+                    parameter="outstanding_supply_cap",
+                    value=cap_range.min,
+                    direction=">=",
+                    formula=f"t* = ⌈(C − M₀)/(E − B)⌉ ≈ {periods} periods",
+                    explanation=(
+                        "Periods until the outstanding supply reaches the "
+                        "cap at the counterexample's rates, with the lowest "
+                        "cap and the highest initial supply."
+                    ),
+                    source="closed_form",
+                )
+            ],
+            committed_fields=[f"tokens[{token.id}].outstanding_supply_cap"],
+        )
+
+    def _verdict_capped_schedule(self, token: Token, *, has_burn: bool) -> Verdict:
+        """PASS_AS_INTENDED: every emission rule has a schedule supply_cap."""
+        total_cap = sum(r.schedule.supply_cap for r in token.emission_rules)
+        burn_words = (
+            f"Token {token.id}'s burn does not cover emission while emission "
+            f"lasts, but every"
+            if has_burn
+            else f"Token {token.id} has no burn mechanism, but every"
+        )
+        return Verdict(
+            failure_mode=self.name,
+            subject=token.id,
+            status=Status.PASS_AS_INTENDED,
+            formal_condition=(
+                f"Capped supply ≤ {total_cap:g} (no burn required)"
+            ),
+            explanation=(
+                f"{burn_words} "
+                f"emission rule declares a supply_cap (total cap "
+                f"= {total_cap:g} tokens). Once the cap is reached "
+                f"emission stops — supply stability is achieved "
+                f"by termination, not by burn. Sustainability is "
+                f"now an FM1 question: does Q grow to absorb the "
+                f"bounded supply? See the FM1 verdict and the "
+                f"trajectory under Refined diagnosis."
+            ),
+            critical_values=[
+                CriticalValue(
+                    parameter="supply_cap",
+                    value=total_cap,
+                    direction="<=",
+                    formula=(
+                        f"M_∞ ≤ {total_cap:g}   "
+                        f"(declared via Rule.schedule.supply_cap)"
+                    ),
+                    explanation=(
+                        "Terminal supply is bounded by the declared "
+                        "cap; FM3's burn-coverage condition does "
+                        "not apply to capped-supply tokens."
+                    ),
+                    source="closed_form",
+                )
+            ],
+            committed_fields=[
+                f"tokens[{token.id}].emission_rules[*].schedule.supply_cap"
+            ],
+        )
+
+    def _verdict_cap_without_burn(self, token: Token) -> Verdict:
+        """No burn but a cap: supply stops at the cap (E∞ = 0, Lemma 3)."""
+        cap_range = token.outstanding_supply_cap
+        assert cap_range is not None
+        return Verdict(
+            failure_mode=self.name,
+            subject=token.id,
+            status=Status.PASS_AS_INTENDED,
+            formal_condition=(
+                f"M(t) ≤ C = [{cap_range.min:g}, {cap_range.max:g}] (no burn required)"
+            ),
+            explanation=(
+                f"Token {token.id} has no burn mechanism, but its supply "
+                f"outstanding is capped at {cap_range.min:g} to "
+                f"{cap_range.max:g} tokens: once the cap is reached, creation "
+                f"stops. Supply stability then rests on the cap; whether the "
+                f"capped supply can be absorbed is an FM1 question."
+            ),
+            critical_values=[
+                CriticalValue(
+                    parameter="outstanding_supply_cap",
+                    value=cap_range.max,
+                    direction="<=",
+                    formula=f"M_∞ ≤ {cap_range.max:g}",
+                    explanation="Supply is bounded by the declared cap.",
+                    source="closed_form",
+                )
+            ],
+            committed_fields=[f"tokens[{token.id}].outstanding_supply_cap"],
         )
 
     @staticmethod
@@ -552,7 +725,7 @@ class FM3BurnEmission(FailureMode):
             and TokenFunction.REPUTATION_MARKER in token.function
         ):
             return "unknown"  # FM3 N/A
-        if not token.emission_rules:
+        if not token.emission_rules and not _has_inflow(te, token):
             return "true"  # no emission → ρ undefined / vacuously safe
         # Structural fail: no burn at all (and no cross-token burn flow)
         has_xt_burn = any(
@@ -560,15 +733,12 @@ class FM3BurnEmission(FailureMode):
             and f.target_action == CrossTokenAction.BURN
             for f in te.cross_token_flows
         )
+        # Capped emission holds FM3 with or without burn (fm3.md).
+        if _all_emission_capped(te, token):
+            return "true"
         if not token.burn_rules and not has_xt_burn:
             # Schema-aware: capped supply means burn isn't required.
-            if (
-                token.emission_rules
-                and all(
-                    r.schedule is not None and r.schedule.supply_cap is not None
-                    for r in token.emission_rules
-                )
-            ):
+            if token.outstanding_supply_cap is not None:
                 return "true"
             return "false"
 
@@ -629,8 +799,14 @@ class FM3BurnEmission(FailureMode):
             )
         )
         rho_floor_effective = cfg.rho_floor * nfr1_mult
-        solver.add(E_total > 0)
-        solver.add(B_total >= E_total * rho_floor_effective)  # safety
+        # Capped: safety on the steady-state creation E∞ (outstanding_cap.md).
+        cap = cap_var(solver, f"{token.id}__cap_sat", token)
+        if cap is None:
+            solver.add(E_total > 0)
+            solver.add(B_total >= E_total * rho_floor_effective)  # safety
+        else:
+            E_steady = steady_state_creation(E_total, B_total, cap)
+            solver.add(z3.Or(E_steady <= 0, B_total >= E_steady * rho_floor_effective))
         result = solver.check()
         if result == z3.sat:
             return "true"
@@ -642,7 +818,7 @@ class FM3BurnEmission(FailureMode):
         from verifier.safety_predicate import SafetyPredicate
 
         token = next((t for t in te.tokens if t.id == subject), None)
-        if token is None or not token.emission_rules:
+        if token is None or (not token.emission_rules and not _has_inflow(te, token)):
             return []
         # Capped-supply tokens (Bitcoin, Curve CRV) are sustained by
         # termination, not by burn. The verifier reports
@@ -651,10 +827,7 @@ class FM3BurnEmission(FailureMode):
         # every run and falsely report "100% deployment violation".
         # Suppress the predicate so the ABM defers to the verifier's
         # verdict instead of contradicting it.
-        if all(
-            r.schedule is not None and r.schedule.supply_cap is not None
-            for r in token.emission_rules
-        ):
+        if _all_emission_capped(te, token):
             return []
         cfg = config or VerifierConfig.paper_defaults()
         nfr1_mult = float(
@@ -662,6 +835,12 @@ class FM3BurnEmission(FailureMode):
                 str(te.meta.nfrs.resilience), 1.0
             )
         )
+        # Outstanding supply cap with ρ_floor ≤ 1: FM3 holds in steady state
+        # (outstanding_cap.md, Lemma 3), while the realized ρ is below 1 by
+        # construction until the cap is reached; the predicate would
+        # contradict the proven verdict, as for supply_cap above.
+        if token.outstanding_supply_cap is not None and cfg.rho_floor * nfr1_mult <= 1.0:
+            return []
         return [
             SafetyPredicate(
                 failure_mode="FM3",

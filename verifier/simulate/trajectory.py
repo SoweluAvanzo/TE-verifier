@@ -186,7 +186,7 @@ def _ac_at_time(ac: AsymptoticClass | None, t: float) -> float:
     return 0.0
 
 
-def _rule_base_rate_at(rule, t: float, te=None) -> float:
+def _rule_base_rate_at(rule, t: float, te=None, supply=None) -> float:
     if getattr(rule.function, "distribution", None) is not None:
         # Distribution precedence (ABM sampling semantics): the
         # deterministic trajectory uses the analytic mean, clamped at 0.
@@ -214,7 +214,9 @@ def _rule_base_rate_at(rule, t: float, te=None) -> float:
             fn = float(_ev(
                 rule.function.expression,
                 EvalEnv(
-                    state={"t": float(t)},
+                    # state.M['ID']: the supply the caller tracks
+                    # (initial supplies when it tracks none).
+                    state={"t": float(t), "M": supply if supply is not None else _initial_supplies(te)},
                     params=params,
                     consts={"horizon": 52.0},
                     event=event_payload or None,
@@ -307,6 +309,11 @@ def _initial_supply(token: Token) -> float:
     return 0.0
 
 
+def _initial_supplies(te) -> dict[str, float]:
+    """Initial M of every token (midpoints); empty without a TE handle."""
+    return {tok.id: _initial_supply(tok) for tok in te.tokens} if te is not None else {}
+
+
 def _xt_inflow_for(te: TokenEconomy, token: Token, t: float, action: CrossTokenAction,
                    own_E_by_token: dict[str, float]) -> float:
     """Sum of cross-token contributions on the given side at time t.
@@ -373,6 +380,9 @@ def simulate_token_trajectory(
     # Initial supply
     M = _initial_supply(token)
     M_initial = M
+    # Outstanding supply cap at its midpoint: creation beyond it is refused
+    # (docs/proofs/outstanding_cap.md, Model).
+    cap = _mid(token.outstanding_supply_cap) if token.outstanding_supply_cap else None
 
     # We collect every period for accurate metrics, then down-sample
     # for the surfaced `samples` list.
@@ -386,7 +396,12 @@ def simulate_token_trajectory(
     # Per-rule cumulative emitted (for supply_cap shut-off).
     rule_cumulative: dict[int, float] = {}
 
+    # state.M['ID'] for DSL rules: this token's simulated supply; the
+    # other tokens are not simulated here and keep their initial supply.
+    supply = _initial_supplies(te)
+
     for t in range(horizon + 1):
+        supply[token.id] = M
         # Compute every token's own_E at this t (needed for proportional flows).
         # Schedule modifiers apply per-rule using the *cumulative*
         # state of that rule, so cap-driven shut-off is faithful to
@@ -398,7 +413,7 @@ def simulate_token_trajectory(
             tok_E = 0.0
             for ridx, rule in enumerate(tok.emission_rules):
                 key = id(rule)
-                base = _rule_base_rate_at(rule, t, te=te)
+                base = _rule_base_rate_at(rule, t, te=te, supply=supply)
                 mult = _schedule_multiplier(rule, t, rule_cumulative.get(key, 0.0))
                 contribution = base * mult
                 tok_E += contribution
@@ -411,7 +426,7 @@ def simulate_token_trajectory(
         B_own = 0.0
         for ridx, rule in enumerate(token.burn_rules):
             key = id(rule)
-            base = _rule_base_rate_at(rule, t, te=te)
+            base = _rule_base_rate_at(rule, t, te=te, supply=supply)
             mult = _schedule_multiplier(rule, t, rule_cumulative.get(key, 0.0))
             contrib = base * mult
             B_own += contrib
@@ -426,6 +441,8 @@ def simulate_token_trajectory(
         Q = Q_0 * ((1.0 + g_mid) ** t) if g_mid > -1.0 else 0.0
 
         if t > 0:
+            if cap is not None:
+                E = max(0.0, min(E, cap - M + B))  # e(t) = min(E, C − M(t) + B)
             dMdt = E - B
             M = max(0.0, M + dMdt)
             cum_E += E

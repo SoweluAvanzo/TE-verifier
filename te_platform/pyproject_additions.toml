@@ -1,0 +1,189 @@
+## =============================================================================
+## te_platform/pyproject_additions.toml — what to add to ../pyproject.toml
+## =============================================================================
+## GUIDE STEP   0.3 (mypy setting for the existing code), 1.1 (package),
+##              2.3/2.5 (entry points), 2.4 (anyio), 3.1/4.2/6.1 (commands),
+##              then each phase
+##              adds its dependencies.
+## PURPOSE      pyproject.toml is the one file that tells Python tools what this
+##              project is: its dependencies, its command-line programs, its
+##              tool settings. The real file must keep working for the existing
+##              verifier, so additions are collected here and copied over one
+##              section at a time, when the matching guide step is reached.
+## USED BY      uv (installs dependencies), setuptools (builds the package),
+##              ruff / mypy / pytest (read their [tool.*] sections),
+##              registry/loader.py (reads the entry points declared below).
+## WHY          Keeping the real pyproject.toml untouched until a step is
+##              activated means the existing 910 tests never break because of
+##              a half-finished scaffold.
+## ACTIVATE     For each section: copy the uncommented lines into the SAME
+##              section of ../pyproject.toml (merge lists, don't duplicate
+##              headers), run `uv lock && uv sync --all-extras`, run the tests.
+## =============================================================================
+
+## -----------------------------------------------------------------------------
+## TO-DO LIST: merge this file into ../pyproject.toml, step by step
+## -----------------------------------------------------------------------------
+## Nothing here is ever "activated" in place: each step copies one section
+## below into ../pyproject.toml when its guide step is reached, and merges
+## it with what is already there. After each merge run
+## `uv lock && uv sync --all-extras` and the tests. Lines starting with "|"
+## are short illustrations.
+##
+## Guide 0.3
+## [ ] 1. ruff and mypy are already set up: ../pyproject.toml has
+##        [tool.ruff], [tool.ruff.lint], [tool.mypy] (strict for
+##        te_platform.*) and the dev extra, and te_platform/ruff.toml holds
+##        the strict rules for the new package. One mypy setting is still
+##        missing: copy the [[tool.mypy.overrides]] block of "Type checking"
+##        (end of this file) into ../pyproject.toml. It matters from 1.3 on,
+##        when service.py imports the verifier: without it,
+##        `uv run mypy te_platform` reports ~200 problems of the existing
+##        code.
+## [ ] 1b. Add "types-PyYAML>=6.0" to the dev extra. It holds the type
+##        information of the yaml package (a "stub" package: types only, no
+##        code). From 1.3 on, service.py imports yaml, and strict mypy reports
+##        `Library stubs not installed for "yaml"` without it.
+##
+## Guide 1.1
+## [ ] 2. Replace the `include` line of [tool.setuptools.packages.find]
+##        with the one that adds "te_platform*".
+## [ ] 3. Add the `platform` extra to [project.optional-dependencies].
+##        Merge, do not duplicate the header: add only new keys, and for an
+##        existing key (webapp, dev) merge the list, keeping the versions
+##        already in pyproject.toml where they are newer.
+## [ ] 4. Check: `uv run python -c "import te_platform"`.
+##
+## Guide 2.3
+## [ ] 5. Copy the [project.entry-points."te_platform.tools"] header only:
+##        no tool exists yet (every policy tool is still `planned`).
+##
+## Guide 2.4
+## [ ] 5a. Add "anyio>=4.4" to the `platform` extra: the pipeline (its
+##        timeout) and its tests use anyio, which otherwise arrives only
+##        with the mcp extra at 3.1.
+##
+## Guide 2.5 (and every later step that builds a tool)
+## [ ] 5b. For each tool you activate, add its one entry-point line (the
+##        name is the tool id in policy/tool_policy.yaml; keep it exactly):
+##          | "spec.validate.v1" = "te_platform.tools.spec_validate:TOOL"
+##        Then `uv sync`: entry points are read from the installed package.
+##
+## Guide 3.1, 4.2, 6.1
+## [ ] 6. Add the three lines of [project.scripts] (te-mcp at 3.1,
+##        te-platform at 4.2, te-worker at 6.1) next to the existing
+##        te-verify and te-simulate lines.
+##
+## Each later phase
+## [ ] 7. Add the extra of the phase you start: mcp (3-4), db (5),
+##        jobs (6), agent (8), reports (10), literature (11), evals (13);
+##        gunicorn into webapp (4.3); the remaining dev tools (types-PyYAML at
+##        0.3, hypothesis at 1.2, bandit and pip-audit at 0.5, pypdf at 10.1) when a step
+##        needs them.
+## [ ] 8. Guide 5.3 (the first database tests): add the `markers` line to
+##        the existing [tool.pytest.ini_options], keeping testpaths and
+##        addopts.
+## [ ] 9. Check after each merge: `uv lock && uv sync --all-extras` and
+##          | uv run pytest -q
+##
+## Stuck, or want to compare? The SOLUTION below holds every section ready
+## to copy. It stays commented here; only ../pyproject.toml is real.
+
+## =============================================================================
+## SOLUTION: complete reference code (commented out on purpose)
+## =============================================================================
+
+## --- Step 1.1: include the new package in the build -----------------------------
+## Replace the existing `include` line in [tool.setuptools.packages.find].
+# [tool.setuptools.packages.find]
+# include = ["schema*", "verifier*", "te_platform*"]
+
+## --- Dependencies, grouped by the phase that needs them --------------------------
+## Optional dependency groups ("extras") keep each container small: the worker
+## doesn't need FastAPI, the web app doesn't need WeasyPrint, and so on.
+## Install a group with `uv sync --extra mcp` (or --all-extras in development).
+# [project.optional-dependencies]
+# # existing group, extended: gunicorn runs the Flask app in the container
+# # (the current ./Dockerfile installs it separately; Dockerfile.platform
+# # installs everything from the lockfile, so it must be listed here)
+# webapp = ["flask>=3.0", "gunicorn>=23.0"]
+# # phase 1: settings from the environment; anyio from 2.4 (the pipeline's
+# # timeout and the async tests)
+# platform = ["pydantic-settings>=2.4", "structlog>=24.1", "anyio>=4.4"]
+# # phase 3-4: MCP server (Starlette app run by uvicorn)
+# mcp = ["mcp>=2.3", "uvicorn>=0.30"]
+# # phase 5: database
+# db = ["sqlalchemy>=2.0", "alembic>=1.13", "psycopg[binary]>=3.2"]
+# # phase 6: background jobs
+# jobs = ["redis>=5.0", "rq>=1.16"]
+# # phase 8: agent service
+# # httpx2 is listed explicitly although mcp and anthropic already pull it in:
+# # agent/mcp_bridge.py imports it directly (the MCP client needs an httpx2
+# # client to send our headers), and a direct import deserves a direct dependency.
+# agent = ["fastapi>=0.115", "uvicorn>=0.30", "anthropic>=1.0", "mcp>=2.3", "httpx2>=2.15"]
+# # phase 10: PDF reports
+# reports = ["weasyprint>=62", "jinja2>=3.1", "matplotlib>=3.8"]
+# # phase 11: literature
+# literature = ["pypdf>=4.0"]
+# # phase 13: evaluation harness (talks to the agent over HTTP)
+# evals = ["httpx2>=2.15", "anthropic>=1.0"]
+# # development tools; the first four are already in ../pyproject.toml
+# # (same minimum versions). types-PyYAML = mypy types for yaml (guide 0.3);
+# # hypothesis = property tests (guide 1.2);
+# # pypdf = read generated PDFs back in the report tests (guide 10.1).
+# # No in-memory imitation of Redis or PostgreSQL: tests use the real
+# # services (TE_REDIS_URL, TE_DATABASE_URL).
+# dev = ["mypy>=2.4.0", "pre-commit>=4.7.0", "pytest>=8.0", "ruff>=0.17.1",
+#        "types-PyYAML>=6.0", "hypothesis>=6.100", "bandit>=1.7", "pip-audit>=2.7",
+#        "pypdf>=4.0"]
+
+## --- Test markers (step 5.3) -------------------------------------------------------------
+## A marker labels tests, e.g. @pytest.mark.db for tests that need PostgreSQL.
+## Registering it here (merge into the existing [tool.pytest.ini_options])
+## makes a typo in a marker name an error, and lets CI choose:
+## `pytest -m "not db"` (fast, no database) or `pytest -m db` (with one).
+# [tool.pytest.ini_options]
+# markers = ["db: needs a running PostgreSQL (TE_DATABASE_URL)"]
+
+## --- Command-line programs (steps 3.1, 4.2, 6.1) ----------------------------------
+## Each line creates a command in the virtual environment / container.
+## The value "module:function" is the function that runs.
+# [project.scripts]
+# te-mcp = "te_platform.mcp_server.app:main"
+# te-worker = "te_platform.jobs.worker:main"
+# te-platform = "te_platform.cli:main"
+
+## --- Tool discovery (step 2.3) ------------------------------------------------------
+## Entry points: a package ADVERTISES tools under the group "te_platform.tools";
+## registry/loader.py finds every advertised tool, even from other packages.
+## Name = tool id from policy/tool_policy.yaml; value = "module:object".
+# [project.entry-points."te_platform.tools"]
+# "spec.validate.v1" = "te_platform.tools.spec_validate:TOOL"
+# "elicit.next_questions.v1" = "te_platform.tools.elicit_next_questions:TOOL"
+# "elicit.record_answer.v1" = "te_platform.tools.elicit_record_answer:TOOL"
+# "verify.run.v1" = "te_platform.tools.verify_run:TOOL"
+# "verify.minimal.v1" = "te_platform.tools.verify_minimal:TOOL"
+# "sim.monte_carlo.v1" = "te_platform.tools.sim_monte_carlo:TOOL"
+# "sim.trajectory.v1" = "te_platform.tools.sim_trajectory:TOOL"
+# "jobs.status.v1" = "te_platform.tools.jobs_status:TOOL"
+# "jobs.cancel.v1" = "te_platform.tools.jobs_cancel:TOOL"
+# "graph.flow.v1" = "te_platform.tools.graph_flow:TOOL"
+# "lit.search.v1" = "te_platform.tools.lit_search:TOOL"
+# "report.render_pdf.v1" = "te_platform.tools.report_render_pdf:TOOL"
+# "export.cadcad.v1" = "te_platform.tools.export_cadcad:TOOL"
+
+## --- Linting and formatting (step 0.3) ------------------------------------------------
+## Already in ../pyproject.toml ([tool.ruff], [tool.ruff.lint]: a safe rule
+## set for the existing code) and te_platform/ruff.toml (every rule, for the
+## new package). Nothing to copy from here.
+
+## --- Type checking (step 0.3) ------------------------------------------------------------
+## [tool.mypy] and the strict override for te_platform.* are already in
+## ../pyproject.toml. Copy this one block next to them: mypy follows the
+## imports of service.py into verifier/ and schema/ (existing code, not
+## written for strict typing). follow_imports = "silent" still reads those
+## modules, so te_platform is checked against their real types, but does
+## not report their own problems.
+# [[tool.mypy.overrides]]
+# module = ["verifier.*", "schema.*"]
+# follow_imports = "silent"

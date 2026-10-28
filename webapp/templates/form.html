@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Token Economy Verifier — Questionnaire</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='form.css') }}" />
 </head>
@@ -13,6 +14,7 @@
     <div class="header-row">
       <h1>Token Economy Verifier</h1>
       <nav>
+        <a href="/chat" class="nav-link">Design assistant (chat) →</a>
         <a href="/yaml" class="nav-link">Advanced (YAML editor) →</a>
         <a href="/explore" class="nav-link">Trajectory explorer →</a>
       </nav>
@@ -23,6 +25,11 @@
       verdicts, critical values, and concrete redesign recommendations
       on the right. Each question links to the failure modes it feeds
       and the paper section that justifies it.
+    </p>
+    <p class="chat-callout">
+      Prefer a conversation? The <a href="/chat">design assistant</a>
+      interviews you about your token economy, fills in the specification
+      and runs the same checks for you (sign-in with an access code).
     </p>
     <details class="explainer">
       <summary>How to use this</summary>
@@ -394,7 +401,11 @@
                         placeholder='e.g. event.amount * event.duration / param.max_lock_periods'></textarea>
               <p class="hint hint-inline">
                 Surface syntax — parsed server-side on submit.
-                See <a href="https://github.com/" onclick="event.preventDefault()" title="docs/dsl-reference.md">DSL reference</a>
+                {# Guide 12.3: this was a placeholder link with an inline
+                   onclick="event.preventDefault()" (it pointed nowhere).
+                   The site-wide Content-Security-Policy forbids inline
+                   handlers, so it is now plain text naming the file. #}
+                See the DSL reference (<code>docs/dsl-reference.md</code>)
                 for namespaces, operators, and the decidable subset Z3
                 accepts.
               </p>

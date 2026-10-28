@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Phase K1 — state-dependent expression AST. Imported here so
 # FunctionShape can carry an optional ``expression`` field. The Expr
@@ -59,11 +59,37 @@ class NumberRange(_Frozen):
         return (self.min + self.max) / 2
 
 
+def _range_in(lo: float | None = None, hi: float | None = None, *,
+              lo_open: bool = False, what: str = "") -> AfterValidator:
+    """Field-level domain check for a NumberRange (paper.py PaperVariable.domain)."""
+    def check(r: "NumberRange") -> "NumberRange":
+        if lo is not None and (r.min <= lo if lo_open else r.min < lo):
+            op = ">" if lo_open else ">="
+            raise ValueError(f"{what} must be {op} {lo:g} (got min={r.min:g})")
+        if hi is not None and r.max > hi:
+            raise ValueError(f"{what} must be <= {hi:g} (got max={r.max:g})")
+        return r
+    return AfterValidator(check)
+
+
+# Domains from verifier/paper.py (PaperVariable.domain); see each field.
+AtLeastOneRange = Annotated[NumberRange, _range_in(1, what="value (domain N_{>=1})")]
+NonNegRange = Annotated[NumberRange, _range_in(0, what="value (domain R_{>=0})")]
+PositiveRange = Annotated[NumberRange, _range_in(0, lo_open=True, what="value (domain R_{>0})")]
+UnitRange = Annotated[NumberRange, _range_in(0, 1, what="value (domain [0, 1])")]
+
+
 class Bounds(_Frozen):
     """Asymptotic bounds for the bounded_range family."""
 
     min: float
     max: float
+
+    @model_validator(mode="after")
+    def _check_order(self) -> "Bounds":
+        if self.min > self.max:
+            raise ValueError(f"Bounds min={self.min} > max={self.max}")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +314,14 @@ class TimeWindow(_Frozen):
     """
 
     type: Literal["time_window"] = "time_window"
-    start_period: float = 0.0
+    start_period: float = Field(default=0.0, ge=0.0)
     end_period: float | None = None
+
+    @model_validator(mode="after")
+    def _order(self) -> "TimeWindow":
+        if self.end_period is not None and self.end_period < self.start_period:
+            raise ValueError("TimeWindow end_period < start_period")
+        return self
 
 
 class EventOccurrence(_Frozen):
@@ -421,6 +453,16 @@ class DistributionSpec(_Frozen):
                 f"distribution {self.kind} missing parameters: "
                 f"{sorted(missing)}"
             )
+        p = self.parameters
+        bad = (
+            (self.kind in ("normal", "lognormal") and p["sigma"] < 0)
+            or (self.kind == "uniform" and p["low"] > p["high"])
+            or (self.kind == "bernoulli" and not 0 <= p["p"] <= 1)
+            or (self.kind == "poisson" and p["lambda"] < 0)
+            or (self.kind == "beta" and (p["alpha"] <= 0 or p["beta"] <= 0))
+        )
+        if bad:
+            raise ValueError(f"distribution {self.kind}: parameters out of domain {p}")
         return self
 
 
@@ -606,7 +648,7 @@ class InitialDistributionKind(str, Enum):
 
 class InitialDistribution(_Frozen):
     kind: InitialDistributionKind
-    amount: NumberRange | None = None
+    amount: NonNegRange | None = None  # M(0) >= 0 (paper.py M domain; fm3.md A2)
     notes: str | None = None
 
 
@@ -631,7 +673,34 @@ class Token(_Frozen):
         kind=InitialDistributionKind.NONE
     )
     # Per-token offer variety K (number of distinct redemption opportunities)
-    offer_variety_K: NumberRange | None = None
+    offer_variety_K: AtLeastOneRange | None = None  # K in N_{>=1} (paper.py)
+    # Cap on OUTSTANDING supply M(t) (tokens in circulation now), enforced
+    # by the protocol: a creation that would push M above it is refused.
+    # Examples: the sum of members' credit limits in a mutual-credit
+    # network (Sardex, WIR), a debt ceiling (MakerDAO), a borrow cap (Aave).
+    # Not the same as ScheduleModifiers.supply_cap, which caps CUMULATIVE
+    # emission (tokens ever created). A range = the designer's uncertainty
+    # about the cap. None = no cap (every existing spec). Semantics and
+    # proofs: docs/proofs/outstanding_cap.md.
+    outstanding_supply_cap: NumberRange | None = None
+
+    @field_validator("outstanding_supply_cap")
+    @classmethod
+    def _cap_non_negative(cls, v: NumberRange | None) -> NumberRange | None:
+        if v is not None and v.min < 0:
+            raise ValueError("outstanding_supply_cap must be >= 0")
+        return v
+
+    @model_validator(mode="after")
+    def _initial_supply_within_cap(self) -> "Token":
+        """The cap holds from the start (base case of the invariant M(t) <= C)."""
+        cap, amount = self.outstanding_supply_cap, self.initial_distribution.amount
+        if cap is not None and amount is not None and amount.max > cap.min:
+            raise ValueError(
+                f"token {self.id}: the initial supply (up to {amount.max:g}) "
+                f"exceeds the outstanding supply cap (from {cap.min:g})"
+            )
+        return self
 
     @field_validator("function")
     @classmethod
@@ -704,7 +773,7 @@ class CrossTokenFlow(_Frozen):
     # Required when coupling = PROPORTIONAL_TO_SOURCE. Range of the
     # multiplier `r` such that flow_rate = r × E_own(source). Otherwise
     # ignored (kept None).
-    coupling_ratio: NumberRange | None = None
+    coupling_ratio: NonNegRange | None = None
     # Phase L3 — for ``target_action = transfer`` only: agent_type id
     # of the recipient role. When set, transferred tokens are routed
     # exclusively to agents of that type (e.g. "transferred BUONO goes
@@ -751,7 +820,7 @@ class HoldingTimeDistribution(_Frozen):
     this to compute wealth-weighted velocity for FM2.
     """
 
-    expected_periods: NumberRange
+    expected_periods: NonNegRange  # E_i[tau] >= 0 (closure of paper tau domain R_{>0})
 
 
 class ActionKind(str, Enum):
@@ -1004,7 +1073,7 @@ class PopulationEvent(_Frozen):
 
 
 class ParticipantsSpec(_Frozen):
-    count_N: NumberRange
+    count_N: AtLeastOneRange  # N in N_{>=1} (paper.py)
     # Token-volume transacted per period (NOT transaction count). FM1's
     # Fisher-equation check `(E - B) ≤ Q` is dimensional in tokens, so
     # this field must be expressed in token-flux terms — for a $1 stable
@@ -1012,8 +1081,8 @@ class ParticipantsSpec(_Frozen):
     # $-volume by dividing by token price. The field name is preserved
     # for back-compat with existing IR files; treat it as Q in MV=PQ
     # under V=P=1 normalization.
-    expected_Q: NumberRange
-    average_demand_d: NumberRange  # redemption events per participant per period
+    expected_Q: NonNegRange  # Q in R_{>=0}
+    average_demand_d: NonNegRange  # redemption events per participant per period
     growth_g: AsymptoticClass  # population growth class
     # Default: NETWORK. Real crypto economies are network-structured
     # (DEX pairs, social graphs, validator P2P, lock-and-vote DAOs).
@@ -1023,7 +1092,7 @@ class ParticipantsSpec(_Frozen):
     # FM5 derives one from log(N) — see ``FM5CriticalMass``.
     topology: Topology = Topology.NETWORK
     agent_types: list[AgentType] = Field(default_factory=list)
-    average_activity_frequency: NumberRange | None = None
+    average_activity_frequency: NonNegRange | None = None
     # Phase 5c: topology-specific parameters. For `topology = network`,
     # the recognized key is `average_degree` (NumberRange). Used by FM5
     # to apply a degree-corrected critical-mass threshold.
@@ -1041,6 +1110,16 @@ class ParticipantsSpec(_Frozen):
                 raise ValueError(
                     f"agent_type fractions must sum to ~1.0, got {total}"
                 )
+            shares = [a.balance_share for a in self.agent_types]
+            if all(s is not None for s in shares):
+                bs = sum(shares)
+                if not (0.99 <= bs <= 1.01):
+                    raise ValueError(
+                        f"agent_type balance_shares must sum to ~1.0, got {bs}"
+                    )
+        deg = self.topology_params.get("average_degree")
+        if deg is not None and deg.min < 0:
+            raise ValueError("topology_params['average_degree'] must be >= 0")
         return self
 
 
@@ -1106,7 +1185,7 @@ class SanctionStructure(_Frozen):
     """
 
     kind: SanctionKind
-    S_normalized: NumberRange | None = None
+    S_normalized: UnitRange | None = None
 
 
 class VoteWeighting(str, Enum):
@@ -1150,11 +1229,11 @@ class VoteWeighting(str, Enum):
 class GovernanceSpec(_Frozen):
     type: GovernanceType
     rule_structure: dict[str, ControllingActor] = Field(default_factory=dict)
-    monitoring_capacity_gamma: NumberRange = NumberRange.point(0.5)
+    monitoring_capacity_gamma: UnitRange = NumberRange.point(0.5)
     sanction_structure: SanctionStructure = SanctionStructure(
         kind=SanctionKind.WARNING
     )
-    token_balance_gini: NumberRange | None = None  # secondary FM6 signal
+    token_balance_gini: UnitRange | None = None  # secondary FM6 signal
     # FM6 vote-weighting (audit fix #1, expanded form). LINEAR (default)
     # preserves pre-fix behavior: effective Gini = token Gini directly.
     # Other variants transform the Gini per the calibration in
@@ -1166,6 +1245,15 @@ class GovernanceSpec(_Frozen):
     #   delegate_concentration_gini (DELEGATED)
     #   reputation_gini (REPUTATION_WEIGHTED)
     vote_weighting_params: dict[str, NumberRange] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _vote_param_domains(self) -> "GovernanceSpec":
+        for key, r in self.vote_weighting_params.items():
+            lo_open = key == "cap_fraction"
+            if (r.min <= 0 if lo_open else r.min < 0) or r.max > 1:
+                rng = "(0, 1]" if lo_open else "[0, 1]"
+                raise ValueError(f"vote_weighting_params[{key!r}] must lie in {rng}")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -1388,7 +1476,7 @@ class NonTokenizedAsset(_Frozen):
     unique: bool = False
     creation: FunctionShape | None = None
     consumption: FunctionShape | None = None
-    redemption_cost: NumberRange | None = None
+    redemption_cost: NonNegRange | None = None
     referenced_tokens: list[str] = Field(default_factory=list)
     # How many distinct K-units this asset contributes to its
     # referenced tokens' ``offer_variety_K``. Default 1: the asset is

@@ -117,20 +117,39 @@ run from its declared NumberRange (current behavior preserved).
 **2. Per-agent state.**
 
 `state["agents"]` is a list of agent dicts (`id`, `type`, `balance`,
-`holding_time`, `last_action`). Spawned proportionally from
-`participants.agent_types`, capped at 200 for tractability. Lazy
-spawn: agents are only created if FM2 is among the simulated FMs (no
-cost for supply-side-only runs).
+`holding_time`, `last_action`, ...). Spawned proportionally from
+`participants.agent_types` whenever the TE declares agent types, capped
+for tractability. Balances are in **tokens**: each type's
+`balance_share` (or `fraction`) of the primary token's initial supply
+M(0), so they add up to M(0) and are in the same unit as every EARN,
+REDEEM and TRANSFER (`spawn_agents(..., initial_supply=...)`).
 
-`tau_bar` becomes a live computation: per period each agent's clock
-advances; agents whose holding time has elapsed "act" (reset). The
-balance-weighted average across all agents is the live `tau_bar`,
-replacing the once-per-run aggregate.
+Agents choose actions by utility (EARN, REDEEM, TRANSFER, HOLD, ...),
+not on a clock. The live aggregates follow the verifier's definitions,
+so a simulated value can be compared with the proven verdict:
 
-Future extensions (deferred): trading between agents (live Gini
-evolution), utility-driven action choice (replace the clock with
-payoff-comparing decisions), spawn/death (agents arriving and leaving
-per growth_g).
+* `tau_bar` is the paper's wealth-weighted expected holding time
+  Σ_i (M_i/M)·E_i[τ] (`agents.wealth_weighted_holding_time`): each
+  agent's declared holding time weighted by its live balance. (It was
+  once the balance-weighted age since each agent's last action of any
+  kind, which is at most 1 at t = 1 and made FM2 fail in every run.)
+* `effective_gini` is the live balance Gini only under linear vote
+  weighting; under other weightings the sampled effective value is
+  kept and the balance Gini is stored as `balance_gini`
+  (fm6_governance._effective_gini_range defines the transform).
+* Safety predicates of one FM that share an `alternative_group` are
+  OR-ed, the others AND-ed (`predicates.fm_safe`): FM5's well-mixed N
+  and network degree predicates are alternatives
+  (`docs/proofs/topology.md`).
+
+Consequence, pinned by `tests/test_abm_formal_agreement.py`: with
+`skip_non_fragile=False`, a SOUND failure mode is never violated at
+t = 0 (its box was proven safe). It can still be violated later through
+dynamics the static check does not model, such as a population shrinking
+below the declared N range under a negative growth rate.
+
+Future extensions (deferred): spawn/death of individual agents per
+growth_g (N is scaled as an aggregate today).
 
 **3. cadCAD-compatible export (`verifier.abm.cadcad_export`).**
 
@@ -157,13 +176,9 @@ who want it have a clean handoff.
   noise. The IR's stochastic envelope is fully evaluated only after
   the schema's `DistributionSpec` infrastructure lands across more
   fields (event_frequency, cross-token flow amounts, etc.).
-* **Trading mechanics + live Gini evolution.** Agents currently hold
-  static balances. Adding peer-to-peer transfers and redemption
-  outflows produces meaningful Gini dynamics — needed for the FM6
-  long-run-concentration story.
-* **Utility-driven action selection.** Agents currently act on a
-  clock; replacing the clock with `UtilityWeights` lookups closes the
-  loop with the IR's utility model.
+* **Per-token balances.** An agent holds one balance, in the primary
+  token; multi-token designs share it (every token gets the same live
+  `tau_bar`).
 
 Each gap is a deliberate boundary between v1 reference and a
 production ABM. The contract (state dict, predicate evaluation,
@@ -390,8 +405,8 @@ ABM should sample around it.
   underlying) are not first-class in the current schema. Their
   influence on FM-violation likelihood lives entirely in the ABM.
 * Per-agent state is not in the verifier. FM2's `tau_bar` is an
-  aggregate; the ABM can compute it from individual holding
-  durations.
+  aggregate; the ABM computes the same wealth-weighted quantity from
+  individual balances and declared holding times.
 
 Each gap is a deliberate boundary. The verifier doesn't try to do
 ABM's job; the ABM doesn't try to do the verifier's.
