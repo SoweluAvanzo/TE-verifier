@@ -93,6 +93,9 @@
 ## SOLUTION: complete reference code (commented out on purpose)
 ## =============================================================================
 
+import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -144,8 +147,12 @@ class SimulatedDesigner:
         )
         self._model = model
         # AsyncAnthropic reads ANTHROPIC_API_KEY (or an `ant auth login`
-        # profile) from the environment; never hard-code the key.
-        self._client = anthropic.AsyncAnthropic()
+        # profile) from the environment; never hard-code the key. A key that
+        # is not scoped to a workspace must name one in every request.
+        workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID")
+        self._client = anthropic.AsyncAnthropic(
+            default_headers={"anthropic-workspace-id": workspace} if workspace else None
+        )
         # The designer's own conversation, from ITS point of view: the
         # interviewer's messages are "user" turns, its answers "assistant".
         # BetaMessageParam: the SDK's own type for one message (use SDK
@@ -193,3 +200,59 @@ class SimulatedDesigner:
         # history, unchanged: required for multi-turn conversations.
         self._messages.append({"role": "assistant", "content": response.content})
         return "".join(b.text for b in response.content if b.type == "text")
+
+
+## --- Forms ---------------------------------------------------------------------
+## The interviewer asks most questions as forms (agent/forms.py), which the
+## browser shows as inputs. The designer fills them in the way a person
+## would in the browser: the answers go back as form_answers, in the shape
+## chat.js sends ({form_id: {question_id: answer}}).
+_FORM_RULES = """Fill in the forms above as the persona would, from what you know about your design.
+Reply with ONLY one JSON object, no other text: {"<form_id>": {"<question_id>": <answer>}}.
+Each answer is {"status": "answered", "value": <value>}, or {"status": "unknown"} where you
+do not know (only if the question has allow_unknown), or {"status": "skipped"} (only if not required).
+Values by kind: single_choice -> one option value (a string); multiple_choice -> a list of option
+values; yes_no -> true or false; number -> a number; range -> {"min": <number>, "max": <number>};
+text -> a string. A choice with allow_other may instead use "other": "<text>" (single_choice:
+with "value": null). Respect min and max. If a question carries an estimate that fits your
+design, give exactly the estimate as the value to keep it; otherwise give your own value."""
+
+
+def _json_object(text: str) -> dict[str, Any] | None:
+    """The first JSON object in the reply (models sometimes wrap it in a code block)."""
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        value = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+async def answer_forms(
+    designer: SimulatedDesigner, interviewer_message: str, forms: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Fill in the forms; None when the designer refused or sent no valid JSON twice."""
+    shown = json.dumps(forms, ensure_ascii=False, indent=1)
+    prompt = f"{interviewer_message}\n\nForms:\n{shown}\n\n{_FORM_RULES}"
+    for _ in range(2):
+        reply = await designer.answer(prompt)
+        if reply is None:
+            return None
+        answers = _json_object(reply)
+        if answers is not None:
+            return answers
+        prompt = "That was not a single JSON object. " + _FORM_RULES
+    return None
+
+
+async def correct_forms(
+    designer: SimulatedDesigner, error: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The page refused an answer (HTTP 422): fix it, as a person would after the error message."""
+    reply = await designer.answer(
+        f"The page did not accept your answers: {json.dumps(error)}. "
+        "Send the corrected answers to all the forms. " + _FORM_RULES,
+    )
+    return _json_object(reply) if reply is not None else None

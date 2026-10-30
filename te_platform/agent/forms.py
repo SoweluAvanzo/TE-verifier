@@ -132,6 +132,18 @@ class FormQuestion(_Strict):
         "(the designer's own words, or a typical value for comparable systems).",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _type_means_kind(cls, data: Any) -> Any:
+        """Accept `type` for `kind`: some models (gpt-oss) keep writing it.
+
+        The stored and displayed form always says `kind` (model_dump).
+        """
+        if isinstance(data, dict) and "type" in data and "kind" not in data:
+            data = {**data, "kind": data["type"]}
+            del data["type"]
+        return data
+
     @model_validator(mode="after")
     def _fits_its_kind(self) -> "FormQuestion":
         if self.kind in _CHOICE_KINDS:

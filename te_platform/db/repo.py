@@ -410,6 +410,28 @@ class Repository:
         )
         return version
 
+    def spec_from_form_unseen(self, session_id: str) -> dict[str, Any] | None:
+        """Return the current spec if the form stored it after the last message, else None.
+
+        The form saves the design into the session (agent/spec_api.py); the
+        model learns of it only through a note (agent/notes.py), once.
+        """
+        self._own_session(session_id)
+        latest = self._db.scalars(
+            select(m.SpecVersion)
+            .where(m.SpecVersion.session_id == session_id)
+            .order_by(m.SpecVersion.version.desc())
+            .limit(1)
+        ).first()
+        if latest is None or latest.author != "form":
+            return None
+        last_message = self._db.scalar(
+            select(func.max(m.Message.created_at)).where(m.Message.session_id == session_id)
+        )
+        if last_message is not None and last_message >= latest.created_at:
+            return None
+        return dict(latest.spec)
+
     def record_answer(  # noqa: PLR0913, PLR0917  one argument per stored column
         self,
         session_id: str,

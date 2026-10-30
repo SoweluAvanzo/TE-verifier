@@ -26,6 +26,7 @@ from typing import Any
 
 from te_platform.agent.forms import ASK_USER
 from te_platform.agent.mcp_bridge import from_provider_name
+from te_platform.agent.notes import is_platform_note
 
 TITLE_LENGTH = 70
 
@@ -58,7 +59,12 @@ def display_transcript(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 items.append({"kind": "assistant_text", "text": b["text"]})
             elif r["role"] == "assistant" and kind == "tool_use":
                 items.append(_tool_use_item(b, results, forms))
-            elif r["role"] == "user" and kind == "text" and b.get("text", "").strip():
+            elif (
+                r["role"] == "user"
+                and kind == "text"
+                and b.get("text", "").strip()
+                and not is_platform_note(b["text"])
+            ):
                 items.append({"kind": "user_text", "text": b["text"]})
             elif r["role"] == "user" and kind == "tool_result" and b.get("tool_use_id") in forms:
                 items.append(_form_result_item(b))

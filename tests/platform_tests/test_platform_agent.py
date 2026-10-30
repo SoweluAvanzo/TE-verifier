@@ -203,6 +203,7 @@ from te_platform.security.signed_urls import sign_download
 ## Forms extension (te_platform/agent/forms.py): ask_user in the loop and the endpoint.
 from te_platform.agent.events import FormRequested
 from te_platform.agent.forms import ASK_USER
+from te_platform.agent.notes import NOTE_PREFIX, is_platform_note
 
 
 ## --- Guide 8.1: health and the auth dependencies -------------------------------------------
@@ -846,6 +847,37 @@ def test_form_refuses_an_invalid_spec(client: TestClient) -> None:
     assert r.status_code == 422
 
 
+## The model is told once when the form saved the design (agent/notes.py):
+## without the note it answered "there is no design yet" although the
+## session held one. The note is not the designer's words, so the
+## transcript leaves it out.
+@pytest.mark.db
+def test_form_edit_is_announced_to_the_model_once(client: TestClient) -> None:
+    headers = _headers(_user())
+    sid = client.post("/agent/sessions", headers=headers).json()["session_id"]
+    client.post(f"/agent/sessions/{sid}/spec", json={"yaml": BITCOIN}, headers=headers)
+    provider = _use_script([ScriptedTurn(text="I see your design."), ScriptedTurn(text="Yes.")])
+    client.post(f"/agent/sessions/{sid}/messages", json={"text": "Check it"}, headers=headers)
+    first = provider.requests[0]["messages"][-1]["content"]
+    assert is_platform_note(first[0]["text"]) and "name: Bitcoin" in first[0]["text"]
+    assert first[1] == {"type": "text", "text": "Check it"}
+    client.post(f"/agent/sessions/{sid}/messages", json={"text": "And now?"}, headers=headers)
+    second = provider.requests[1]["messages"][-1]["content"]
+    assert second == [{"type": "text", "text": "And now?"}]
+    shown = client.get(f"/agent/sessions/{sid}", headers=headers).json()["transcript"]
+    assert [i["text"] for i in shown if i["kind"] == "user_text"] == ["Check it", "And now?"]
+
+
+## A design the agent itself recorded needs no note.
+@pytest.mark.db
+def test_no_note_without_a_form_edit(client: TestClient) -> None:
+    headers = _headers(_user())
+    sid = client.post("/agent/sessions", headers=headers).json()["session_id"]
+    provider = _use_script([ScriptedTurn(text="Hello.")])
+    client.post(f"/agent/sessions/{sid}/messages", json={"text": "Hi"}, headers=headers)
+    assert provider.requests[0]["messages"][-1]["content"] == [{"type": "text", "text": "Hi"}]
+
+
 ## --- Guide 10.3: report download ------------------------------------------------------------------
 ## Phase 10.3: the key that signs and verifies download links (a Docker
 ## secret in production), set for each download test.
@@ -1003,6 +1035,27 @@ async def test_form_pauses_the_turn_and_its_answers_become_the_tool_result(mcp_u
     ]
     assert ("pending", None) in saved
     assert isinstance(second[-1], Done) and second[-1].reason == "final_answer"
+
+
+## A platform note goes after the owed tool results (they must come first)
+## and before the user's text.
+@pytest.mark.db
+@pytest.mark.anyio
+async def test_platform_note_follows_the_tool_results(mcp_url: str) -> None:
+    user = _user()
+    provider = FakeProvider([ScriptedTurn(tool_calls=[_ask("f1")]), ScriptedTurn(text="Ok.")])
+    history: list[dict[str, Any]] = []
+    note = NOTE_PREFIX + " The designer edited the design in the form."
+    async with _bridge(user) as bridge:
+        loop, saved = _loop(provider, bridge, user, _new_session(user))
+        await _run(loop, TurnInput("hi"), history=history)
+        pending = next(p for k, p in saved if k == "pending" and p is not None)
+        await _run(
+            loop, TurnInput("", form_answers={"f1": ASK_ANSWERS}, note=note), pending, history
+        )
+    content = provider.requests[1]["messages"][-1]["content"]
+    assert [b["type"] for b in content] == ["tool_result", "text"]
+    assert content[1]["text"] == note
 
 
 ## Forms: typing a message instead of filling in the form skips it; the text follows.

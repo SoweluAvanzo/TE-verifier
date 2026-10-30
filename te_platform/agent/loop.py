@@ -245,6 +245,8 @@ class TurnInput:
     confirmations: dict[str, bool] = field(default_factory=dict)  # tool_use_id -> approved?
     # tool_use_id -> {question_id: answer}, checked against the stored form.
     form_answers: dict[str, Any] = field(default_factory=dict)
+    # A platform note (agent/notes.py), sent before the user's text.
+    note: str = ""
 
 
 ## persist(kind, payload): app.py stores it. kinds: "message" (a provider
@@ -552,7 +554,11 @@ class AgentLoop:
         if pending:
             async for ev in self._settle_pending(pending, inp, owed):
                 yield ev
-        await self._append(history, self.p.user_message(inp.text, owed))
+        message = self.p.user_message(inp.text, owed)
+        if inp.note:
+            # After the owed tool results (they must come first), before the text.
+            message["content"].insert(len(owed), {"type": "text", "text": inp.note})
+        await self._append(history, message)
 
         # The whole turn has a wall-clock limit. We check a DEADLINE between
         # steps instead of wrapping the body in anyio.move_on_after: this

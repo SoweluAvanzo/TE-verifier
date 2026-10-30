@@ -438,6 +438,10 @@ services:
 ##     Guide 8.5: the model key, the agent's own MCP key, the database.
     secrets:
       - te_anthropic_api_key
+##     The department model's key (TE_LLM_PROVIDER=openai_compatible),
+##     read by Settings.llm_api_key.
+      - source: te_utopia_api_key
+        target: te_llm_api_key
       - te_agent_mcp_api_key
       - te_database_url
 ##     Guide 10.3: to verify report download links.
@@ -549,6 +553,8 @@ secrets:
 ## Guide 8.5: the agent's keys.
   te_anthropic_api_key:
     file: ./secrets/te_anthropic_api_key
+  te_utopia_api_key:
+    file: ./secrets/te_utopia_api_key
   te_agent_mcp_api_key:
     file: ./secrets/te_agent_mcp_api_key
 ## Guide 10.3: signs and verifies report download links.

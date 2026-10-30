@@ -166,8 +166,10 @@ from te_platform.agent.forms import (
 )
 from te_platform.agent.loop import AgentLoop, PendingCalls, Persist, TurnInput
 from te_platform.agent.mcp_bridge import McpBridge
+from te_platform.agent.notes import spec_from_form_note
 from te_platform.agent.providers.anthropic import AnthropicProvider
 from te_platform.agent.providers.base import ChatProvider, ProviderError
+from te_platform.agent.providers.openai_compatible import OpenAICompatibleProvider
 from te_platform.agent.transcript import conversation_title, display_transcript
 from te_platform.config import get_settings
 from te_platform.db.repo import Repository
@@ -217,7 +219,9 @@ SYSTEM_PROMPT = _load_prompt("system.md") + "\n\n" + _load_prompt("interview.md"
 ## replaces a paid external API, not our code).
 @lru_cache(maxsize=1)
 def get_provider() -> ChatProvider:
-    """Return the process-wide model provider."""
+    """Return the process-wide model provider (TE_LLM_PROVIDER)."""
+    if get_settings().llm_provider == "openai_compatible":
+        return OpenAICompatibleProvider()
     return AnthropicProvider()
 
 
@@ -354,8 +358,11 @@ async def get_session(session_id: str, principal: CurrentUser) -> SessionOut:
 ## --- One chat turn --------------------------------------------------------------------------
 def _load_turn(
     principal: Principal, session_id: str
-) -> tuple[list[dict[str, Any]], PendingCalls | None, int]:
-    """Load history, pending calls and tokens used (raises NotFound if not owned).
+) -> tuple[list[dict[str, Any]], PendingCalls | None, int, str]:
+    """Load history, pending calls, tokens used and a platform note (raises NotFound if not owned).
+
+    The note (agent/notes.py) is non-empty when the designer saved the design
+    in the form since the last message.
 
     Loading BEFORE the stream starts also proves the session belongs to this
     user before any model call is paid for.
@@ -372,7 +379,9 @@ def _load_turn(
         ]
         pending_raw = repo.get_pending_tool_calls(session_id)
         pending = PendingCalls(**pending_raw) if pending_raw else None
-        return history, pending, repo.tokens_used(session_id)
+        from_form = repo.spec_from_form_unseen(session_id)
+        note = spec_from_form_note(from_form) if from_form else ""
+        return history, pending, repo.tokens_used(session_id), note
 
 
 def _facts_loader(principal: Principal, session_id: str) -> Callable[[], Awaitable[SessionFacts]]:
@@ -468,7 +477,9 @@ async def post_message(
     provider: Annotated[ChatProvider, Depends(get_provider)],
 ) -> StreamingResponse:
     """Run one turn and stream its events as text/event-stream."""
-    history, pending, used = await anyio.to_thread.run_sync(_load_turn, principal, session_id)
+    history, pending, used, note = await anyio.to_thread.run_sync(
+        _load_turn, principal, session_id
+    )
     if body.form_answers:
         # Checked against the forms WE stored, before any model call is paid for.
         open_forms = {
@@ -503,7 +514,7 @@ async def post_message(
                     tokens_used_so_far=used,
                     load_slots=_slots_loader(principal, session_id),
                 )
-                inp = TurnInput(body.text, body.confirmations, body.form_answers)
+                inp = TurnInput(body.text, body.confirmations, body.form_answers, note)
                 async for event in loop.run_turn(inp, pending, history):
                     yield to_sse(event)
         except ProviderError as exc:

@@ -240,6 +240,20 @@ class Settings(BaseSettings):
     agent_max_tokens: int = 64_000
     agent_enable_refusal_fallback: bool = False
 
+    ## Which model API the agent uses: "anthropic" (above) or
+    ## "openai_compatible", a server speaking the OpenAI chat completions
+    ## protocol (agent/providers/openai_compatible.py), e.g. the department's
+    ## Open WebUI. llm_base_url: that server's API root (requests go to
+    ## {llm_base_url}/chat/completions). llm_api_key: its key, a secret file
+    ## (compose.yml maps secrets/te_utopia_api_key to te_llm_api_key). With
+    ## that provider agent_model names one of the server's models and
+    ## agent_max_tokens must fit the model's limit.
+    llm_provider: str = pydantic.Field(
+        default="anthropic", pattern="^(anthropic|openai_compatible)$",
+    )
+    llm_base_url: str = "https://utopia.hpc4ai.unito.it/api"
+    llm_api_key: pydantic.SecretStr | None = None
+
     ## Guide 8.4 (agent loop and MCP bridge): per-turn and per-session
     ## limits (architecture §3.4), where the agent reaches the MCP server
     ## (internal Docker network), and the agent's own API key for it (a

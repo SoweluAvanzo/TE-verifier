@@ -180,6 +180,7 @@ import argparse
 import asyncio
 import json
 import os
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -190,7 +191,7 @@ import httpx2 as httpx
 import yaml
 
 from evals.metrics import RunRecord, ToolCallRecord, summarise
-from evals.simulated_designer import SimulatedDesigner
+from evals.simulated_designer import SimulatedDesigner, answer_forms, correct_forms
 
 ## Paths are relative to the repository root (run from there).
 EXAMPLES = Path("examples")
@@ -199,12 +200,21 @@ SCENARIOS = Path("evals/scenarios/tool_selection.yaml")
 ## Safety net: an interview that has not finished after this many user turns
 ## counts as failed (and stops spending credits).
 MAX_TURNS = 40
+REPORT_TURNS = 8  # turns allowed after the interview to get the report written
 ## Verdict statuses that call for a simulation (with structural_status
 ## "fragile"), as in evals/metrics.py missed_simulations().
 NEEDS_SIMULATION = {"inconclusive"}
 
 
 ## --- A tiny client for the agent service ------------------------------------------------------
+class FormRejected(Exception):
+    """The agent refused the form answers (HTTP 422, agent/forms.py)."""
+
+    def __init__(self, detail: dict[str, Any]) -> None:
+        super().__init__(str(detail))
+        self.detail = detail
+
+
 class AgentClient:
     """Logs in once, then plays the role of the chat page."""
 
@@ -242,7 +252,14 @@ class AgentClient:
             ).raise_for_status()
         return sid
 
-    async def turn(self, sid: str, text: str, *, approve: bool | None = True) -> dict[str, Any]:
+    async def turn(
+        self,
+        sid: str,
+        text: str,
+        *,
+        approve: bool | None = True,
+        form_answers: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Send one user message; read the event stream until `done`.
 
         Expensive tools ask for confirmation first (confirmation_required).
@@ -257,11 +274,19 @@ class AgentClient:
             "done": None,
             "declined": [],
             "tokens": 0,
+            "forms": {},  # tool_use_id -> form, for form_requested events
+            "seconds": 0.0,  # wall-clock time until `done`, confirmations included
         }
         body: dict[str, Any] = {"text": text}
+        if form_answers:
+            body["form_answers"] = form_answers
+        started = time.monotonic()
         while True:
             to_confirm: dict[str, str] = {}  # tool_use_id -> tool id
             async with self.http.stream("POST", f"/agent/sessions/{sid}/messages", json=body) as r:
+                if r.status_code == 422:  # noqa: PLR2004 - form answers refused
+                    await r.aread()
+                    raise FormRejected(r.json().get("detail", {}))
                 r.raise_for_status()
                 async for event in _sse_events(r):
                     kind = event.get("type")
@@ -279,6 +304,8 @@ class AgentClient:
                         out["verdicts"] = event["verdicts"]
                     elif kind == "confirmation_required":
                         to_confirm[event["tool_use_id"]] = event["tool"]
+                    elif kind == "form_requested":
+                        out["forms"][event["tool_use_id"]] = event["form"]
                     elif kind == "done":
                         out["done"] = event["reason"]
                         out["tokens"] += sum(event.get("usage", {}).values())
@@ -287,6 +314,7 @@ class AgentClient:
                     out["declined"] += list(to_confirm.values())
                 body = {"text": "", "confirmations": dict.fromkeys(to_confirm, approve)}
                 continue
+            out["seconds"] = time.monotonic() - started
             return out
 
     async def session(self, sid: str) -> dict[str, Any]:
@@ -297,6 +325,9 @@ class AgentClient:
 
     async def spec(self, sid: str) -> dict[str, Any] | None:
         r = await self.http.get(f"/agent/sessions/{sid}/spec")
+        if r.status_code >= 500:  # noqa: PLR2004 - seen once, transient: retry once
+            await asyncio.sleep(5)
+            r = await self.http.get(f"/agent/sessions/{sid}/spec")
         r.raise_for_status()
         text = r.json().get("yaml")
         return yaml.safe_load(text) if text else None
@@ -338,6 +369,49 @@ def _record_turn(record: RunRecord, turn: dict[str, Any]) -> None:
                 record.declined_simulation_fms.append(v["failure_mode"])
 
 
+def _said(turn: dict[str, Any]) -> str:
+    """The interviewer's words for the designer (an empty turn still needs a reply)."""
+    return turn["text"].strip() or "(The interviewer sent an empty message.)"
+
+
+async def _send(
+    client: AgentClient,
+    designer: SimulatedDesigner,
+    sid: str,
+    message: str,
+    forms_seen: dict[str, Any],
+    stats: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Send the designer's next input: its form answers if forms are open, else its text.
+
+    Returns the agent's turn, or None when the designer refused. Answers the
+    page refuses are corrected by the designer, at most twice, as a person
+    would after the error message. If no valid answers come out of that, the
+    designer carries on in words (counted as a form fallback).
+    """
+    if not forms_seen:
+        return await client.turn(sid, message, approve=designer.approves_expensive_tools)
+    answers = await answer_forms(designer, message, forms_seen)
+    for _ in range(3):
+        if answers is None:
+            break
+        try:
+            return await client.turn(
+                sid, "", approve=designer.approves_expensive_tools, form_answers=answers
+            )
+        except FormRejected as exc:
+            stats["form_rejections"] += 1
+            answers = await correct_forms(designer, exc.detail)
+    if designer.refused:
+        return None
+    # Still refused: carry on in words, as a person would give up on the form.
+    stats["form_fallbacks"] += 1
+    return await client.turn(
+        sid, "I could not fill in the form; please ask me in words.",
+        approve=designer.approves_expensive_tools,
+    )
+
+
 async def run_case(client: AgentClient, case: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Returns (metrics, transcript)."""
     designer = SimulatedDesigner(PERSONAS / f"{case}.yaml", EXAMPLES / f"{case}.yaml")
@@ -349,31 +423,86 @@ async def run_case(client: AgentClient, case: str) -> tuple[dict[str, Any], list
         hidden_spec=yaml.safe_load((EXAMPLES / f"{case}.yaml").read_text()),
         user_turns=0,
     )
+    stats: dict[str, Any] = {
+        "form_rejections": 0,
+        "form_fallbacks": 0,
+        "forms": 0,
+        "seconds": [],
+        "tool_errors": 0,
+    }
+
+    async def step(message: str, forms: dict[str, Any]) -> dict[str, Any] | None:
+        record.user_turns += 1
+        turn = await _send(client, designer, sid, message, forms, stats)
+        if turn is None:
+            record.designer_refused = True
+            return None
+        stats["seconds"].append(turn["seconds"])
+        stats["forms"] += len(turn["forms"])
+        stats["tool_errors"] += sum(1 for t in turn["tools"] if not t["ok"])
+        transcript.append({
+            "user": "(form answers)" if forms else message,
+            "agent": turn["text"],
+            "forms": turn["forms"],
+            "tools": turn["tools"],
+            "seconds": round(turn["seconds"], 1),
+            "done": turn["done"],
+        })
+        _record_turn(record, turn)
+        return turn
 
     # The designer opens the conversation, as a real user would.
-    user_msg = await designer.answer(
+    opening = await designer.answer(
         "Hello! I'd like help designing a token economy. Please introduce yourself briefly."
     )
-    for _ in range(MAX_TURNS):
-        if user_msg is None:  # the designer refused (simulated_designer.py)
-            record.designer_refused = True
+    turn = await step(opening, {}) if opening is not None else None
+    for _ in range(MAX_TURNS - 1):
+        if turn is None:
             break
-        record.user_turns += 1
-        turn = await client.turn(sid, user_msg, approve=designer.approves_expensive_tools)
-        transcript.append({"user": user_msg, "agent": turn["text"], "tools": turn["tools"]})
-        _record_turn(record, turn)
         state = (await client.session(sid))["state"]
         if state in {"verified", "simulated", "reported"} and turn["done"] == "final_answer":
             break
-        user_msg = await designer.answer(turn["text"])
+        reply = turn["text"] if turn["forms"] else await designer.answer(_said(turn))
+        if reply is None:
+            record.designer_refused = True
+            break
+        turn = await step(reply, turn["forms"])
+    interview_turns = record.user_turns
 
+    # Then the report, which tests explanations, simulations and the number check.
+    message: str | None = "Thank you. Please run what you recommend and write the final report."
+    forms: dict[str, Any] = {}
+    for _ in range(REPORT_TURNS):
+        if turn is None or message is None or (await client.session(sid))["state"] == "reported":
+            break
+        turn = await step(message, forms)
+        if turn is None:
+            break
+        forms = turn["forms"]
+        message = turn["text"] if forms else await designer.answer(_said(turn))
+
+    session = await client.session(sid)
     record.elicited_spec = await client.spec(sid)
-    record.open_decisive_slots = (await client.session(sid))["open_decisive_slots"]
+    record.open_decisive_slots = session["open_decisive_slots"]
     record.designer_tokens = designer.usage_input_tokens + designer.usage_output_tokens
-    return summarise(record), transcript
+    metrics = summarise(record)
+    seconds = stats["seconds"]
+    metrics.update({
+        "interview_turns": interview_turns,
+        "final_state": session["state"],
+        "reported": session["state"] == "reported",
+        "forms_shown": stats["forms"],
+        "form_rejections": stats["form_rejections"],
+        "form_fallbacks": stats["form_fallbacks"],
+        "tool_errors": stats["tool_errors"],
+        "agent_seconds_total": round(sum(seconds), 1),
+        "agent_seconds_mean_turn": round(sum(seconds) / len(seconds), 1) if seconds else None,
+        "agent_seconds_max_turn": round(max(seconds), 1) if seconds else None,
+        "session_id": sid,
+    })
+    return metrics, transcript
 
 
-## --- The entry point -------------------------------------------------------------------------------
 def main() -> None:
     p = argparse.ArgumentParser(prog="evals.run")
     p.add_argument("--cases", nargs="*", default=[f.stem for f in PERSONAS.glob("*.yaml")])
@@ -419,11 +548,24 @@ async def run_scenarios(client: AgentClient) -> list[dict[str, Any]]:
     for sc in yaml.safe_load(SCENARIOS.read_text())["scenarios"]:
         spec_yaml = Path(sc["spec"]).read_text() if sc.get("spec") else None
         sid = await client.new_session(spec_yaml)
+        # The agent is not told when a spec arrives from the form (only the
+        # session stores it), so the user says it, as after "Open in form".
+        loaded = "My design is already loaded in this session (I filled it in with the form). "
+        user = sc["user"]
         if sc.get("preverified"):
-            # Setup turn, NOT scored: bring the session to `verified`.
-            await client.turn(sid, "Please verify this design.")
-        turn = await client.turn(sid, sc["user"], approve=None)
+            # Setup turns, NOT scored: bring the session to `verified`. A
+            # model may stop after validating, so ask again (at most twice).
+            setup = loaded + "Please verify this design."
+            for _ in range(3):
+                await client.turn(sid, setup)
+                if (await client.session(sid))["state"] in {"verified", "simulated", "reported"}:
+                    break
+                setup = "Please run the verification (verify.run.v1) on the loaded design now."
+        elif spec_yaml is not None:
+            user = loaded + user
+        turn = await client.turn(sid, user, approve=None)
         called = [t["tool"] for t in turn["tools"]]
+        seconds = round(turn["seconds"], 1)
         it = iter(called)
         in_order = all(any(c == e for c in it) for e in sc["expect"])
         forbidden = sorted(set(called) & set(sc.get("forbid", [])))
@@ -433,6 +575,8 @@ async def run_scenarios(client: AgentClient) -> list[dict[str, Any]]:
                 "called": called,
                 "passed": in_order and not forbidden,
                 "forbidden_called": forbidden,
+                "seconds": seconds,
+                "reply": turn["text"][:2000],
             }
         )
     return results
