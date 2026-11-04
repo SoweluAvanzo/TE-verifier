@@ -899,6 +899,30 @@ def test_point_answer_becomes_point_range():
     assert spec["participants"]["count_N"] == {"min": 50.0, "max": 50.0}
 
 
+## Some models send numbers and ranges as JSON text ("10", '{"min": 20, "max": 300}');
+## found in a live interview, where every such answer was refused until the
+## agent ran out of turns. They are read as the data they spell.
+@pytest.mark.parametrize(
+    ("answer_type", "value", "expected"),
+    [
+        ("range", '{"min": 20.0, "max": 300.0}', {"min": 20.0, "max": 300.0}),
+        ("range", 10, {"min": 10.0, "max": 10.0}),  # one number = a point range
+        ("range", "10", {"min": 10.0, "max": 10.0}),
+        ("number", "50", {"min": 50.0, "max": 50.0}),
+    ],
+)
+def test_values_sent_as_json_text_are_read(answer_type, value, expected):
+    spec = apply_answer({}, _slot(answer_type=answer_type), value, "committed")
+    assert spec["participants"]["count_N"] == expected
+
+
+def test_unreadable_values_are_refused_with_what_was_received():
+    with pytest.raises(InvalidInput, match="got 'twenty'"):
+        apply_answer({}, _slot(), "twenty", "committed")
+    with pytest.raises(InvalidInput, match="got 'many'"):
+        apply_answer({}, _slot(answer_type="number"), "many", "committed")
+
+
 ## Phase 7.4
 def test_unknown_becomes_swept_range():
     spec = apply_answer({}, _slot(), None, "unknown")

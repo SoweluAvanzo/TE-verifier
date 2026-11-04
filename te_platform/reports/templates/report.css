@@ -1,0 +1,122 @@
+/* NOTE: =============================================================================
+   te_platform/reports/templates/report.css — print styles for the PDF
+   =============================================================================
+   GUIDE STEP   10.1
+   PURPOSE      CSS for PAGED media: page size and margins, running headers
+                and footers with page numbers, no tables split awkwardly
+                across pages. WeasyPrint implements these CSS paged-media
+                features (@page, counter(page), break-inside).
+   USED BY      templates/report.html (<link rel="stylesheet" href="report.css">),
+                resolved through base_url in reports/render.py.
+   DEPENDS ON   Nothing else; fonts are system fonts installed in the image.
+   WHY          D14: layout lives in CSS, data in the template, logic in
+                Python — each easy to change without touching the others.
+   ACTIVATE     Delete the two marker lines (the opening and closing lines
+                containing the word CODE) after review. The markers cannot be
+                quoted here: a closing comment marker would end this comment.
+   ============================================================================= */
+
+/* TO-DO LIST: build this stylesheet yourself, step by step
+   Write your rules between this list and the SOLUTION marker below. Do the
+   steps in order. Lines starting with "|" are short illustrations, not the
+   full rules. Keep the class names exactly: report.html uses them.
+
+   Guide 10.1
+   [ ] 1. The @page rule: size A4, the margins, and two page-margin boxes,
+          a running title at top right and the page numbers at bottom
+          center:
+            | @bottom-center { content: "Page " counter(page)
+            |                  " of " counter(pages); }
+          Then a second @page :first rule that removes the top-right title
+          on the cover.
+   [ ] 2. Base text: body font "DejaVu Sans" (installed in the image), size
+          and line height; heading sizes; h2, h3, h4 with
+          break-after: avoid; .cover with break-after: page.
+   [ ] 3. Tables: collapsed borders, full width, cell padding; thead as
+          table-header-group (repeats on each page); tr, article.fm and
+          .chart with break-inside: avoid.
+   [ ] 4. Verdict colours: .status-fail, .status-inconclusive, and
+          .status-pass with .status-pass_as_intended (background of td).
+   [ ] 5. Code: pre and code in "DejaVu Sans Mono"; pre wraps lines.
+   [ ] 6. .narrative with a left border, .ai-label in italics, and
+          .chart svg scaled to the page width.
+   [ ] 7. Check: render a report (golden test of test_platform_reports.py,
+          section 2) and look at the PDF: page numbers, no split rows.
+            | uv run pytest tests/platform_tests/test_platform_reports.py -q
+
+   Stuck, or want to compare? The SOLUTION below is the complete reference
+   stylesheet. Use it only if you decide to keep it as it is. */
+
+/* SOLUTION: complete reference rules (commented out on purpose) */
+
+/* NOTE: @page sets the paper. `@top-right` / `@bottom-center` are page-margin
+   boxes: text placed there repeats on every page. counter(page) and
+   counter(pages) are the current page number and the total. */
+
+@page {
+  size: A4;
+  margin: 22mm 18mm 20mm 18mm;
+  @top-right { content: "Token economy report"; font-size: 8pt; color: #666; }
+  @bottom-center { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #666; }
+}
+@page :first {
+  @top-right { content: none; }
+}
+
+body { font-family: "DejaVu Sans", sans-serif; font-size: 10pt; line-height: 1.4; color: #111; }
+h1 { font-size: 20pt; margin-top: 30mm; }
+h2 { font-size: 14pt; border-bottom: 1px solid #ccc; padding-bottom: 2pt; }
+h2, h3, h4 { break-after: avoid; }
+section { margin-bottom: 8mm; }
+.cover { break-after: page; }
+
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ccc; padding: 3pt 5pt; text-align: left; vertical-align: top; }
+thead { display: table-header-group; }
+tr, article.fm, .chart { break-inside: avoid; }
+
+.status-fail td { background: #fde8e8; }
+.status-inconclusive td { background: #fff6dd; }
+.status-pass td, .status-pass_as_intended td { background: #e9f7ee; }
+
+pre, code { font-family: "DejaVu Sans Mono", monospace; font-size: 8.5pt; }
+pre { white-space: pre-wrap; background: #f6f6f6; padding: 4pt; }
+
+.narrative { border-left: 3px solid #8888cc; padding-left: 6mm; }
+.ai-label { font-style: italic; color: #555; }
+.chart svg { max-width: 100%; height: auto; }
+
+/* Design-document extension: the designer's words, the inputs table, notes. */
+blockquote.designer { margin: 0 0 4mm 0; padding: 3mm 5mm; background: #f4f6fa;
+  border-left: 3px solid #2d5c9a; font-style: italic; white-space: pre-wrap; }
+.note { font-size: 8.5pt; color: #555; }
+table.inputs td, table.rules td { font-size: 8.5pt; }
+.src-estimated td { background: #fbf8ec; }
+.src-unknown td { background: #f3f3f3; color: #555; }
+.appendix { break-before: page; }
+.chart.flow svg { width: 100%; }
+
+/* Figures, captions, glossary, models, experiments. */
+figure.fig { margin: 4mm 0; break-inside: avoid; }
+.fig-title { font-weight: bold; margin-bottom: 1mm; }
+figcaption p { font-size: 8.5pt; margin: 1mm 0; }
+figcaption .ai { color: #333; border-left: 3px solid #8888cc; padding-left: 3mm; }
+table caption { caption-side: top; text-align: left; font-size: 8.5pt; color: #444; padding-bottom: 1mm; }
+.terms dt { font-weight: bold; margin-top: 2mm; }
+.terms dd { margin: 0 0 0 5mm; }
+article.model { break-inside: avoid; margin-bottom: 4mm; }
+table.symbols td { font-size: 8.5pt; }
+.experiment { margin-top: 6mm; }
+.cell-fail { background: #fde8e8; }
+.cell-pass, .cell-pass_as_intended { background: #e9f7ee; }
+.cell-inconclusive { background: #fff6dd; }
+.path { font-family: "DejaVu Sans Mono", monospace; font-size: 7pt; color: #777; }
+
+/* Readable report: the overall answer, the glance table, one block per question. */
+.overall { font-size: 13pt; font-weight: bold; padding: 3mm 4mm; border-radius: 2mm; }
+.overall-fail { background: #fde8e8; }
+.overall-ok { background: #e9f7ee; }
+.need { font-style: italic; color: #333; }
+article.question { break-inside: avoid; margin: 3mm 0 5mm; }
+table.result td, table.glance td { font-size: 9pt; }
+.appendix h4 { font-size: 10pt; }

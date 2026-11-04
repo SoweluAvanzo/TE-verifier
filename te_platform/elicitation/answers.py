@@ -99,6 +99,7 @@
 ## =============================================================================
 
 import copy
+import json
 import typing
 from functools import cache
 from typing import Any, Literal
@@ -135,16 +136,46 @@ def _check(slot: Slot, value: Any, ir_path: str | None = None) -> Any:
     return value
 
 
+def _decoded(value: Any) -> Any:
+    """Return a value some models send as JSON text ('{"min": 1, "max": 2}', '10') as data.
+
+    Only for number and range slots, where a string is never a valid answer;
+    text slots keep their strings as they are.
+    """
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
 def _number(value: Any) -> float:
     """Read one number (bool is refused: True is not 1 here)."""
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise InvalidInput("Give a number.")
+        raise InvalidInput(f"Give a number (a JSON number, not text); got {value!r}.")
     return float(value)
+
+
+def _range(value: Any) -> dict[str, float]:
+    """Read a {"min", "max"} range; a single number is the point range at that value."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        value = {"min": value, "max": value}  # a known value is a point range
+    if not isinstance(value, dict) or not {"min", "max"} <= value.keys():
+        raise InvalidInput(
+            f'Give a range as a JSON object {{"min": ..., "max": ...}}; got {value!r}.'
+        )
+    lo, hi = _number(value["min"]), _number(value["max"])
+    if lo > hi:
+        raise InvalidInput("The lower bound is above the upper bound.")
+    return {"min": lo, "max": hi}
 
 
 def _shaped(slot: Slot, value: Any) -> Any:
     """Shape one answer for the slot's field (header, SHAPES)."""
     target = strip_optional(field_type(slot.ir_path))
+    if slot.answer_type in {"number", "range"}:
+        value = _decoded(value)
     if slot.answer_type == "number":
         v = _number(value)
         if target is NumberRange:
@@ -155,12 +186,7 @@ def _shaped(slot: Slot, value: Any) -> Any:
             return int(v)
         return v
     if slot.answer_type == "range":
-        if not isinstance(value, dict) or not {"min", "max"} <= value.keys():
-            raise InvalidInput('Give a range as {"min": ..., "max": ...}.')
-        lo, hi = _number(value["min"]), _number(value["max"])
-        if lo > hi:
-            raise InvalidInput("The lower bound is above the upper bound.")
-        return {"min": lo, "max": hi}
+        return _range(value)
     if slot.answer_type == "enum":
         chosen = value if isinstance(value, list) else [value]
         wrong = [c for c in chosen if c not in slot.choices]

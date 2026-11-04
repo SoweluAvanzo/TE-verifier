@@ -235,7 +235,11 @@ def test_args_for_simulation_restrict_to_undecided_failure_modes(principal):
 
 def test_args_for_literature(principal):
     c = ctx(principal, result=VERDICTS)
-    assert "FM5" in P.ARGS_FROM["failed_failure_mode_topics"](c)["query"]
+    assert P.ARGS_FROM["failed_failure_mode_topics"](c) == {
+        "query": "critical mass participants adoption",
+        "failure_mode": "FM5",
+        "kind": "remedy",
+    }
 
 
 ## Suggested arguments must be valid input for the suggested tool, or the

@@ -276,8 +276,27 @@ def inconclusive_or_fragile_failure_modes(ctx: CallContext) -> dict[str, Any]:
     return {"failure_modes": fms, "verification_ref": (ctx.result or {}).get("verification_ref")}
 
 
+# The words the literature uses for each failure mode: the ids ("FM5") never
+# appear in papers, so the query is made of these words, and the passages'
+# labels (literature/enrich.py) narrow it to the failure mode and to remedies.
+FAILURE_MODE_WORDS = {
+    "FM1": "token oversupply inflation emission",
+    "FM2": "velocity holding time spending circulation",
+    "FM3": "burn emission imbalance sink",
+    "FM4": "free riding contribution cooperation sanctions",
+    "FM5": "critical mass participants adoption",
+    "FM6": "governance capture concentration voting power",
+}
+
+
 @args_from("failed_failure_mode_topics")
 def failed_failure_mode_topics(ctx: CallContext) -> dict[str, Any]:
-    """Build lit.search.v1 arguments: a query about the failing failure modes."""
+    """Build lit.search.v1 arguments: remedies for the first failing failure mode.
+
+    lit.search.v1 filters on one failure mode; the model searches again for
+    any other failing one (system prompt, "Use the literature at three moments").
+    """
     fms = sorted({v["failure_mode"] for v in _verdicts(ctx) if v.get("status") == "fail"})
-    return {"query": " ".join(fms) + " remedies token economy design"}
+    if not fms or fms[0] not in FAILURE_MODE_WORDS:
+        return {"query": " ".join(fms) + " remedies token economy design"}
+    return {"query": FAILURE_MODE_WORDS[fms[0]], "failure_mode": fms[0], "kind": "remedy"}

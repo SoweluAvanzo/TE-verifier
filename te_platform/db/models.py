@@ -117,8 +117,9 @@
 from datetime import datetime
 from typing import Any, ClassVar
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, false, func, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, Text, false, func, text
+from sqlalchemy import text as sql_text  # `text` is also a Chunk column name
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 ## Phase 11.2: the type of the generated search column of `chunks`.
 from sqlalchemy.dialects.postgresql.types import TSVECTOR
@@ -403,16 +404,46 @@ class Chunk(Base):
     page: Mapped[int | None]
     text: Mapped[str] = mapped_column(Text)
 
-    ## Phase 11.2: a GENERATED column. PostgreSQL computes it from `text`
-    ## on every insert or update, so it can never be out of date.
+    ## Labels written once per passage by `te-platform lit enrich`
+    ## (literature/enrich.py; migration c3f1a8d26e57): one sentence placing
+    ## the passage in its paper, the failure modes ("FM1".."FM6") and
+    ## parameters it informs, and the kind of content. enriched_by is the
+    ## model that wrote them; NULL = not labelled yet.
+    context: Mapped[str] = mapped_column(Text, default="", server_default="")
+    failure_modes: Mapped[list[str]] = mapped_column(
+        ARRAY(String(8)), default=list, server_default=sql_text("'{}'::varchar[]")
+    )
+    parameters: Mapped[list[str]] = mapped_column(
+        ARRAY(String(32)), default=list, server_default=sql_text("'{}'::varchar[]")
+    )
+    kind: Mapped[str | None] = mapped_column(String(32))
+    enriched_by: Mapped[str | None] = mapped_column(String(128))
+
+    ## A meaning vector written by `te-platform lit embed` (literature/embed.py;
+    ## migration 5e2b9d0c4a17): float32 bytes, and the model that made it
+    ## (vectors of different models are never compared).
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary)
+    embedding_model: Mapped[str | None] = mapped_column(String(128), index=True)
+
+    ## Phase 11.2: a GENERATED column. PostgreSQL computes it on every
+    ## insert or update, so it can never be out of date. It covers the
+    ## section heading, the context sentence and the passage, so a passage
+    ## is also found by what its context says it is about.
     ## to_tsvector('english', ...) reduces words to stems ("tokens" ->
     ## "token") and drops stop words; persisted=True stores it (needed to
     ## index it). The GIN index makes "which rows contain these words?"
     ## fast instead of a scan of every chunk.
     tsv: Mapped[Any] = mapped_column(
-        TSVECTOR, Computed("to_tsvector('english', text)", persisted=True)
+        TSVECTOR,
+        Computed(
+            "to_tsvector('english', section || ' ' || context || ' ' || text)", persisted=True
+        ),
     )
-    __table_args__ = (Index("ix_chunks_tsv", "tsv", postgresql_using="gin"),)
+    __table_args__ = (
+        Index("ix_chunks_tsv", "tsv", postgresql_using="gin"),
+        Index("ix_chunks_failure_modes", "failure_modes", postgresql_using="gin"),
+        Index("ix_chunks_parameters", "parameters", postgresql_using="gin"),
+    )
 
     ## Phase 11.3 (only if keyword search is not good enough): an embedding
     ## column from pgvector, e.g.

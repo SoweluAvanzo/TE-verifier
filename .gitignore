@@ -41,8 +41,8 @@ Thumbs.db
 CLAUDE.md
 Roadmap Simulatore Irene.docx
 Six_Failure_Modes__A_Pre_Deployment_Diagnostic_Framework_for_Tokenized_Collaborative_Economies.pdf
-literature/
-reports/
+/literature/
+/reports/
 docs/agent-implementation-guide.md
 docs/operations.md
 docs/adr/

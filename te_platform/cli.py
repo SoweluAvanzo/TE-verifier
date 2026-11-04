@@ -118,12 +118,15 @@
 ## =============================================================================
 
 import argparse
+import asyncio
+import json
 
 ## Guide 11.1: Path objects for `lit ingest`.
 import pathlib
 import sys
 
 ## Guide 5.4: the database commands.
+from te_platform.config import get_settings
 from te_platform.db.repo import AuthRepository
 from te_platform.db.session import session_scope
 from te_platform.security import api_keys
@@ -194,6 +197,37 @@ def _lit_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+## --- lit enrich ----------------------------------------------------------------------
+## A context sentence and labels for every passage not labelled yet
+## (literature/enrich.py). Imported here, not at the top: it needs httpx2
+## (extra "agent"), which `lit ingest` does not.
+def _lit_enrich(args: argparse.Namespace) -> int:
+    from .literature.enrich import enrich  # noqa: PLC0415 (needs the "agent" extra)
+
+    stats = asyncio.run(
+        enrich(
+            model=args.model or get_settings().agent_model,
+            base_url=args.base_url,
+            batch_size=args.batch_size,
+            concurrency=args.concurrency,
+            limit=args.limit,
+            citation_key=args.work,
+            extra=json.loads(args.extra) if args.extra else None,
+        )
+    )
+    print(f"labelled={stats.labelled} failed={stats.failed} calls={stats.calls}")
+    return 0 if stats.failed == 0 else 1
+
+
+## --- lit embed -----------------------------------------------------------------------
+## A meaning vector for every passage without one (literature/embed.py).
+def _lit_embed(args: argparse.Namespace) -> int:
+    from .literature.embed import embed_missing  # noqa: PLC0415 (loads the model)
+
+    print(f"embedded={embed_missing(limit=args.limit)}")
+    return 0
+
+
 ## --- Parser ------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -243,6 +277,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="only if the licence allows storing and quoting the full text",
     )
     ingest.set_defaults(func=_lit_ingest)
+    enrich = lit.add_parser("enrich", help="label the passages not labelled yet")
+    enrich.add_argument("--model", help="model id (default: TE_AGENT_MODEL)")
+    enrich.add_argument("--base-url", help="OpenAI-compatible API (default: TE_LLM_BASE_URL)")
+    enrich.add_argument("--batch-size", type=int, default=6, help="passages per call")
+    enrich.add_argument("--concurrency", type=int, default=4, help="calls at the same time")
+    enrich.add_argument("--limit", type=int, help="label at most this many passages")
+    enrich.add_argument("--work", help="only this citation key")
+    enrich.add_argument(
+        "--extra",
+        help='JSON merged into each request, e.g. \'{"chat_template_kwargs": '
+        '{"enable_thinking": false}}\'',
+    )
+    enrich.set_defaults(func=_lit_enrich)
+    embed = lit.add_parser("embed", help="store a meaning vector for passages without one")
+    embed.add_argument("--limit", type=int, help="embed at most this many passages")
+    embed.set_defaults(func=_lit_embed)
     return parser
 
 

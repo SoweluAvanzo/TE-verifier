@@ -405,7 +405,9 @@ async def test_suggestions_follow_the_policy_rules():
     reg = make_registry(BUILT, VerdictsOut, **{"verify.run.v1": verdicts_handler})
     out = await call(reg, "verify.run.v1", {"spec": BITCOIN}, make_ctx("verify.run.v1"))
     assert [s.tool for s in out.suggested_next] == ["lit.search.v1", "report.render_pdf.v1"]
-    assert "FM5" in out.suggested_next[0].args["query"]
+    # The search targets the failing mode: its words, its label, and remedies.
+    assert out.suggested_next[0].args["failure_mode"] == "FM5"
+    assert out.suggested_next[0].args["kind"] == "remedy"
     assert out.suggested_next[1].args == {}
 
 

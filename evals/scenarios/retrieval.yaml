@@ -1,0 +1,90 @@
+# Test set for literature search (evals/retrieval.py).
+#
+# Each question is phrased the way the agent queries lit.search.v1 at one of
+# the moments it needs research:
+#   interview   - estimating a parameter or choosing what to ask the designer
+#   check       - explaining a failed or fragile failure mode, finding remedies
+#   experiment  - deciding what to simulate and how to read the results
+#   report      - legal orientation and citations for the report
+# area: fm1..fm6 (the six failure modes), community (community currencies in
+# general), methods (modelling, simulation, elicitation), legal, framework
+# (the six-failure-mode framework itself).
+# relevant: the citation keys of the works that answer the question. An
+# empty list marks a gap: no work in the collection answers it yet.
+questions:
+  # ---------------------------------------------------------------- interview
+  - {id: int_timebank_members, moment: interview, area: fm5, query: "typical number of active members in a time bank", relevant: [ozanne2010time, seyfang2016diffusion, collom2012key, valor2016time]}
+  - {id: int_timebank_hours, moment: interview, area: fm4, query: "hours exchanged per member in a time bank", relevant: [ozanne2010time, collom2012key]}
+  - {id: int_active_share, moment: interview, area: fm5, query: "share of registered members who actually trade in a community currency", relevant: [collom2012key]}
+  - {id: int_sardex_size, moment: interview, area: community, query: "Sardex number of member businesses and transaction volume", relevant: [littera2017sardex]}
+  - {id: int_local_velocity, moment: interview, area: fm2, query: "how fast a local currency circulates compared with the national currency", relevant: [gelleri2009chiemgauer, delarosa2015velocity]}
+  - {id: int_wir_turnover, moment: interview, area: fm2, query: "WIR turnover counter-cyclical business cycle", relevant: [stodder2016macro]}
+  - {id: int_offers_variety, moment: interview, area: fm4, query: "number of different goods and services offered in an exchange network", relevant: []}
+  - {id: int_expert_estimate, moment: interview, area: methods, query: "how to elicit an uncertain quantity from experts", relevant: [epa2011expert]}
+  - {id: int_overconfidence, moment: interview, area: methods, query: "overconfidence and anchoring when people give estimates", relevant: [epa2011expert]}
+  - {id: int_ambiguity, moment: interview, area: methods, query: "ambiguity in requirements elicitation interviews", relevant: [ferrari2016ambiguity]}
+  - {id: int_holding_period, moment: interview, area: fm2, query: "typical holding period of crypto tokens", relevant: [campajola2022microvelocity]}
+  - {id: int_dao_turnout, moment: interview, area: fm6, query: "voter turnout in DAO governance proposals", relevant: [fritsch2022voting, feichtinger2023hidden]}
+  - {id: int_min_viable_size, moment: interview, area: fm5, query: "minimum number of participants for a community currency to be viable", relevant: [domenicale2026six]}
+  - {id: int_growth_rate, moment: interview, area: fm5, query: "membership growth of local currencies over time", relevant: [seyfang2016diffusion, seyfang2013growing, michel2015community]}
+  - {id: int_demand_per_member, moment: interview, area: fm4, query: "transactions per member per month in a mutual credit network", relevant: [collom2012key]}
+  - {id: int_it_timebank, moment: interview, area: fm5, lang: it, query: "quante persone partecipano a una banca del tempo", relevant: [ozanne2010time, it_l53_2000]}
+  - {id: int_fr_monnaie_locale, moment: interview, area: community, lang: fr, query: "monnaie locale complémentaire adhérents circulation", relevant: [tichit2019social, kanters2023physiology]}
+  - {id: int_platform_adoption, moment: interview, area: fm1, query: "token value depends on platform adoption and user base", relevant: [cong2020tokenomics, cong2022tokenbased]}
+  - {id: int_initial_distribution, moment: interview, area: fm6, query: "initial token distribution airdrop founders allocation", relevant: []}
+  # -------------------------------------------------------------------- check
+  - {id: chk_demurrage, moment: check, area: fm2, query: "demurrage to increase circulation of money", relevant: [godschalk2012demurrage, gritti2023generic, hayek2023lcoin, gelleri2009chiemgauer]}
+  - {id: chk_hoarding, moment: check, area: community, query: "tokens hoarded instead of spent velocity", relevant: [godschalk2012demurrage, campajola2022microvelocity, gelleri2009chiemgauer]}
+  - {id: chk_fast_spending, moment: check, area: fm2, query: "tokens spent immediately with no reason to hold them, velocity too high", relevant: [domenicale2026six, campajola2022microvelocity]}
+  - {id: chk_inflation, moment: check, area: fm1, query: "token inflation when emission exceeds demand", relevant: [domenicale2026six, fisher1911purchasing]}
+  - {id: chk_burn, moment: check, area: fm3, query: "burn mechanism to offset token emission", relevant: [roughgarden2020transaction, liu2022empirical, reijsbergen2021transaction, domenicale2026six, cong2022tokenbased]}
+  - {id: chk_fee_burn, moment: check, area: fm3, query: "transaction fee burning EIP-1559", relevant: [roughgarden2020transaction, liu2022empirical, reijsbergen2021transaction]}
+  - {id: chk_sanctions, moment: check, area: fm4, query: "graduated sanctions and monitoring in commons", relevant: [ostrom2009beyond, cox2010review, li2026mathematical]}
+  - {id: chk_freeride_exchange, moment: check, area: fm4, query: "free riding in community exchange systems", relevant: [littera2017sardex, schraven2001mutual]}
+  - {id: chk_crowding_out, moment: check, area: fm4, query: "monetary rewards crowd out intrinsic motivation of volunteers", relevant: [frey2001motivation, gneezy2000fine]}
+  - {id: chk_punishment, moment: check, area: fm4, query: "punishment sustains cooperation in public goods games", relevant: [fehr2000cooperation, fehr2002altruistic]}
+  - {id: chk_critical_mass, moment: check, area: fm5, query: "critical mass needed for adoption of a network", relevant: [centola2018experimental, domenicale2026six]}
+  - {id: chk_tipping, moment: check, area: fm5, query: "tipping point committed minority social convention", relevant: [centola2018experimental]}
+  - {id: chk_plutocracy, moment: check, area: fm6, query: "concentration of voting power in token governance", relevant: [fritsch2022voting, feichtinger2023hidden, barbereau2022defi, sun2024decentralization, axelsen2022when, austgen2023dao]}
+  - {id: chk_quadratic, moment: check, area: fm6, query: "quadratic voting", relevant: [buterin2019flexible, austgen2023dao, weidener2025delegated]}
+  - {id: chk_nakamoto, moment: check, area: fm6, query: "measuring decentralization Nakamoto coefficient", relevant: [axelsen2022when, sai2021taxonomy, gencer2018decentralization, kwon2019impossibility]}
+  - {id: chk_polycentric, moment: check, area: fm6, query: "polycentric governance design principles", relevant: [ostrom2009beyond, cox2010review]}
+  - {id: chk_credit_limits, moment: check, area: fm3, query: "credit limits on negative balances in mutual credit", relevant: [schraven2001mutual, littera2017sardex, greco2013scale]}
+  - {id: chk_staking_lock, moment: check, area: fm2, query: "locking tokens vote escrow to reduce selling", relevant: [lloyd2023emergent, cong2025tokenomics]}
+  - {id: chk_stablecoin_spiral, moment: check, area: fm1, query: "stablecoin collateral deleveraging spiral", relevant: [klagesmundt2021instability, gudgeon2020decentralized]}
+  - {id: chk_play_to_earn, moment: check, area: fm3, query: "play-to-earn game token inflation sinks", relevant: []}
+  - {id: chk_proof_behavior, moment: check, area: fm4, query: "token rewards for verified behaviour", relevant: [grollemund2021proof]}
+  - {id: chk_leakage, moment: check, area: community, query: "local currency leakage reconversion to national currency", relevant: [kanters2023physiology, kanters2024business]}
+  - {id: chk_business_model, moment: check, area: community, query: "business model and funding of local currency organisations", relevant: [kanters2024business]}
+  - {id: chk_it_demurrage, moment: check, area: fm2, lang: it, query: "moneta che perde valore nel tempo per incentivare la circolazione", relevant: [godschalk2012demurrage, gritti2023generic, gelleri2009chiemgauer]}
+  - {id: chk_fr_gouvernance, moment: check, area: fm6, lang: fr, query: "gouvernance d'une monnaie locale", relevant: []}
+  # --------------------------------------------------------------- experiment
+  - {id: exp_abm_validation, moment: experiment, area: methods, query: "empirical validation of agent-based models", relevant: [windrum2007empirical, collins2024methods, lamperti2018agent]}
+  - {id: exp_sensitivity, moment: experiment, area: methods, query: "sensitivity analysis method for an agent-based model", relevant: [tenbroeke2016which]}
+  - {id: exp_odd, moment: experiment, area: methods, query: "describing a simulation model ODD protocol", relevant: [grimm2020odd]}
+  - {id: exp_crypto_abm, moment: experiment, area: methods, query: "agent-based model of a cryptocurrency market", relevant: [cocco2016modeling, cocco2019agent]}
+  - {id: exp_monte_carlo, moment: experiment, area: methods, query: "propagating parameter uncertainty with Monte Carlo", relevant: [epa2011expert]}
+  - {id: exp_stress_test, moment: experiment, area: methods, query: "stress testing a token economy under shocks", relevant: [klagesmundt2021instability, gudgeon2020decentralized]}
+  - {id: exp_currency_abm, moment: experiment, area: methods, query: "simulation model of a complementary currency", relevant: []}
+  - {id: exp_formal, moment: experiment, area: methods, query: "formal verification of economic properties of DeFi protocols", relevant: [bartoletti2022theory, tolmach2021survey]}
+  - {id: exp_topology, moment: experiment, area: fm5, query: "network topology of a monetary system", relevant: [delandre2024topology]}
+  # ------------------------------------------------------------------- report
+  - {id: rep_mifid, moment: report, area: legal, query: "when a crypto-asset qualifies as a financial instrument", relevant: [esma2024qualification]}
+  - {id: rep_emt, moment: report, area: legal, query: "e-money token authorisation requirement", relevant: [mica2023]}
+  - {id: rep_limited_network, moment: report, area: legal, query: "limited network exclusion closed-loop vouchers", relevant: [psd2_2015]}
+  - {id: rep_casp_aml, moment: report, area: legal, query: "anti-money laundering obligations of crypto-asset service providers", relevant: [amlr2024, tfr2023]}
+  - {id: rep_travel_rule, moment: report, area: legal, query: "information accompanying transfers of crypto-assets", relevant: [tfr2023]}
+  - {id: rep_vat_barter, moment: report, area: legal, query: "VAT taxable amount of barter transactions", relevant: [vat2006]}
+  - {id: rep_it_timebank_law, moment: report, area: legal, lang: it, query: "banche dei tempi legge", relevant: [it_l53_2000]}
+  - {id: rep_it_credit_circuit, moment: report, area: legal, lang: it, query: "tracciabilità dei pagamenti circuito di credito commerciale", relevant: [ade2020risposta180]}
+  - {id: rep_howey, moment: report, area: legal, query: "investment contract analysis for crypto assets", relevant: [sec2026interpretation]}
+  - {id: rep_classification, moment: report, area: legal, query: "standardised test for classifying crypto-assets", relevant: [eba_esma2024classification]}
+  - {id: rep_emoney, moment: report, area: legal, query: "definition of electronic money", relevant: [emd2_2009]}
+  - {id: rep_art, moment: report, area: legal, query: "asset-referenced token white paper", relevant: [mica2023]}
+  - {id: rep_token_taxonomy, moment: report, area: methods, query: "taxonomy of blockchain token designs", relevant: [lesavre2021nist]}
+  - {id: rep_fr_legal, moment: report, area: legal, lang: fr, query: "cadre juridique des monnaies locales complémentaires", relevant: []}
+  # ---------------------------------------------------------------- framework
+  - {id: fw_six_fm, moment: report, area: framework, query: "pre-deployment diagnostic of failure modes of token economies", relevant: [domenicale2026six]}
+  - {id: fw_velocity_bound, moment: check, area: framework, query: "wealth-weighted holding time lower bound on velocity", relevant: [domenicale2026six]}
+  - {id: fw_critical_mass, moment: check, area: framework, query: "critical mass condition offer variety and demand", relevant: [domenicale2026six]}
+  - {id: fw_centralization, moment: check, area: framework, query: "centralization index unilateral decisions governance capture", relevant: [domenicale2026six]}

@@ -262,6 +262,27 @@ def test_ingest_stores_work_and_passages(ingested: Callable[..., tuple[str, str]
         assert "Graduated sanctions" in chunks[0].text
 
 
+## Some real PDFs have NUL characters in their text layer; PostgreSQL text
+## columns refuse them, so ingestion drops them instead of failing.
+@pytest.mark.db
+def test_nul_characters_in_the_text_layer_are_dropped(tmp_path: Path) -> None:
+    key = "test" + uuid4().hex[:12]
+    _make_pdf([["Free\x00riding in a commons, a passage long enough to be kept."]], tmp_path / "p.pdf")
+    (tmp_path / "p.bib").write_text(
+        f"@article{{{key},\n  title = {{Nul}},\n  author = {{Doe, Jane}},\n  year = {{2024}}\n}}\n",
+        encoding="utf-8",
+    )
+    work_id = ingest_pdf(tmp_path / "p.pdf", tmp_path / "p.bib", "CC-BY-4.0", full_text_allowed=True)
+    try:
+        with session_scope() as db:
+            texts = [c.text for c in db.query(m.Chunk).filter_by(work_id=work_id)]
+        assert texts == ["Freeriding in a commons, a passage long enough to be kept."]
+    finally:
+        with session_scope() as db:
+            db.query(m.Chunk).filter_by(work_id=work_id).delete()
+            db.query(m.Work).filter_by(id=work_id).delete()
+
+
 @pytest.mark.db
 def test_licence_without_full_text_keeps_only_the_abstract(
     ingested: Callable[..., tuple[str, str]],

@@ -73,12 +73,17 @@
 ## SOLUTION: complete reference code (commented out on purpose)
 ## =============================================================================
 
+from typing import Literal
+
 import anyio
 from pydantic import BaseModel, Field
 
 from te_platform.literature import search as lit
+from te_platform.literature.enrich import KINDS, PARAMETERS, Kind, Parameter
 from te_platform.registry.context import CallContext
 from te_platform.registry.spec import ToolSpec
+
+FailureMode = Literal["FM1", "FM2", "FM3", "FM4", "FM5", "FM6"]
 
 
 class LitSearchInput(BaseModel):
@@ -90,6 +95,21 @@ class LitSearchInput(BaseModel):
         description="What to look for, in plain words, e.g. 'graduated sanctions free riding'.",
     )
     limit: int = Field(default=5, ge=1, le=10, description="Maximum number of passages.")
+    failure_mode: FailureMode | None = Field(
+        default=None,
+        description="Only passages about this failure mode (FM1 oversupply, FM2 velocity "
+        "trap, FM3 burn/emission imbalance, FM4 free riding, FM5 critical mass, FM6 "
+        "governance capture).",
+    )
+    parameter: Parameter | None = Field(
+        default=None,
+        description="Only passages that inform this parameter: " + ", ".join(PARAMETERS) + ".",
+    )
+    kind: Kind | None = Field(
+        default=None,
+        description="Only this kind of passage: " + ", ".join(KINDS) + ". Use "
+        "'empirical_value' for typical numbers, 'remedy' for design fixes.",
+    )
 
 
 class LitHit(BaseModel):
@@ -101,6 +121,8 @@ class LitHit(BaseModel):
     year: int | None = None
     venue: str | None = None
     doi: str | None = None
+    page: int | None = None  # page where the passage starts: cite it as "p. N"
+    section: str = ""
     passage: str  # short excerpt; never a whole document
     score: float
 
@@ -109,6 +131,9 @@ class LitSearchOutput(BaseModel):
     """The passages found, best first."""
 
     hits: list[LitHit]
+    # False when the filters matched nothing and the passages come from the
+    # same search without them.
+    filters_applied: bool = True
     # Repeated in every result on purpose: the model sees the rule right next
     # to the data it applies to.
     note: str = (
@@ -121,10 +146,17 @@ class LitSearchOutput(BaseModel):
 ## context (the collection is public to every caller), hence the noqa.
 async def handle(inp: LitSearchInput, ctx: CallContext) -> LitSearchOutput:  # noqa: ARG001
     """Full-text search of the literature collection."""
+    filters = {"failure_mode": inp.failure_mode, "parameter": inp.parameter, "kind": inp.kind}
+    filtered = any(v is not None for v in filters.values())
     # literature.search opens a database session (synchronous SQLAlchemy),
     # so it runs in a thread.
-    hits = await anyio.to_thread.run_sync(lambda: lit.search(inp.query, limit=inp.limit))
-    return LitSearchOutput(hits=[LitHit(**h.model_dump()) for h in hits])
+    hits = await anyio.to_thread.run_sync(lambda: lit.search(inp.query, inp.limit, **filters))
+    applied = True
+    if filtered and not hits:
+        # Labels are coarse; rather than an empty answer, search without them.
+        hits = await anyio.to_thread.run_sync(lambda: lit.search(inp.query, inp.limit))
+        applied = False
+    return LitSearchOutput(hits=[LitHit(**h.model_dump()) for h in hits], filters_applied=applied)
 
 
 TOOL = ToolSpec(

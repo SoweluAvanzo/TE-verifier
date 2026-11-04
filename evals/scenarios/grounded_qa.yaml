@@ -1,0 +1,78 @@
+# Questions a designer might ask the agent, with facts a correct answer must
+# contain (evals/grounded_qa.py). Each fact is a regular expression (case
+# insensitive); every fact of a question must match the answer. Each gold
+# fact was checked against the source's text (page in the comment).
+# sources: the works whose passages establish the facts; an answer "cites a
+# source" when it names one of them by citation key or by author and year.
+questions:
+  - id: chiemgauer_demurrage
+    # gelleri2009chiemgauer: "2% per quarter or 8% per year"; velocity "three times greater than that of the Euro"
+    question: "We are thinking about a demurrage fee on our local currency. What rate did the Chiemgauer use, and what happened to how fast it circulated?"
+    facts: ['(2 ?%|2 per ?cent).{0,40}(quarter|three months)|8 ?%.{0,30}(year|annual)', 'three times|3 times|3x|tripl|threefold']
+    sources: [gelleri2009chiemgauer]
+  - id: committed_minority
+    # centola2018experimental p.1: "approximately 25% of the population, a tipping point"
+    question: "How large does a committed minority need to be to change an established habit or convention in a community?"
+    facts: ['2[5-9] ?%|25 per ?cent|a quarter of']
+    sources: [centola2018experimental]
+  - id: fines_backfire
+    # gneezy2000fine abstract: after the fine "the number of late-coming parents increased significantly"
+    question: "Would fining members who do not deliver the services they promised make them more reliable?"
+    facts: ['increas|rose|more (parents|people|members)|backfir|opposite|crowd']
+    sources: [gneezy2000fine, frey2001motivation]
+  - id: punishment_cooperation
+    # fehr2000cooperation abstract: "in the presence of a costly punishment opportunity almost complete cooperation can be achieved"
+    question: "Can members punishing free riders keep contributions to a shared project high over time?"
+    facts: ['punish']
+    sources: [fehr2000cooperation, fehr2002altruistic]
+  - id: microvelocity_wealth
+    # campajola2022microvelocity abstract: MicroVelocity "strongly correlates with agents' wealth"
+    question: "Does how fast a crypto token circulates depend on how wealthy its holders are?"
+    facts: ['wealth']
+    sources: [campajola2022microvelocity]
+  - id: dao_concentration
+    # fritsch2022voting conclusion: Compound and Uniswap governance "extremely centralized and controlled by a very small number of addresses"
+    question: "How concentrated is voting power in DAO governance such as Compound or Uniswap?"
+    facts: ['small number|few|concentrat|centrali']
+    sources: [fritsch2022voting, feichtinger2023hidden, sun2024decentralization]
+  - id: abm_sensitivity
+    # tenbroeke2016which abstract: extended OFAT, variance by model fitting, Sobol'
+    question: "Which sensitivity analysis method should we use for the agent-based simulation of our token economy?"
+    facts: ['OFAT|one.factor|Sobol|variance']
+    sources: [tenbroeke2016which]
+  - id: eth_burn
+    # roughgarden2020transaction abstract: "a burned base fee that rises and falls with demand"
+    question: "How does Ethereum burn tokens to offset new issuance?"
+    facts: ['base fee', 'burn']
+    sources: [roughgarden2020transaction, liu2022empirical, reijsbergen2021transaction]
+  - id: timebank_participation
+    # collom2012key Table 1: "Number of active members per quarter"
+    question: "How should we measure participation in our time bank?"
+    facts: ['active members|members who (are )?(providing|receiving|trad)', 'quarter|per month|per period|over time']
+    sources: [collom2012key]
+  - id: italian_timebank_law
+    # it_l53_2000: Legge 8 marzo 2000, n. 53, art. 27 (Banche dei tempi)
+    question: "In Italia esiste una legge che riconosce le banche del tempo?"
+    facts: ['53', '2000', '27']
+    sources: [it_l53_2000]
+  - id: mica_limited_network
+    # mica2023 Art. 4(3): offers of tokens accepted only within a limited network of merchants are exempt from Title II
+    question: "Our token can only be spent at shops in our neighbourhood network. Does the MiCA regulation apply to it?"
+    facts: ['limited network|rete limitata|network of merchants|limited range']
+    sources: [mica2023, psd2_2015, eba_esma2024classification]
+  - id: sardex
+    # littera2017sardex: B2B mutual credit circuit of Sardinian SMEs
+    question: "How does Sardex work?"
+    facts: ['mutual credit|credit clearing|credit circuit|B2B|business.to.business', 'Sardinia|SMEs|small and medium|businesses']
+    sources: [littera2017sardex]
+  - id: velocity_trap
+    # domenicale2026six §3.2: tokens have no reason to be held and are spent at once; the
+    # wealth-weighted holding time approaches one period (velocity too high, not hoarding)
+    question: "What is the velocity trap, and how would I know if my token economy has one?"
+    facts: ['spen[dt].{0,60}(immediate|at once|quick|fast|right away)|immediate.{0,40}spen|too fast|velocity.{0,40}(high|rise|increas)', 'holding time|held|hold']
+    sources: [domenicale2026six, campajola2022microvelocity]
+  - id: commons_principles
+    # ostrom2009beyond / cox2010review: monitoring, graduated sanctions
+    question: "What design principles help a community govern a shared resource successfully?"
+    facts: ['monitor', 'graduated sanction|sanction']
+    sources: [ostrom2009beyond, cox2010review]

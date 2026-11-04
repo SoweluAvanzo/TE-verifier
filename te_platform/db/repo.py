@@ -205,7 +205,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Text, func, select
+from sqlalchemy import Text, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from te_platform.db import models as m
@@ -216,7 +216,7 @@ from te_platform.elicitation.ranking import open_decisive_slots as ranked_open_s
 from te_platform.errors import NotFound
 
 ## Guide 11.1: the passages of a paper (a pure dataclass, no database code).
-from te_platform.literature.chunking import Chunk
+from te_platform.literature.chunking import Chunk, passage_header
 from te_platform.registry.context import Principal, SessionFacts
 
 ## Phase 6.2: a job in one of these states has ended; its row no longer changes.
@@ -851,6 +851,43 @@ class AuthRepository:
         return Principal(id=user.id, kind="user")
 
 
+def _label_filters(failure_mode: str | None, parameter: str | None, kind: str | None) -> list[Any]:
+    """Return the WHERE conditions for lit.search.v1's label filters.
+
+    A passage not labelled yet (enriched_by NULL) passes every filter: while
+    labelling is incomplete, a filter must narrow the labelled passages, not
+    hide the unlabelled ones (found by the grounded A/B test: a kind=legal_rule
+    filter hid the unlabelled MiCA articles).
+    """
+    conditions: list[Any] = []
+    if failure_mode is not None:
+        conditions.append(m.Chunk.failure_modes.contains([failure_mode]))
+    if parameter is not None:
+        conditions.append(m.Chunk.parameters.contains([parameter]))
+    if kind is not None:
+        conditions.append(m.Chunk.kind == kind)
+    if not conditions:
+        return []
+    return [or_(m.Chunk.enriched_by.is_(None), and_(*conditions))]
+
+
+def _passage_row(c: m.Chunk, w: m.Work, score: float) -> dict[str, Any]:
+    """Return one search result row: the passage and its paper's citation data."""
+    return {
+        "id": c.id,
+        "citation_key": w.citation_key,
+        "title": w.title,
+        "authors": w.authors,
+        "year": w.year,
+        "venue": w.venue,
+        "doi": w.doi,
+        "page": c.page,
+        "section": c.section,
+        "text": c.text,
+        "score": score,
+    }
+
+
 ## Guide 11.1: the curated literature collection. There is no principal, on
 ## purpose: the collection is curated by the operator (`te-platform lit
 ## ingest`) and is the SAME for every user, so there is no per-user data to
@@ -877,10 +914,58 @@ class LiteratureRepository:
         # PostgreSQL rejects chunks whose work does not exist yet. Found by
         # running the ingestion against a real database.
         self._db.flush()
+        header = passage_header(metadata["authors"], metadata["year"], metadata["title"])
         self._db.add_all(
-            m.Chunk(work_id=work_id, section=c.section, page=c.page, text=c.text) for c in chunks
+            m.Chunk(work_id=work_id, section=c.section, page=c.page, text=c.text, context=header)
+            for c in chunks
         )
         return work_id
+
+    ## `te-platform lit enrich` (literature/enrich.py): the passages that have
+    ## no labels yet, with what the model needs to know about their paper.
+    def unlabelled_passages(
+        self, *, limit: int | None = None, citation_key: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return the passages without labels, in reading order, with their paper's data."""
+        stmt = (
+            select(m.Chunk.id, m.Chunk.section, m.Chunk.page, m.Chunk.text, m.Work)
+            .join(m.Work, m.Work.id == m.Chunk.work_id)
+            .where(m.Chunk.enriched_by.is_(None))
+            .order_by(m.Work.citation_key, m.Chunk.id)
+        )
+        if citation_key is not None:
+            stmt = stmt.where(m.Work.citation_key == citation_key)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return [
+            {
+                "id": cid,
+                "section": section,
+                "page": page,
+                "text": text,
+                "citation_key": w.citation_key,
+                "title": w.title,
+                "authors": w.authors,
+                "year": w.year,
+                "venue": w.venue,
+            }
+            for cid, section, page, text, w in self._db.execute(stmt).all()
+        ]
+
+    ## Store the labels of several passages (one dict per passage: id,
+    ## context, failure_modes, parameters, kind, enriched_by). PostgreSQL
+    ## recomputes the search column from the new context.
+    def save_labels(self, labels: Sequence[dict[str, Any]]) -> None:
+        """Write the labels of the given passages."""
+        for lb in labels:
+            chunk = self._db.get(m.Chunk, lb["id"])
+            if chunk is None:
+                continue
+            chunk.context = lb["context"]
+            chunk.failure_modes = list(lb["failure_modes"])
+            chunk.parameters = list(lb["parameters"])
+            chunk.kind = lb["kind"]
+            chunk.enriched_by = lb["enriched_by"]
 
     ## Guide 11.1: the size of the collection (the recall test skips when empty).
     def count_works(self) -> int:
@@ -896,33 +981,95 @@ class LiteratureRepository:
     ## so a longer query often finds nothing. Then the search is repeated
     ## with ANY of the words (the same lexemes joined with OR), ranked so
     ## that passages matching more of them come first.
-    def search_passages(self, query: str, limit: int) -> list[dict[str, Any]]:
+    ## Optional filters on the passages' labels (literature/enrich.py):
+    ## failure_mode ("FM1".."FM6"), parameter (enrich.PARAMETERS) and kind
+    ## (enrich.KINDS). Unlabelled passages never match a filter.
+    def search_passages(
+        self,
+        query: str,
+        limit: int,
+        *,
+        failure_mode: str | None = None,
+        parameter: str | None = None,
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Return the best-matching passages with their paper's citation data."""
-        rows = self._passages(func.websearch_to_tsquery("english", query), limit)
+        filters = _label_filters(failure_mode, parameter, kind)
+        rows = self._passages(func.websearch_to_tsquery("english", query), limit, filters)
         if rows:
             return rows
         words = func.cast(func.plainto_tsquery("english", query), Text)
-        return self._passages(func.to_tsquery("english", func.replace(words, "&", "|")), limit)
+        any_word = func.to_tsquery("english", func.replace(words, "&", "|"))
+        return self._passages(any_word, limit, filters)
 
-    def _passages(self, tsq: Any, limit: int) -> list[dict[str, Any]]:
+    def _passages(self, tsq: Any, limit: int, filters: Sequence[Any] = ()) -> list[dict[str, Any]]:
         rank = func.ts_rank_cd(m.Chunk.tsv, tsq)
         stmt = (
-            select(m.Chunk.text, m.Work, rank.label("score"))
+            select(m.Chunk, m.Work, rank.label("score"))
             .join(m.Work, m.Work.id == m.Chunk.work_id)
-            .where(m.Chunk.tsv.op("@@")(tsq))  # "@@" = "matches the query"
+            .where(m.Chunk.tsv.op("@@")(tsq), *filters)  # "@@" = "matches the query"
             .order_by(rank.desc())
             .limit(limit)
         )
-        return [
-            {
-                "citation_key": w.citation_key,
-                "title": w.title,
-                "authors": w.authors,
-                "year": w.year,
-                "venue": w.venue,
-                "doi": w.doi,
-                "text": text,
-                "score": float(score),
-            }
-            for text, w, score in self._db.execute(stmt).all()
-        ]
+        return [_passage_row(c, w, float(score)) for c, w, score in self._db.execute(stmt).all()]
+
+    ## Hybrid search (literature/search.py): the passages found by meaning,
+    ## with the same filters and row shape as the keyword search.
+    def passages_by_ids(
+        self,
+        ids: Sequence[int],
+        *,
+        failure_mode: str | None = None,
+        parameter: str | None = None,
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the given passages (those matching the filters), in the order of `ids`."""
+        stmt = (
+            select(m.Chunk, m.Work)
+            .join(m.Work, m.Work.id == m.Chunk.work_id)
+            .where(m.Chunk.id.in_(list(ids)), *_label_filters(failure_mode, parameter, kind))
+        )
+        found = {c.id: _passage_row(c, w, 0.0) for c, w in self._db.execute(stmt).all()}
+        return [found[i] for i in ids if i in found]
+
+    ## `te-platform lit embed` and literature/embed.py: the passages' vectors.
+    def passages_without_embedding(
+        self, model: str, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Return id, section and text of the passages with no vector from `model`."""
+        stmt = (
+            select(m.Chunk.id, m.Chunk.section, m.Chunk.text)
+            .where((m.Chunk.embedding_model.is_(None)) | (m.Chunk.embedding_model != model))
+            .order_by(m.Chunk.id)
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return [{"id": i, "section": s, "text": t} for i, s, t in self._db.execute(stmt).all()]
+
+    def save_embeddings(self, vectors: Sequence[tuple[int, bytes]], model: str) -> None:
+        """Store each passage's vector (float32 bytes) and the model that made it."""
+        for chunk_id, vector in vectors:
+            chunk = self._db.get(m.Chunk, chunk_id)
+            if chunk is not None:
+                chunk.embedding, chunk.embedding_model = vector, model
+
+    def embeddings_fingerprint(self, model: str) -> tuple[int, int]:
+        """Return (count, sum of ids) of the passages with a vector from `model`.
+
+        It changes whenever passages are added, removed or replaced, even by
+        the same number of others, so an in-memory copy knows to reload.
+        """
+        stmt = select(func.count(), func.coalesce(func.sum(m.Chunk.id), 0)).where(
+            m.Chunk.embedding_model == model
+        )
+        count, total = self._db.execute(stmt).one()
+        return int(count), int(total)
+
+    def embeddings(self, model: str) -> list[tuple[int, bytes]]:
+        """Return (passage id, vector bytes) for every passage with a vector from `model`."""
+        stmt = (
+            select(m.Chunk.id, m.Chunk.embedding)
+            .where(m.Chunk.embedding_model == model, m.Chunk.embedding.is_not(None))
+            .order_by(m.Chunk.id)
+        )
+        return [(i, bytes(v)) for i, v in self._db.execute(stmt).all() if v is not None]

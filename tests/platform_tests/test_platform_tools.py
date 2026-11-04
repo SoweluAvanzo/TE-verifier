@@ -658,6 +658,29 @@ async def test_record_answer_unknown_slot_is_a_validation_error(registry):
     assert "no.such.slot" in out.error.message
 
 
+## The error names the closest real slots, so the model can correct an id it
+## made up (seen live: "tokens.expiry" retried until the turn limit).
+@pytest.mark.db
+@pytest.mark.anyio
+async def test_record_answer_unknown_slot_suggests_close_slot_ids(registry):
+    principal = _new_principal()
+    session = _new_session(principal)
+    out = await _call(
+        registry,
+        "elicit.record_answer.v1",
+        {
+            "session_id": session.session_id,
+            "slot_id": "participants.n",
+            "status": "unknown",
+            "user_quote": "whatever",
+        },
+        principal=principal,
+        session=session,
+    )
+    assert out.error.error == "validation_error"
+    assert "participants.N" in out.error.message
+
+
 ## Guide 7.5: next_questions starts a session, continues it, and owns it.
 @pytest.mark.db
 @pytest.mark.anyio

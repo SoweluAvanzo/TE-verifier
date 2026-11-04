@@ -114,6 +114,7 @@
 ## SOLUTION: complete reference code (commented out on purpose)
 ## =============================================================================
 
+import difflib
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -195,7 +196,15 @@ def _record(ctx: CallContext, inp: RecordAnswerInput) -> RecordAnswerOutput:
     """
     slot = current_protocol().slot(inp.slot_id)
     if slot is None:
-        raise InvalidInput(f"Unknown slot {inp.slot_id!r}.")
+        # The model sometimes records under an id it made up (e.g. a form
+        # question id): name the closest real ones so it can correct itself.
+        ids = [sl.id for _, sl in current_protocol().ordered_slots()]
+        close = difflib.get_close_matches(inp.slot_id, ids, n=5, cutoff=0.4)
+        hint = f" Closest slot ids: {', '.join(close)}." if close else ""
+        raise InvalidInput(
+            f"Unknown slot {inp.slot_id!r}.{hint} Use the slot_id of a question from "
+            "elicit.next_questions.v1; if no slot fits, keep the answer in the conversation."
+        )
     if inp.status == "unknown" and not slot.allow_unknown:
         raise InvalidInput(
             f"Slot {inp.slot_id!r} needs an answer; offer the user examples or a range."
