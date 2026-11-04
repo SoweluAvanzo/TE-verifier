@@ -7,6 +7,7 @@ skip when it cannot be loaded.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
@@ -15,7 +16,7 @@ import pytest
 from te_platform.db import models as m
 from te_platform.db.repo import LiteratureRepository
 from te_platform.db.session import session_scope
-from te_platform.literature import embed
+from te_platform.literature import embed, rerank
 from te_platform.literature.chunking import Chunk
 from te_platform.literature.search import _fuse, search
 
@@ -227,3 +228,71 @@ def test_the_index_rechecks_only_after_the_interval(monkeypatch: pytest.MonkeyPa
         with session_scope() as db:
             db.query(m.Chunk).filter_by(work_id=work_id).delete()
             db.query(m.Work).filter_by(id=work_id).delete()
+
+
+## `te-platform lit add` (cli.py): ingest + (labels) + vectors in one command,
+## then a summary. Labelling needs the model; --no-label tests the rest.
+@needs_model
+@pytest.mark.db
+def test_lit_add_ingests_embeds_and_summarises(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from te_platform.cli import main
+    from tests.platform_tests.test_platform_literature import _make_pdf
+
+    key = "test" + uuid4().hex[:12]
+    _make_pdf(
+        [["1 Introduction", "", "Una banca del tempo scambia servizi tra i soci del quartiere."]],
+        tmp_path / "p.pdf",
+    )
+    (tmp_path / "p.bib").write_text(
+        f"@article{{{key},\n  title = {{Banche del tempo}},\n  author = {{Rossi, Anna}},\n"
+        "  year = {2024}\n}\n",
+        encoding="utf-8",
+    )
+    code = main(
+        [
+            "lit",
+            "add",
+            str(tmp_path / "p.pdf"),
+            "--bib",
+            str(tmp_path / "p.bib"),
+            "--licence",
+            "CC-BY-4.0",
+            "--full-text-allowed",
+            "--no-label",
+        ]
+    )
+    out = capsys.readouterr().out
+    try:
+        assert code == 0
+        assert f"Ingested {key} (it): 1 passages, full text." in out
+        assert "Rossi 2024, Banche del tempo" in out  # the header, until labelled
+        with session_scope() as db:
+            chunk = db.query(m.Chunk).join(m.Work).filter(m.Work.citation_key == key).one()
+            assert chunk.language == "it" and chunk.embedding_model == embed.MODEL
+    finally:
+        with session_scope() as db:
+            work = db.query(m.Work).filter_by(citation_key=key).one()
+            db.query(m.Chunk).filter_by(work_id=work.id).delete()
+            db.delete(work)
+
+
+## --- Reranking (literature/rerank.py) -----------------------------------------------------
+
+needs_reranker = pytest.mark.skipif(not rerank.available(), reason="reranker not available")
+
+
+@needs_reranker
+def test_the_reranker_puts_the_answering_passage_first() -> None:
+    docs = [
+        "The bakery's quarterly accounts were audited by the cooperative.",
+        "In a time bank, members trade services and are paid in hours of time.",
+        "Ethereum burns the base fee of every transaction.",
+    ]
+    assert rerank.order("how do time banks pay their members?", docs)[0] == 1
+
+
+def test_reranking_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rerank, "MODEL", "")
+    assert rerank.available() is False

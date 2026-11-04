@@ -83,7 +83,7 @@ from pypdf import PdfReader
 
 from te_platform.db.repo import LiteratureRepository
 from te_platform.db.session import session_scope
-from te_platform.literature.chunking import Chunk, split_into_chunks
+from te_platform.literature.chunking import Chunk, detect_language, split_into_chunks
 
 _ENTRY = re.compile(r"@\w+\s*\{\s*([^,\s]+)\s*,(.*)\}\s*$", re.DOTALL)
 _FIELD = re.compile(r"(\w+)\s*=\s*[{\"](.*?)[}\"]\s*(?:,|$)", re.DOTALL)
@@ -109,8 +109,7 @@ def ingest_pdf(pdf_path: Path, bib_path: Path, licence: str, *, full_text_allowe
     # Some PDFs put NUL characters in their text layer; PostgreSQL text
     # columns refuse them, and they carry no meaning, so they are dropped.
     pages = [
-        (page.extract_text() or "").replace("\x00", "")
-        for page in PdfReader(str(pdf_path)).pages
+        (page.extract_text() or "").replace("\x00", "") for page in PdfReader(str(pdf_path)).pages
     ]
     if not any(p.strip() for p in pages):
         raise ValueError(f"{pdf_path} has no extractable text (scanned PDF?).")
@@ -131,6 +130,7 @@ def ingest_pdf(pdf_path: Path, bib_path: Path, licence: str, *, full_text_allowe
         "doi": bib.get("doi"),
         "licence": licence,
         "full_text_allowed": full_text_allowed,
+        "language": detect_language(" ".join(pages)),
     }
     with session_scope() as db:
         return LiteratureRepository(db).add_work(metadata, chunks)

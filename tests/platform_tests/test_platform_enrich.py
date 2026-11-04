@@ -365,3 +365,88 @@ def test_filter_errors_are_plain_json() -> None:
         with pytest.raises(ValidationError) as exc:
             LitSearchInput.model_validate({"query": "velocity", **bad})
         json.dumps(exc.value.errors(include_url=False))
+
+
+## --- 6. Languages ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "lang"),
+    [
+        ("La banca del tempo è uno scambio di servizi tra i soci della comunità.", "it"),
+        ("Une monnaie locale est une monnaie complémentaire pour les habitants.", "fr"),
+        ("The time bank is a community currency for neighbours.", "en"),
+        ("12345 67", "en"),  # no words: English, the default
+    ],
+)
+def test_language_is_detected_from_function_words(text: str, lang: str) -> None:
+    from te_platform.literature.chunking import detect_language
+
+    assert detect_language(text) == lang
+
+
+## An Italian passage is stemmed with Italian rules: a singular finds the
+## plural ("scambio" / "scambi"), which English stemming would not relate.
+@pytest.mark.db
+def test_italian_passages_are_found_by_italian_word_forms() -> None:
+    key = "test" + uuid4().hex[:12]
+    meta = {
+        "citation_key": key,
+        "title": "T",
+        "authors": "Rossi, Anna",
+        "year": 2024,
+        "venue": None,
+        "doi": None,
+        "licence": "CC-BY-4.0",
+        "full_text_allowed": True,
+        "language": "it",
+    }
+    text = "Gli zorboscambi avvengono tra le botteghe del quartiere."
+    with session_scope() as db:
+        work_id = LiteratureRepository(db).add_work(meta, [Chunk(text, 1, "")])
+    try:
+        hits = search("zorboscambio", limit=5)
+        assert [h.citation_key for h in hits] == [key]
+    finally:
+        with session_scope() as db:
+            db.query(m.Chunk).filter_by(work_id=work_id).delete()
+            db.query(m.Work).filter_by(id=work_id).delete()
+
+
+## New labels change what is embedded (the context): the vector is marked
+## stale and offered for re-embedding, and saving a new one clears the mark.
+@pytest.mark.db
+def test_relabelled_passages_get_a_fresh_vector(work: str) -> None:
+    with session_scope() as db:
+        rows = LiteratureRepository(db).unlabelled_passages(citation_key=work)
+        first = rows[0]["id"]
+        LiteratureRepository(db).save_embeddings([(first, b"\\0" * 16)], "test-model")
+    with session_scope() as db:
+        LiteratureRepository(db).save_labels(
+            [
+                {
+                    "id": first,
+                    "context": "New context.",
+                    "failure_modes": [],
+                    "parameters": [],
+                    "kind": "other",
+                    "enriched_by": "test",
+                }
+            ]
+        )
+    with session_scope() as db:
+        assert db.get(m.Chunk, first).embedding_stale is True
+        todo = LiteratureRepository(db).passages_without_embedding("test-model")
+        assert [r["context"] for r in todo if r["id"] == first] == ["New context."]
+        LiteratureRepository(db).save_embeddings([(first, b"\\1" * 16)], "test-model")
+    with session_scope() as db:
+        assert db.get(m.Chunk, first).embedding_stale is False
+
+
+def test_the_context_is_embedded_first() -> None:
+    from te_platform.literature.embed import passage_text
+
+    assert passage_text("Results", "Text.", "Collom 2012, time banks") == (
+        "Collom 2012, time banks. Results. Text."
+    )
+    assert passage_text("", "Text.") == "Text."

@@ -389,6 +389,9 @@ class Work(Base):
     licence: Mapped[str] = mapped_column(String(64))
     # False = only metadata and abstract may be stored/served (architecture §3.7).
     full_text_allowed: Mapped[bool]
+    # "en", "it" or "fr", detected at ingestion (literature/chunking.py): the
+    # search index stems its passages with this language's rules.
+    language: Mapped[str] = mapped_column(String(2), default="en", server_default="en")
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -424,11 +427,17 @@ class Chunk(Base):
     ## (vectors of different models are never compared).
     embedding: Mapped[bytes | None] = mapped_column(LargeBinary)
     embedding_model: Mapped[str | None] = mapped_column(String(128), index=True)
+    # True after new labels (the context is part of what is embedded): the
+    # vector stays in use until `te-platform lit embed` refreshes it.
+    embedding_stale: Mapped[bool] = mapped_column(default=False, server_default=false())
+    # The passage's language (its work's): see Work.language and the index below.
+    language: Mapped[str] = mapped_column(String(2), default="en", server_default="en")
 
     ## Phase 11.2: a GENERATED column. PostgreSQL computes it on every
     ## insert or update, so it can never be out of date. It covers the
-    ## section heading, the context sentence and the passage, so a passage
-    ## is also found by what its context says it is about.
+    ## section heading and the passage, stemmed with the passage's language
+    ## rules, and the context sentence (always English), so a passage is also
+    ## found by what its context says it is about (migration 8d41c7e9b2a3).
     ## to_tsvector('english', ...) reduces words to stems ("tokens" ->
     ## "token") and drops stop words; persisted=True stores it (needed to
     ## index it). The GIN index makes "which rows contain these words?"
@@ -436,7 +445,10 @@ class Chunk(Base):
     tsv: Mapped[Any] = mapped_column(
         TSVECTOR,
         Computed(
-            "to_tsvector('english', section || ' ' || context || ' ' || text)", persisted=True
+            "to_tsvector(CASE language WHEN 'it' THEN 'italian'::regconfig "
+            "WHEN 'fr' THEN 'french'::regconfig ELSE 'english'::regconfig END, "
+            "section || ' ' || text) || to_tsvector('english', context)",
+            persisted=True,
         ),
     )
     __table_args__ = (

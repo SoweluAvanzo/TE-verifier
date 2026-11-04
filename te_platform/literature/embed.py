@@ -65,9 +65,14 @@ def available() -> bool:
     return True
 
 
-def passage_text(section: str, text: str) -> str:
-    """Return what is embedded for a passage: its section heading and text."""
-    return f"{section}. {text}" if section else text
+def passage_text(section: str, text: str, context: str = "") -> str:
+    """Return what is embedded for a passage: its context, section heading and text.
+
+    The context comes first: the model reads only the first 128 tokens, about
+    half of a passage, so the context sentence (what the passage is about)
+    is always read.
+    """
+    return ". ".join(part for part in (context, section, text) if part)
 
 
 def embed(texts: Sequence[str]) -> np.ndarray:
@@ -85,7 +90,7 @@ def embed_missing(limit: int | None = None, progress: Any = print) -> int:
     done = 0
     for start in range(0, len(rows), 512):
         part = rows[start : start + 512]
-        vectors = embed([passage_text(r["section"], r["text"]) for r in part])
+        vectors = embed([passage_text(r["section"], r["text"], r["context"]) for r in part])
         with session_scope() as db:
             LiteratureRepository(db).save_embeddings(
                 [(r["id"], v.tobytes()) for r, v in zip(part, vectors, strict=True)], MODEL

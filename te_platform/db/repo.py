@@ -197,7 +197,7 @@
 ## =============================================================================
 
 ## Guide 11.1: LiteratureRepository.add_work takes a Sequence of chunks.
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 ## Guide 10.3: the report record and its expiry time.
 from dataclasses import dataclass
@@ -851,6 +851,21 @@ class AuthRepository:
         return Principal(id=user.id, kind="user")
 
 
+## The languages of the search index (migration 8d41c7e9b2a3). A query's
+## language is unknown, so it is parsed with each language's rules and the
+## results joined with OR: an Italian question matches Italian-stemmed
+## passages, and an English one the English passages, as before.
+_INDEX_LANGUAGES = ("english", "italian", "french")
+
+
+def _in_every_language(make: Callable[[str], Any]) -> Any:
+    """Return make(cfg) for each index language, joined with the tsquery OR operator."""
+    combined = make(_INDEX_LANGUAGES[0])
+    for cfg in _INDEX_LANGUAGES[1:]:
+        combined = combined.op("||")(make(cfg))
+    return combined
+
+
 ## Search rows never need a passage's index column or vector (about 2 KB
 ## each): skipping them halves the time of a search query.
 _LIGHT_CHUNK = (defer(m.Chunk.tsv), defer(m.Chunk.embedding))
@@ -888,6 +903,7 @@ def _passage_row(c: m.Chunk, w: m.Work, score: float) -> dict[str, Any]:
         "doi": w.doi,
         "page": c.page,
         "section": c.section,
+        "context": c.context,
         "text": c.text,
         "score": score,
     }
@@ -920,8 +936,16 @@ class LiteratureRepository:
         # running the ingestion against a real database.
         self._db.flush()
         header = passage_header(metadata["authors"], metadata["year"], metadata["title"])
+        language = metadata.get("language", "en")
         self._db.add_all(
-            m.Chunk(work_id=work_id, section=c.section, page=c.page, text=c.text, context=header)
+            m.Chunk(
+                work_id=work_id,
+                section=c.section,
+                page=c.page,
+                text=c.text,
+                context=header,
+                language=language,
+            )
             for c in chunks
         )
         return work_id
@@ -971,6 +995,30 @@ class LiteratureRepository:
             chunk.parameters = list(lb["parameters"])
             chunk.kind = lb["kind"]
             chunk.enriched_by = lb["enriched_by"]
+            # The context is part of what is embedded: refresh the vector.
+            chunk.embedding_stale = chunk.embedding is not None
+
+    ## `te-platform lit add`: what the curator checks after adding a paper.
+    def work_summary(self, work_id: str, samples: int = 3) -> dict[str, Any]:
+        """Return a work's key, language, passage count and a few evenly spread passages."""
+        work = self._db.get(m.Work, work_id)
+        if work is None:
+            raise NotFound(f"Work {work_id} not found.")
+        chunks = (
+            self._db.query(m.Chunk.page, m.Chunk.kind, m.Chunk.context)
+            .filter(m.Chunk.work_id == work_id)
+            .order_by(m.Chunk.id)
+            .all()
+        )
+        step = max(1, len(chunks) // samples)
+        return {
+            "citation_key": work.citation_key,
+            "language": work.language,
+            "passages": len(chunks),
+            "samples": [
+                {"page": p, "kind": k, "context": c} for p, k, c in chunks[::step][:samples]
+            ],
+        }
 
     ## Guide 11.1: the size of the collection (the recall test skips when empty).
     def count_works(self) -> int:
@@ -1000,12 +1048,17 @@ class LiteratureRepository:
     ) -> list[dict[str, Any]]:
         """Return the best-matching passages with their paper's citation data."""
         filters = _label_filters(failure_mode, parameter, kind)
-        rows = self._passages(func.websearch_to_tsquery("english", query), limit, filters)
+        rows = self._passages(
+            _in_every_language(lambda cfg: func.websearch_to_tsquery(cfg, query)), limit, filters
+        )
         if rows:
             return rows
-        words = func.cast(func.plainto_tsquery("english", query), Text)
-        any_word = func.to_tsquery("english", func.replace(words, "&", "|"))
-        return self._passages(any_word, limit, filters)
+
+        def any_word(cfg: str) -> Any:
+            words = func.cast(func.plainto_tsquery(cfg, query), Text)
+            return func.to_tsquery(cfg, func.replace(words, "&", "|"))
+
+        return self._passages(_in_every_language(any_word), limit, filters)
 
     def _passages(self, tsq: Any, limit: int, filters: Sequence[Any] = ()) -> list[dict[str, Any]]:
         rank = func.ts_rank_cd(m.Chunk.tsv, tsq)
@@ -1045,13 +1098,20 @@ class LiteratureRepository:
     ) -> list[dict[str, Any]]:
         """Return id, section and text of the passages with no vector from `model`."""
         stmt = (
-            select(m.Chunk.id, m.Chunk.section, m.Chunk.text)
-            .where((m.Chunk.embedding_model.is_(None)) | (m.Chunk.embedding_model != model))
+            select(m.Chunk.id, m.Chunk.section, m.Chunk.context, m.Chunk.text)
+            .where(
+                (m.Chunk.embedding_model.is_(None))
+                | (m.Chunk.embedding_model != model)
+                | m.Chunk.embedding_stale
+            )
             .order_by(m.Chunk.id)
         )
         if limit is not None:
             stmt = stmt.limit(limit)
-        return [{"id": i, "section": s, "text": t} for i, s, t in self._db.execute(stmt).all()]
+        return [
+            {"id": i, "section": s, "context": c, "text": t}
+            for i, s, c, t in self._db.execute(stmt).all()
+        ]
 
     def save_embeddings(self, vectors: Sequence[tuple[int, bytes]], model: str) -> None:
         """Store each passage's vector (float32 bytes) and the model that made it."""
@@ -1059,6 +1119,7 @@ class LiteratureRepository:
             chunk = self._db.get(m.Chunk, chunk_id)
             if chunk is not None:
                 chunk.embedding, chunk.embedding_model = vector, model
+                chunk.embedding_stale = False
 
     def embeddings_fingerprint(self, model: str) -> tuple[int, int]:
         """Return (count, sum of ids) of the passages with a vector from `model`.

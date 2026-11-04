@@ -286,7 +286,10 @@ services:
       resources:
         # Z3 can blow up on pathological specs; the limit kills this
         # container, never the host.
-        limits: {cpus: "1.5", memory: 1g, pids: 256}
+        # 2g, not 1g: literature search loads an embedding model and a reranker
+        # (literature/embed.py, rerank.py); about 0.8 GB with the first alone
+        # (the 1g limit was nearly full), about 1.6 GB with both, measured.
+        limits: {cpus: "1.5", memory: 2g, pids: 256}
 ##     Guide 5.4: from here the MCP server reads API keys (and, from 5.5,
 ##     sessions, verifications, audit rows) from the database.
     secrets:
@@ -429,7 +432,10 @@ services:
       start_interval: 2s
     deploy:
       resources:
-        limits: {cpus: "1.0", memory: 512m, pids: 256}
+        # 768m, not 512m: `te-platform lit add` and `lit enrich` run in this image
+        # (they need the model key) and load the embedding model (about 570 MB
+        # peak, measured); the agent server itself never loads it.
+        limits: {cpus: "1.0", memory: 768m, pids: 256}
     depends_on:
       mcp: {condition: service_healthy}
 ##     Guide 8.5: sessions and transcripts are stored in the database.

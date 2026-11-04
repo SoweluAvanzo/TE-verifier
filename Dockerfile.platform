@@ -183,11 +183,12 @@ COPY examples/ examples/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --all-extras --no-extra dev
 
-## The embedding model of literature search (te_platform/literature/embed.py),
+## The embedding and reranking models of literature search (literature/embed.py,
+## literature/rerank.py),
 ## downloaded now so that the containers never fetch it at run time; it is
 ## copied to the runtime stage with the rest of /app.
 ENV FASTEMBED_CACHE_PATH=/app/models
-RUN /app/.venv/bin/python -c "from te_platform.literature import embed; embed._model()"
+RUN /app/.venv/bin/python -c "from te_platform.literature import embed, rerank; embed._model(); rerank._model()"
 
 ## -----------------------------------------------------------------------------
 ## Stage 2: runtime

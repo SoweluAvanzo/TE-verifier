@@ -166,3 +166,11 @@ async def test_integration_openai_compatible_verify_turn() -> None:
     stop = events[-1]
     assert isinstance(stop, Stop) and stop.reason in ("end_turn", "tool_use"), stop
     assert any(isinstance(ev, TextDelta) for ev in events) or stop.reason == "tool_use"
+
+
+
+## An empty reply (no text, no tool calls) is sent back as "", never null:
+## Utopia's server fails on a null-content message without tool calls.
+def test_empty_assistant_reply_has_empty_string_content() -> None:
+    msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": []}]
+    assert to_openai_messages("S", msgs)[2] == {"role": "assistant", "content": ""}

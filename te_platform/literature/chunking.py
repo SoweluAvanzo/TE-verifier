@@ -252,3 +252,77 @@ def passage_header(authors: str, year: int | None, title: str) -> str:
     model-written sentence (literature/enrich.py).
     """
     return f"{cite_as(authors, year)}, {title}"
+
+
+## Frequent function words of the languages the search index knows. The
+## language whose words are most frequent in a text is the text's language.
+_FUNCTION_WORDS = {
+    "en": frozenset(
+        [
+            "the",
+            "of",
+            "and",
+            "to",
+            "in",
+            "is",
+            "that",
+            "for",
+            "are",
+            "with",
+            "as",
+            "this",
+            "by",
+            "on",
+            "be",
+            "which",
+            "from",
+        ]
+    ),
+    "it": frozenset(
+        [
+            "il",
+            "di",
+            "che",
+            "la",
+            "per",
+            "non",
+            "una",
+            "sono",
+            "della",
+            "del",
+            "con",
+            "gli",
+            "delle",
+            "nel",
+            "alla",
+        ]
+    ),
+    "fr": frozenset(
+        [
+            "le",
+            "les",
+            "des",
+            "est",
+            "une",
+            "dans",
+            "pour",
+            "que",
+            "qui",
+            "sur",
+            "par",
+            "pas",
+            "aux",
+            "du",
+            "ces",
+        ]
+    ),
+}
+_WORD = re.compile(r"[a-zàâçéèêëîïôûùüÿœæ]+")
+
+
+def detect_language(text: str) -> str:
+    """Return "en", "it" or "fr": the language whose function words are most frequent."""
+    words = _WORD.findall(text.lower())
+    counts = {lang: sum(w in fw for w in words) for lang, fw in _FUNCTION_WORDS.items()}
+    best = max(counts, key=lambda lang: counts[lang])
+    return best if counts[best] > 0 else "en"

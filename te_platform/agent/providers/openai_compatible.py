@@ -91,7 +91,15 @@ def to_openai_messages(system: str, messages: list[dict[str, Any]]) -> list[dict
                 for b in blocks
                 if b.get("type") == "tool_use"
             ]
-            msg: dict[str, Any] = {"role": "assistant", "content": texts or None}
+            # null content is the OpenAI form for a message with only tool
+            # calls; an EMPTY reply (no text, no calls) must be "" instead:
+            # Utopia's server fails on a null with nothing else ("'NoneType'
+            # object is not iterable", seen when the agent re-asked the model
+            # after an empty reply).
+            msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": texts or (None if calls else ""),
+            }
             if calls:
                 msg["tool_calls"] = calls
             out.append(msg)

@@ -127,7 +127,7 @@ import sys
 
 ## Guide 5.4: the database commands.
 from te_platform.config import get_settings
-from te_platform.db.repo import AuthRepository
+from te_platform.db.repo import AuthRepository, LiteratureRepository
 from te_platform.db.session import session_scope
 from te_platform.security import api_keys
 
@@ -228,6 +228,52 @@ def _lit_embed(args: argparse.Namespace) -> int:
     return 0
 
 
+## --- lit add ------------------------------------------------------------------------
+## One paper end to end: ingest it, label its passages (Utopia), embed them,
+## then print what the curator should check. `--no-label` skips the model
+## call (e.g. without a model key); the passages keep their title header and
+## the next `lit enrich` labels them.
+def _lit_add(args: argparse.Namespace) -> int:
+    from .literature import embed  # noqa: PLC0415 (loads the embedding model)
+    from .literature.enrich import enrich  # noqa: PLC0415 (needs the "agent" extra)
+
+    work_id = ingest_pdf(
+        pathlib.Path(args.pdf),
+        pathlib.Path(args.bib),
+        args.licence,
+        full_text_allowed=args.full_text_allowed,
+    )
+    with session_scope() as db:
+        summary = LiteratureRepository(db).work_summary(work_id)
+    key = summary["citation_key"]
+    print(
+        f"Ingested {key} ({summary['language']}): {summary['passages']} passages, "
+        f"{'full text' if args.full_text_allowed else 'abstract only'}."
+    )
+    failed = 0
+    if not args.no_label:
+        stats = asyncio.run(
+            enrich(
+                model=args.model or get_settings().agent_model,
+                citation_key=key,
+                batch_size=10,
+                extra=json.loads(args.extra) if args.extra else None,
+                progress=lambda _msg: None,
+            )
+        )
+        failed = stats.failed
+        print(
+            f"Labelled {stats.labelled} passages ({stats.failed} failed: run `lit enrich` again)."
+        )
+    print(f"Embedded {embed.embed_missing(progress=lambda _msg: None)} passages.")
+    with session_scope() as db:
+        samples = LiteratureRepository(db).work_summary(work_id)["samples"]
+    print("Check a few passages (page, kind, context):")
+    for s in samples:
+        print(f"  p.{s['page']} [{s['kind'] or 'unlabelled'}] {s['context']}")
+    return 0 if failed == 0 else 1
+
+
 ## --- Parser ------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -290,6 +336,23 @@ def _build_parser() -> argparse.ArgumentParser:
         '{"enable_thinking": false}}\'',
     )
     enrich.set_defaults(func=_lit_enrich)
+    add = lit.add_parser("add", help="ingest, label and embed one paper, then summarise")
+    add.add_argument("pdf", help="the paper's PDF file")
+    add.add_argument("--bib", required=True, help="BibTeX file with this paper's entry")
+    add.add_argument("--licence", required=True, help="e.g. 'CC-BY-4.0' (at most 64 chars)")
+    add.add_argument(
+        "--full-text-allowed",
+        action="store_true",
+        help="only if the licence allows storing and quoting the full text",
+    )
+    add.add_argument("--no-label", action="store_true", help="skip labelling (no model call)")
+    add.add_argument("--model", help="labelling model id (default: TE_AGENT_MODEL)")
+    add.add_argument(
+        "--extra",
+        default='{"chat_template_kwargs": {"enable_thinking": false}}',
+        help="JSON merged into each labelling request",
+    )
+    add.set_defaults(func=_lit_add)
     embed = lit.add_parser("embed", help="store a meaning vector for passages without one")
     embed.add_argument("--limit", type=int, help="embed at most this many passages")
     embed.set_defaults(func=_lit_embed)

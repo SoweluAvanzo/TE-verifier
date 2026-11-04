@@ -67,11 +67,13 @@
 ## SOLUTION: complete reference code (commented out on purpose)
 ## =============================================================================
 
+from typing import Any
+
 from pydantic import BaseModel
 
 from te_platform.db.repo import LiteratureRepository
 from te_platform.db.session import session_scope
-from te_platform.literature import embed
+from te_platform.literature import embed, rerank
 
 PASSAGE_MAX_CHARS = 600
 ## At most this many passages per paper in one result list: otherwise one
@@ -126,6 +128,23 @@ def _fuse(rankings: list[tuple[float, list[int]]]) -> dict[int, float]:
     return dict(sorted(scores.items(), key=lambda kv: -kv[1]))
 
 
+def _reranked(
+    query: str, order: dict[int, float], rows: dict[int, dict[str, Any]]
+) -> dict[int, float]:
+    """Reorder the top rerank.POOL candidates by the cross-encoder (rerank.py), if on."""
+    if not order or not rerank.available():
+        return order
+    top = list(order)[: rerank.POOL]
+    docs = [
+        embed.passage_text(
+            rows[i]["section"], rows[i]["text"][: rerank.CHARS], rows[i].get("context", "")
+        )
+        for i in top
+    ]
+    new = [top[j] for j in rerank.order(query, docs)]
+    return {i: order[i] for i in new} | {i: s for i, s in order.items() if i not in set(top)}
+
+
 def _meaning_ids(query: str) -> list[int]:
     """Return the passages closest in meaning, or [] when the model is unavailable."""
     if not embed.available():
@@ -163,10 +182,12 @@ def search(
             (MEANING_WEIGHT, [i for i in meaning if i in rows]),
         ]
     )
+    order = _reranked(query, order, rows)
     per_work: dict[str, int] = {}
     hits: list[Hit] = []
     for chunk_id, fused in order.items():
         row = {**rows[chunk_id], "score": round(fused, 6)}
+        row.pop("context", None)
         key = row["citation_key"]
         if per_work.get(key, 0) >= MAX_PER_WORK:
             continue
