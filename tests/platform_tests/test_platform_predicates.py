@@ -235,11 +235,25 @@ def test_args_for_simulation_restrict_to_undecided_failure_modes(principal):
 
 def test_args_for_literature(principal):
     c = ctx(principal, result=VERDICTS)
-    assert P.ARGS_FROM["failed_failure_mode_topics"](c) == {
-        "query": "critical mass participants adoption",
-        "failure_mode": "FM5",
-        "kind": "remedy",
+    assert P.ARGS_FROM["failed_failure_mode_topics"](c) == [
+        {"query": "critical mass participants adoption", "failure_mode": "FM5", "kind": "remedy"}
+    ]
+
+
+## One search per failing failure mode (lit.search.v1 filters on one), in FM
+## order; an unknown id still gets a plain query.
+def test_args_for_literature_cover_every_failing_mode(principal):
+    result = {
+        "verdicts": [
+            {"failure_mode": "FM6", "status": "fail"},
+            {"failure_mode": "FM2", "status": "fail"},
+            {"failure_mode": "FM1", "status": "pass"},
+            {"failure_mode": "FM9", "status": "fail"},
+        ]
     }
+    args = P.ARGS_FROM["failed_failure_mode_topics"](ctx(principal, result=result))
+    assert [a.get("failure_mode") for a in args] == ["FM2", "FM6", None]
+    assert args[-1]["query"].startswith("FM9")
 
 
 ## Suggested arguments must be valid input for the suggested tool, or the
@@ -260,9 +274,11 @@ def test_simulation_arguments_are_valid_sim_monte_carlo_input(principal):
 def test_literature_arguments_are_valid_lit_search_input(principal):
     from te_platform.tools.lit_search import LitSearchInput
 
-    args = P.ARGS_FROM["failed_failure_mode_topics"](ctx(principal, result=VERDICTS))
-    assert set(args) <= set(LitSearchInput.model_fields)
-    LitSearchInput.model_validate(args)
+    many = {"verdicts": [{"failure_mode": fm, "status": "fail"} for fm in ("FM2", "FM6", "FM9")]}
+    for result in (VERDICTS, many):
+        for args in P.ARGS_FROM["failed_failure_mode_topics"](ctx(principal, result=result)):
+            assert set(args) <= set(LitSearchInput.model_fields)
+            LitSearchInput.model_validate(args)
 
 
 ## --- Registry hygiene --------------------------------------------------------------------------

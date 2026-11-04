@@ -92,7 +92,8 @@ from te_platform.registry.context import CallContext
 # below. This is the only module-level state allowed in te_platform
 # (README rule 5), because it never changes after startup.
 Rule = Callable[[CallContext], bool]
-ArgsFn = Callable[[CallContext], dict[str, Any]]
+## A builder returns one argument set, or a list of them: one suggestion each.
+ArgsFn = Callable[[CallContext], dict[str, Any] | list[dict[str, Any]]]
 
 PRECONDITIONS: dict[str, Rule] = {}
 PREDICATES: dict[str, Rule] = {}
@@ -290,13 +291,16 @@ FAILURE_MODE_WORDS = {
 
 
 @args_from("failed_failure_mode_topics")
-def failed_failure_mode_topics(ctx: CallContext) -> dict[str, Any]:
-    """Build lit.search.v1 arguments: remedies for the first failing failure mode.
+def failed_failure_mode_topics(ctx: CallContext) -> list[dict[str, Any]]:
+    """Build lit.search.v1 arguments: remedies for EACH failing failure mode.
 
-    lit.search.v1 filters on one failure mode; the model searches again for
-    any other failing one (system prompt, "Use the literature at three moments").
+    lit.search.v1 filters on one failure mode, so there is one search (one
+    suggestion) per failing mode, in FM order.
     """
     fms = sorted({v["failure_mode"] for v in _verdicts(ctx) if v.get("status") == "fail"})
-    if not fms or fms[0] not in FAILURE_MODE_WORDS:
-        return {"query": " ".join(fms) + " remedies token economy design"}
-    return {"query": FAILURE_MODE_WORDS[fms[0]], "failure_mode": fms[0], "kind": "remedy"}
+    known = [fm for fm in fms if fm in FAILURE_MODE_WORDS]
+    out = [{"query": FAILURE_MODE_WORDS[fm], "failure_mode": fm, "kind": "remedy"} for fm in known]
+    other = [fm for fm in fms if fm not in FAILURE_MODE_WORDS]
+    if other:
+        out.append({"query": " ".join(other) + " remedies token economy design"})
+    return out

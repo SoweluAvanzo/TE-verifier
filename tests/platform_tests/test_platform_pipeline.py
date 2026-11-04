@@ -146,13 +146,14 @@
 ## SOLUTION: complete reference code (commented out on purpose)
 ## =============================================================================
 
+import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import anyio
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from te_platform import hashing, service
 from te_platform.config import get_settings
@@ -495,3 +496,121 @@ async def test_job_quota_is_a_precondition_of_job_tools(settings_env):
     )
     assert out.error.precondition == "job_quota_available"
     assert out.error.do_first == ["jobs.status.v1"]
+
+
+## --- Robustness (found in live use) ----------------------------------------------------------
+class StrictIn(BaseModel):
+    """An input model with a custom validator, like lit.search.v1 once had."""
+
+    spec: str | None = None
+    word: str = "ok"
+
+    @field_validator("word")
+    @classmethod
+    def _known(cls, v: str) -> str:
+        if v != "ok":
+            raise ValueError("unknown word")
+        return v
+
+
+## A custom validator puts a ValueError object into the error details; they
+## must still be plain JSON, or the MCP server cannot send the refusal.
+@pytest.mark.anyio
+async def test_validation_details_are_plain_json():
+    reg = Registry(
+        policy=POLICY,
+        tools={
+            "graph.flow.v1": ToolSpec(
+                id="graph.flow.v1", input_model=StrictIn, output_model=Out, handler=ok_handler
+            )
+        },
+    )
+    out = await call(reg, "graph.flow.v1", {"word": "nope"}, make_ctx("graph.flow.v1"))
+    assert out.error.error == "validation_error"
+    payload = json.dumps(out.model_dump(mode="json"))
+    assert "unknown word" in payload
+
+
+async def verdicts_without_ids_handler(inp: In, ctx: CallContext) -> VerdictsOut:
+    # An inconclusive verdict with no failure_mode key: the Monte Carlo
+    # argument builder (predicates.py) raises KeyError on it.
+    return VerdictsOut(verification_ref="vref:1", verdicts=[{"status": "inconclusive"}])
+
+
+## The tool has already run when suggestions are computed: a failing rule
+## loses its suggestion, the call stays a success.
+@pytest.mark.anyio
+async def test_a_failing_suggestion_rule_does_not_fail_the_call():
+    reg = make_registry(BUILT, VerdictsOut, **{"verify.run.v1": verdicts_without_ids_handler})
+    out = await call(reg, "verify.run.v1", {"spec": BITCOIN}, make_ctx("verify.run.v1"))
+    assert out.ok, out.error
+    assert "sim.monte_carlo.v1" not in [s.tool for s in out.suggested_next]
+
+
+async def two_fails_handler(inp: In, ctx: CallContext) -> VerdictsOut:
+    return VerdictsOut(
+        verification_ref="vref:1",
+        verdicts=[
+            {"failure_mode": "FM2", "status": "fail"},
+            {"failure_mode": "FM6", "status": "fail"},
+        ],
+    )
+
+
+@pytest.mark.anyio
+async def test_one_literature_suggestion_per_failing_mode():
+    reg = make_registry(BUILT, VerdictsOut, **{"verify.run.v1": two_fails_handler})
+    out = await call(reg, "verify.run.v1", {"spec": BITCOIN}, make_ctx("verify.run.v1"))
+    lit = [s.args for s in out.suggested_next if s.tool == "lit.search.v1"]
+    assert [a["failure_mode"] for a in lit] == ["FM2", "FM6"]
+
+
+RUNS: list[int] = []
+
+
+async def counted_slow_handler(inp: In, ctx: CallContext) -> Out:
+    RUNS.append(inp.n)
+    await anyio.sleep(0.3)
+    return Out(value=inp.n)
+
+
+## A call that times out keeps running; the same call again (same caller,
+## tool and input) waits for that run instead of starting a second one, and
+## after it ends gets its result.
+@pytest.mark.anyio
+async def test_a_retry_after_a_timeout_joins_the_running_call(settings_env):
+    settings_env(TE_TOOL_TIMEOUT_S="0.1")
+    RUNS.clear()
+    reg = make_registry(**{"graph.flow.v1": counted_slow_handler})
+    ctx = make_ctx("graph.flow.v1")
+    first = await call(reg, "graph.flow.v1", {"spec": BITCOIN, "n": 7}, ctx)
+    assert first.error.error == "timeout"
+    await anyio.sleep(0.4)  # the first run finishes in the background
+    again = await call(reg, "graph.flow.v1", {"spec": BITCOIN, "n": 7}, ctx)
+    assert again.ok and again.result == {"value": 7}
+    assert RUNS == [7]  # ran once
+    other = await call(reg, "graph.flow.v1", {"spec": BITCOIN, "n": 8}, ctx)
+    assert other.error.error == "timeout"  # a different input is a new run
+    assert RUNS == [7, 8]
+    # The stored result went to ONE retry: the same call now runs again.
+    await anyio.sleep(0.4)
+    await call(reg, "graph.flow.v1", {"spec": BITCOIN, "n": 7}, ctx)
+    assert RUNS == [7, 8, 7]
+
+
+## Without a timeout nothing is kept: identical calls run every time (polling
+## jobs.status.v1 must see a job move from queued to finished).
+@pytest.mark.anyio
+async def test_identical_calls_run_every_time_when_none_timed_out():
+    RUNS.clear()
+
+    async def quick(inp: In, ctx: CallContext) -> Out:
+        RUNS.append(inp.n)
+        return Out(value=inp.n)
+
+    reg = make_registry(**{"graph.flow.v1": quick})
+    ctx = make_ctx("graph.flow.v1")
+    for _ in range(3):
+        out = await call(reg, "graph.flow.v1", {"spec": BITCOIN, "n": 1}, ctx)
+        assert out.ok
+    assert RUNS == [1, 1, 1]

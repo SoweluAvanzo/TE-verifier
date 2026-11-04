@@ -113,6 +113,8 @@
 ## SOLUTION: complete reference code (commented out on purpose)
 ## =============================================================================
 
+import asyncio
+import json
 import logging
 import time
 from typing import Any
@@ -143,6 +145,45 @@ log = logging.getLogger("te_platform.pipeline")
 
 ## The only message a client sees for a bug: details stay in the server log.
 _INTERNAL = "Internal error. Please report the correlation ID."
+
+## A call that times out is NOT stopped: its work (often in a thread, which
+## cannot be cancelled) carries on. While it runs, the same call again (same
+## caller, tool and input) waits for that run instead of starting a second
+## one (e.g. recording an answer or rendering a report twice). Once it ends:
+## - if nobody timed out waiting for it, it is forgotten at once, so a later
+##   identical call runs again (polling jobs.status.v1 must see new states);
+## - if a caller timed out, its result is kept for ONE retry, for at most
+##   RETAIN_S, so the retry gets the result the caller never received.
+RETAIN_S = 300.0
+_RUNNING: dict[str, asyncio.Task[Any]] = {}
+_UNCLAIMED: set[str] = set()  # keys whose result a timed-out caller has not received
+
+
+def _running_call(key: str, start: Any) -> asyncio.Task[Any]:
+    """Return the task running (or finished and unclaimed) for key, or start one."""
+    task = _RUNNING.get(key)
+    loop = asyncio.get_running_loop()
+    if task is not None and task.get_loop() is loop:
+        if task.done():  # a timed-out caller's result: hand it over once
+            _UNCLAIMED.discard(key)
+            _RUNNING.pop(key, None)
+        return task
+    task = loop.create_task(start())
+    _RUNNING[key] = task
+
+    def _drop() -> None:
+        if _RUNNING.get(key) is task:
+            del _RUNNING[key]
+        _UNCLAIMED.discard(key)
+
+    def _ended(_: asyncio.Task[Any]) -> None:
+        if key in _UNCLAIMED:
+            loop.call_later(RETAIN_S, _drop)
+        else:
+            _drop()
+
+    task.add_done_callback(_ended)
+    return task
 
 
 class Suggestion(BaseModel):
@@ -199,9 +240,31 @@ def _suggestions(registry: Registry, ctx: CallContext) -> list[Suggestion]:
     for rule in registry.policy.suggested_next:
         if rule.suggest in registry.policy.planned:
             continue  # never suggest a tool that is not built yet
-        if rule.after == ctx.tool_id and PREDICATES[rule.when](ctx):
+        if rule.after != ctx.tool_id:
+            continue
+        # The tool has already run: a bug in a rule must cost only its
+        # suggestion, never turn the successful call into an error (the
+        # model would think the action failed and repeat it).
+        try:
+            if not PREDICATES[rule.when](ctx):
+                continue
             args = ARGS_FROM[rule.args_from](ctx) if rule.args_from else {}
-            out.append(Suggestion(tool=rule.suggest, reason=rule.reason, args=args))
+        except Exception:
+            log.exception(
+                "suggestion rule failed",
+                extra={
+                    "rule": rule.when,
+                    "tool": ctx.tool_id,
+                    "correlation_id": ctx.correlation_id,
+                },
+            )
+            continue
+        # A builder may return several argument sets: one suggestion each
+        # (e.g. one literature search per failing failure mode).
+        out.extend(
+            Suggestion(tool=rule.suggest, reason=rule.reason, args=one)
+            for one in (args if isinstance(args, list) else [args])
+        )
     return out
 
 
@@ -245,7 +308,10 @@ async def _run_steps(  # noqa: C901, PLR0911  one exit per pipeline step, see ab
             ctx,
             ErrorCode.VALIDATION_ERROR,
             "The input does not match the tool's schema.",
-            details=exc.errors(include_url=False),
+            # exc.json() turns every detail into plain JSON (an exception
+            # raised by a custom validator, an odd input value); errors()
+            # keeps such objects, and the MCP server then cannot send them.
+            details=json.loads(exc.json(include_url=False)),
         )
 
     # 3b. derive the facts the preconditions read (spec hash, validity,
@@ -268,14 +334,22 @@ async def _run_steps(  # noqa: C901, PLR0911  one exit per pipeline step, see ab
     # 5. run with a timeout. fail_after cancels the handler if it takes too
     #    long. Handlers run CPU-heavy work in a thread (anyio.to_thread),
     #    so the timeout and other requests are not blocked meanwhile.
+    key = "|".join(
+        (ctx.principal.id, tool_id, hashing.sha256_hex(hashing.canonical_json(raw_input)))
+    )
+    task = _running_call(key, lambda: tool.handler(validated, ctx))
     try:
         with anyio.fail_after(get_settings().tool_timeout_s):
-            output = await tool.handler(validated, ctx)
+            # shield: the timeout stops the WAITING, not the work.
+            output = await asyncio.shield(task)
     except TimeoutError:
+        _UNCLAIMED.add(key)
         return _fail(
             ctx,
             ErrorCode.TIMEOUT,
-            "The tool took too long. Try a smaller input, or the job-based variant.",
+            "The tool is taking long and is still running. Calling it again with the same "
+            "input waits for that run (it is not started twice); or try a smaller input, "
+            "or the job-based variant.",
         )
     except InvalidInput as exc:
         return _fail(ctx, ErrorCode.VALIDATION_ERROR, str(exc))

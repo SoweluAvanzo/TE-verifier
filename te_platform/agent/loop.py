@@ -190,6 +190,7 @@
 ## ask_user call's tool result (or a "not submitted" result when the designer
 ## typed a message instead).
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -219,6 +220,13 @@ from te_platform.agent.forms import (
     validate_answers,
 )
 from te_platform.agent.mcp_bridge import McpBridge, from_provider_name
+from te_platform.agent.notes import (
+    EMPTY_REPLY_NOTE,
+    PROMISE_NOTE,
+    REPEATED_ERROR_NOTE,
+    not_rerun_text,
+    promised_action,
+)
 from te_platform.agent.providers.base import ChatProvider, Stop, TextDelta, ToolCall, Usage
 from te_platform.config import get_settings
 from te_platform.registry.context import CallContext, Principal, SessionFacts
@@ -277,6 +285,22 @@ class _Turn:
     )
     tool_calls: int = 0
     done: Done | None = None  # set when the turn ends
+    # Guards (agent/notes.py): calls that failed this turn, by tool and
+    # arguments -> their error; how often each (tool, error) occurred; and
+    # whether the model was already reminded to make a call it announced.
+    failed_calls: dict[str, str] = field(default_factory=dict)
+    error_counts: dict[str, int] = field(default_factory=dict)
+    reminded: bool = False
+
+
+def _text_of(message: dict[str, Any]) -> str:
+    """Return the text blocks of a stored (Anthropic-format) assistant message."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    return "".join(
+        b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text"
+    )
 
 
 ## How a model stop without tool calls ends the turn (any other: limit_reached).
@@ -341,15 +365,42 @@ class AgentLoop:
         history.append(message)
         await self.persist("message", message)
 
-    async def _run_tool(self, call: ToolCall) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Run one call; return (provider tool_result block, bridge outcome)."""
+    async def _run_tool(
+        self, call: ToolCall, turn: _Turn | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Run one call; return (provider tool_result block, bridge outcome).
+
+        With a turn: a call that already failed this turn with the SAME
+        arguments is not sent again, and a (tool, error) seen a second time
+        gets a note telling the model to change course (agent/notes.py).
+        """
+        key = f"{call.name}|{json.dumps(call.arguments, sort_keys=True, default=str)}"
+        if turn is not None and key in turn.failed_calls:
+            text = not_rerun_text(turn.failed_calls[key])
+            error = {"error": "repeated_call", "message": text}
+            refused: dict[str, Any] = {
+                "tool": from_provider_name(call.name),
+                "ok": False,
+                "payload": {"ok": False, "error": error},
+                "text": text,
+            }
+            return self.p.tool_result(call.tool_use_id, text, is_error=True), refused
         args = dict(call.arguments)
         # Identity injection: the session is decided by US, never by the
         # model, so a confused (or manipulated) model cannot touch another
         # session. The MCP side checks ownership again (defence in depth).
         args["session_id"] = self.session_id
         outcome = await self.mcp.call(call.name, args)
-        block = self.p.tool_result(call.tool_use_id, outcome["text"], is_error=not outcome["ok"])
+        text = outcome["text"]
+        if turn is not None and not outcome["ok"]:
+            err = outcome["payload"].get("error") or {}
+            message = f"{err.get('error')}: {err.get('message')}"
+            turn.failed_calls[key] = message
+            signature = f"{call.name}|{message}"
+            turn.error_counts[signature] = turn.error_counts.get(signature, 0) + 1
+            if turn.error_counts[signature] >= 2:  # noqa: PLR2004 - the second time
+                text = f"{text}\n\n{REPEATED_ERROR_NOTE}"
+        block = self.p.tool_result(call.tool_use_id, text, is_error=not outcome["ok"])
         return block, outcome
 
     async def _ui_events_for(self, outcome: dict[str, Any]) -> list[AgentEvent]:
@@ -402,7 +453,7 @@ class AgentLoop:
         return []
 
     async def _run_calls(
-        self, calls: list[ToolCall], results: list[dict[str, Any]]
+        self, calls: list[ToolCall], results: list[dict[str, Any]], turn: _Turn | None = None
     ) -> AsyncIterator[AgentEvent]:
         """Run calls in PARALLEL through MCP; append their result blocks to `results`.
 
@@ -418,7 +469,7 @@ class AgentLoop:
             yield ToolStarted(tool_use_id=c.tool_use_id, tool=from_provider_name(c.name))
 
         async def _one(i: int, c: ToolCall) -> None:
-            blocks[i], outcomes[i] = await self._run_tool(c)
+            blocks[i], outcomes[i] = await self._run_tool(c, turn)
 
         async with anyio.create_task_group() as tg:
             for i, c in enumerate(calls):
@@ -580,6 +631,18 @@ class AgentLoop:
                 yield turn.done
                 return
 
+    @staticmethod
+    def _reminder(stop: Stop, reply: _ModelReply, turn: _Turn) -> str:
+        """Return the one-time reminder this reply needs, or "" (agent/notes.py)."""
+        if turn.reminded or reply.calls or stop.reason in ("tool_use", "refusal"):
+            return ""
+        text = _text_of(stop.assistant_message)
+        if not text.strip():  # seen live: an empty reply ended the turn silently
+            return EMPTY_REPLY_NOTE
+        if stop.reason == "end_turn" and promised_action(text):
+            return PROMISE_NOTE
+        return ""
+
     async def _step(
         self,
         history: list[dict[str, Any]],
@@ -598,6 +661,14 @@ class AgentLoop:
         await self._append(history, stop.assistant_message)
         # THIS request's counts only: Repository.tokens_used sums the rows.
         await self.persist("usage", self._account(reply, turn.usage))
+        reminder = self._reminder(stop, reply, turn)
+        if reminder:
+            # The model announced a lookup and stopped, or replied with
+            # nothing at all: remind it once (agent/notes.py); the loop asks
+            # it again.
+            turn.reminded = True
+            await self._append(history, self.p.user_message(reminder, []))
+            return
         if stop.reason != "tool_use" or not reply.calls:
             # end_turn is the final answer; refusal, max_tokens or other also end it.
             turn.done = Done(
@@ -620,7 +691,9 @@ class AgentLoop:
         forms = self._forms_of(reply.calls, results)
         mcp_calls = [c for c in reply.calls if c.name != ASK_USER]
         to_confirm = [c for c in mcp_calls if self._needs_confirmation(from_provider_name(c.name))]
-        async for ev in self._run_calls([c for c in mcp_calls if c not in to_confirm], results):
+        async for ev in self._run_calls(
+            [c for c in mcp_calls if c not in to_confirm], results, turn
+        ):
             yield ev
         if to_confirm or forms:
             async for ev in self._pause(results, to_confirm, forms):

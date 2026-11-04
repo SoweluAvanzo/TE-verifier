@@ -1301,3 +1301,107 @@ def test_out_of_credit_error_tells_what_to_do():
     assert "run out of credits" in str(err) and not err.retryable
     other = anthropic.BadRequestError("tools.0: invalid", response=response, body=body)
     assert "could not answer" in str(_provider_error(other))
+
+
+## --- Guards against loops seen in live use (agent/notes.py) ---------------------------------
+def _bad_validate(tool_use_id: str, spec: Any) -> ToolCall:
+    # spec must be text or a mapping: a number is refused by the tool's schema,
+    # always with the same message.
+    return ToolCall(tool_use_id, to_provider_name("spec.validate.v1"), {"spec": spec})
+
+
+def _tool_texts(message: dict[str, Any]) -> list[str]:
+    return [
+        b["content"] if isinstance(b["content"], str) else json.dumps(b["content"])
+        for b in message["content"]
+        if b.get("type") == "tool_result"
+    ]
+
+
+## The same error twice gets a note to change course; the very same call
+## (same arguments) is not sent a third time but answered by the platform.
+@pytest.mark.db
+@pytest.mark.anyio
+async def test_repeated_failing_calls_are_noted_and_not_rerun(mcp_url: str) -> None:
+    from te_platform.agent.notes import REPEATED_ERROR_NOTE
+
+    user = _user()
+    provider = FakeProvider(
+        [
+            ScriptedTurn(tool_calls=[_bad_validate("t1", 5)]),
+            ScriptedTurn(tool_calls=[_bad_validate("t2", 6)]),
+            ScriptedTurn(tool_calls=[_bad_validate("t3", 5)]),
+            ScriptedTurn(text="I could not validate the design."),
+        ]
+    )
+    history: list[dict[str, Any]] = []
+    async with _bridge(user) as bridge:
+        loop, _ = _loop(provider, bridge, user, _new_session(user))
+        events = await _run(loop, TurnInput("check"), history=history)
+    results = [m for m in history if m["role"] == "user" and _tool_texts(m)]
+    first, second, third = (_tool_texts(m)[0] for m in results)
+    assert "validation_error" in first and REPEATED_ERROR_NOTE not in first
+    assert REPEATED_ERROR_NOTE in second  # same error, second time
+    assert third.startswith("Not run again")  # same arguments as t1
+    finished = [ev for ev in events if isinstance(ev, ToolFinished)]
+    assert [ev.error_code for ev in finished] == [
+        "validation_error",
+        "validation_error",
+        "repeated_call",
+    ]
+    assert isinstance(events[-1], Done) and events[-1].reason == "final_answer"
+
+
+## "Let me check ..." with no tool call: the model is reminded ONCE.
+@pytest.mark.db
+@pytest.mark.anyio
+async def test_an_announced_lookup_without_a_call_is_reminded_once(mcp_url: str) -> None:
+    from te_platform.agent.notes import PROMISE_NOTE
+
+    user = _user()
+    provider = FakeProvider(
+        [
+            ScriptedTurn(text="Good question - let me check what the research says."),
+            ScriptedTurn(text="Let me check again."),
+        ]
+    )
+    async with _bridge(user) as bridge:
+        loop, _ = _loop(provider, bridge, user, _new_session(user))
+        events = await _run(loop, TurnInput("does velocity depend on wealth?"))
+    assert len(provider.requests) == 2  # reminded once, then the turn ends
+    last_sent = provider.requests[1]["messages"][-1]
+    assert last_sent["role"] == "user"
+    assert any(b.get("text") == PROMISE_NOTE for b in last_sent["content"])
+    assert isinstance(events[-1], Done) and events[-1].reason == "final_answer"
+
+
+## A normal answer ending with "let me know" is not a promise: no reminder.
+@pytest.mark.db
+@pytest.mark.anyio
+async def test_a_normal_answer_is_not_reminded(mcp_url: str) -> None:
+    user = _user()
+    provider = FakeProvider([ScriptedTurn(text="Here it is. Let me know if you want more.")])
+    async with _bridge(user) as bridge:
+        loop, _ = _loop(provider, bridge, user, _new_session(user))
+        events = await _run(loop, TurnInput("hi"))
+    assert len(provider.requests) == 1
+    assert isinstance(events[-1], Done) and events[-1].reason == "final_answer"
+
+
+## An empty reply (no text, no tool call; seen live with a reasoning model)
+## gets one reminder instead of ending the turn with nothing.
+@pytest.mark.db
+@pytest.mark.anyio
+async def test_an_empty_reply_is_reminded_once(mcp_url: str) -> None:
+    from te_platform.agent.notes import EMPTY_REPLY_NOTE
+
+    user = _user()
+    provider = FakeProvider([ScriptedTurn(text=""), ScriptedTurn(text="Here is the answer.")])
+    async with _bridge(user) as bridge:
+        loop, _ = _loop(provider, bridge, user, _new_session(user))
+        events = await _run(loop, TurnInput("does velocity depend on wealth?"))
+    assert len(provider.requests) == 2
+    assert any(
+        b.get("text") == EMPTY_REPLY_NOTE for b in provider.requests[1]["messages"][-1]["content"]
+    )
+    assert isinstance(events[-1], Done) and events[-1].reason == "final_answer"

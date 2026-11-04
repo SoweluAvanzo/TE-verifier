@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,10 @@ MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 ## TE_* variable, which config.py would refuse as unknown), else fastembed's
 ## default cache, downloaded on first use.
 BATCH = 64
+## How often a search checks whether the stored vectors changed (a paper
+## added or replaced): the check scans the table, about 200 ms, so it runs at
+## most this often; a new paper is searchable by meaning within this delay.
+RECHECK_S = 30.0
 
 
 @cache
@@ -45,7 +50,10 @@ def _model() -> Any:
     """Load the embedding model once per process."""
     from fastembed import TextEmbedding  # noqa: PLC0415 - optional dependency, loaded on use
 
-    return TextEmbedding(MODEL, cache_dir=os.environ.get("FASTEMBED_CACHE_PATH") or None)
+    # One thread: the model runtime otherwise starts one per host core, and
+    # in a CPU-limited container they wait for each other (93 ms per query
+    # instead of 17 ms, measured in the mcp container).
+    return TextEmbedding(MODEL, cache_dir=os.environ.get("FASTEMBED_CACHE_PATH") or None, threads=1)
 
 
 def available() -> bool:
@@ -95,10 +103,15 @@ class _Index:
         self._ids = np.zeros(0, dtype=np.int64)
         self._matrix = np.zeros((0, 0), dtype=np.float32)
         self._fingerprint = (0, 0)
+        self._checked_at = float("-inf")
 
     def get(self) -> tuple[np.ndarray, np.ndarray]:
+        now = time.monotonic()
+        if now - self._checked_at < RECHECK_S:
+            return self._ids, self._matrix
         with session_scope() as db:
             fingerprint = LiteratureRepository(db).embeddings_fingerprint(MODEL)
+        self._checked_at = now
         with self._lock:
             if fingerprint != self._fingerprint:
                 self._fingerprint = fingerprint

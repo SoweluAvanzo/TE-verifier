@@ -22,6 +22,13 @@ from te_platform.literature.search import _fuse, search
 needs_model = pytest.mark.skipif(not embed.available(), reason="embedding model not available")
 
 
+## These tests add passages and search at once: check the stored vectors on
+## every search instead of every RECHECK_S seconds.
+@pytest.fixture(autouse=True)
+def _recheck_always(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embed, "RECHECK_S", 0.0)
+
+
 ## --- Pure parts ---------------------------------------------------------------------------
 
 
@@ -182,3 +189,41 @@ def test_replaced_passages_are_reloaded_even_when_their_number_is_unchanged() ->
         assert first not in near
     finally:
         remove(second_work)
+
+
+## Between checks the index answers from memory (a check scans the table);
+## after RECHECK_S it sees new passages.
+@needs_model
+@pytest.mark.db
+def test_the_index_rechecks_only_after_the_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    index = embed._Index()
+    monkeypatch.setattr(embed, "RECHECK_S", 3600.0)
+    index.get()  # loads (the first get always checks)
+    key = "test" + uuid4().hex[:12]
+    meta = {
+        "citation_key": key,
+        "title": "T",
+        "authors": "Doe, Jane",
+        "year": 2024,
+        "venue": None,
+        "doi": None,
+        "licence": "CC-BY-4.0",
+        "full_text_allowed": True,
+    }
+    with session_scope() as db:
+        work_id = LiteratureRepository(db).add_work(meta, [Chunk("Fresh passage.", 1, "")])
+    try:
+        with session_scope() as db:
+            chunk_id = db.query(m.Chunk.id).filter_by(work_id=work_id).scalar()
+            LiteratureRepository(db).save_embeddings(
+                [(chunk_id, embed.embed(["Fresh passage."])[0].tobytes())], embed.MODEL
+            )
+        ids, _ = index.get()
+        assert chunk_id not in ids  # within the interval: not checked again
+        monkeypatch.setattr(embed, "RECHECK_S", 0.0)
+        ids, _ = index.get()
+        assert chunk_id in ids
+    finally:
+        with session_scope() as db:
+            db.query(m.Chunk).filter_by(work_id=work_id).delete()
+            db.query(m.Work).filter_by(id=work_id).delete()

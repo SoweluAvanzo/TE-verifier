@@ -234,7 +234,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MPLCONFIGDIR=/tmp/matplotlib \
-    FASTEMBED_CACHE_PATH=/app/models
+    FASTEMBED_CACHE_PATH=/app/models \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1
 
 USER appuser
 
