@@ -73,7 +73,7 @@ markers = ["db: needs a running PostgreSQL (TE_DATABASE_URL)"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["MPC_server", "reports"]   # separate project / generated output
+extend-exclude = ["reports"]   # generated output
 
 [tool.ruff.lint]
 # Safe set for the existing code: real errors only, no style opinions.
