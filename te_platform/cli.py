@@ -129,6 +129,7 @@ import sys
 from te_platform.config import get_settings
 from te_platform.db.repo import AuthRepository, LiteratureRepository
 from te_platform.db.session import session_scope
+from te_platform.errors import NotFound
 from te_platform.security import api_keys
 
 ## Guide 11.1: relative import ("." = the te_platform package), so that it
@@ -242,6 +243,9 @@ def _lit_add(args: argparse.Namespace) -> int:
         pathlib.Path(args.bib),
         args.licence,
         full_text_allowed=args.full_text_allowed,
+        tier=args.tier,
+        systems=args.systems.split(",") if args.systems else None,
+        source_url=args.url,
     )
     with session_scope() as db:
         summary = LiteratureRepository(db).work_summary(work_id)
@@ -274,8 +278,41 @@ def _lit_add(args: argparse.Namespace) -> int:
     return 0 if failed == 0 else 1
 
 
+## --- lit rechunk --------------------------------------------------------------------
+## Splits stored works again with the current chunker. Labels are carried over
+## where the text overlaps; run `lit embed` and then `lit enrich` afterwards.
+def _lit_rechunk(args: argparse.Namespace) -> int:
+    from .literature.rechunk import rechunk_work  # noqa: PLC0415 (needs the "literature" extra)
+
+    pdfs = sorted(pathlib.Path(args.folder).glob("*.pdf"))
+    if args.work:
+        pdfs = [p for p in pdfs if p.stem == args.work]
+    failed = 0
+    for pdf in pdfs:
+        try:
+            r = rechunk_work(pdf.stem, pdf)
+            print(
+                f"{pdf.stem}: {r['before']} -> {r['after']} passages, "
+                f"labels kept {r['labels_kept']}"
+            )
+        except (ValueError, NotFound) as exc:
+            failed += 1
+            print(f"{pdf.stem}: NOT changed: {exc}")
+    return 0 if failed == 0 else 1
+
+
+## --- lit catalog --------------------------------------------------------------------
+## Writes literature/catalog.yaml (tier, systems, link) to the stored works.
+def _lit_catalog(_args: argparse.Namespace) -> int:
+    from .literature.catalog import all_entries  # noqa: PLC0415
+
+    with session_scope() as db:
+        print(f"Updated {LiteratureRepository(db).apply_catalog(all_entries())} works.")
+    return 0
+
+
 ## --- Parser ------------------------------------------------------------------------
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 (one declaration per command)
     parser = argparse.ArgumentParser(
         prog="te-platform",
         description="Administration of the agent platform.",
@@ -345,6 +382,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="only if the licence allows storing and quoting the full text",
     )
+    add.add_argument(
+        "--tier",
+        type=int,
+        choices=[0, 1, 2, 3],
+        help="1 blockchain-based, 2 related, 3 foundations, 0 law or methods "
+        "(default: literature/catalog.yaml)",
+    )
+    add.add_argument("--systems", help="comma-separated, e.g. 'community_token,dao' or 'law'")
+    add.add_argument("--url", help="where a reader finds the original, if not through its DOI")
     add.add_argument("--no-label", action="store_true", help="skip labelling (no model call)")
     add.add_argument("--model", help="labelling model id (default: TE_AGENT_MODEL)")
     add.add_argument(
@@ -353,6 +399,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="JSON merged into each labelling request",
     )
     add.set_defaults(func=_lit_add)
+    rechunk = lit.add_parser(
+        "rechunk", help="split stored works again, keeping labels where the text overlaps"
+    )
+    rechunk.add_argument("folder", help="folder with <citation_key>.pdf files")
+    rechunk.add_argument("--work", help="only this citation key")
+    rechunk.set_defaults(func=_lit_rechunk)
+    catalog = lit.add_parser("catalog", help="apply literature/catalog.yaml to the stored works")
+    catalog.set_defaults(func=_lit_catalog)
     embed = lit.add_parser("embed", help="store a meaning vector for passages without one")
     embed.add_argument("--limit", type=int, help="embed at most this many passages")
     embed.set_defaults(func=_lit_embed)

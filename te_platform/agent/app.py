@@ -115,6 +115,9 @@ from te_platform.observability import configure_logging
 ## Phase 8.5: sessions and the streaming message endpoint (agent/chat_api.py).
 from .chat_api import router as chat_router
 
+## Source viewer: a passage and its surroundings (agent/literature_api.py).
+from .literature_api import router as literature_router
+
 ## Phase 9.0: login and logout (agent/login_api.py).
 from .login_api import router as login_router
 
@@ -156,6 +159,7 @@ app.include_router(login_router)
 app.include_router(spec_router)
 ## Phase 10.3: report download.
 app.include_router(report_router)
+app.include_router(literature_router)
 
 
 ## --- Endpoints ---------------------------------------------------------------------------

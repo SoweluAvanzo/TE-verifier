@@ -216,8 +216,16 @@ class ErrorEvent(BaseModel):
 
 
 ## The union of all event types: loop.py yields `AgentEvent` values.
+class SourcesFound(BaseModel):
+    """Passages the agent retrieved: the browser lists and links them (agent/sources.py)."""
+
+    type: Literal["sources_found"] = "sources_found"
+    sources: list[dict[str, Any]]
+
+
 AgentEvent = (
     TextDelta
+    | SourcesFound
     | ToolStarted
     | ToolFinished
     | ConfirmationRequired

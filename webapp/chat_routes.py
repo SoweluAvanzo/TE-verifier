@@ -147,6 +147,12 @@ def chat_page() -> str:
 ## The hook is registered on the BLUEPRINT, so only /login and /chat get
 ## it. The existing pages (form, explore) build inline style attributes and
 ## get the site-wide policy from Caddy at guide 12.3.
+@chat_bp.get("/literature/passage/<int:passage_id>")
+def passage_page(passage_id: int) -> str:
+    """Render the source viewer (no data embedded: it asks the agent service)."""
+    return render_template("passage.html", passage_id=passage_id)
+
+
 _CSP = "; ".join(
     [
         "default-src 'self'",

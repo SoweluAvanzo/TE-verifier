@@ -1,0 +1,99 @@
+# Curator's classification of the collection. One entry per work, by citation key.
+#
+# tier: how close a work is to tokenised systems; search.py ranks by it, and the
+#   agent reads each tier differently (prompts/system.md).
+#   1 about blockchain-based systems
+#   2 related but not blockchain-based (paper local currencies, mutual credit, time banks)
+#   3 foundational theory, written for other settings: it must be adapted
+#   0 law and methods: applies by subject, not by closeness; never promoted or demoted
+# systems: what the work is about (SYSTEM_TYPES in catalog.py)
+# url: where a reader finds the original, when the DOI does not lead there
+works:
+  # --- Tier 1: blockchain-based ---------------------------------------------------
+  domenicale2026six: {tier: 1, systems: [community_token]}
+  grollemund2021proof: {tier: 1, systems: [community_token]}
+  gritti2023generic: {tier: 1, systems: [community_token]}
+  hayek2023lcoin: {tier: 1, systems: [community_token]}
+  elissee2022blockchain: {tier: 1, systems: [community_token], url: "https://hal.science/hal-03659241"}
+  kim2024validation: {tier: 1, systems: [platform_token, community_token]}
+  cong2020tokenomics: {tier: 1, systems: [platform_token]}
+  cong2022tokenbased: {tier: 1, systems: [platform_token]}
+  catalini2020some: {tier: 1, systems: [platform_token]}
+  lesavre2021nist: {tier: 1, systems: [platform_token, protocol]}
+  kampakis2022auditing: {tier: 1, systems: [stablecoin, platform_token]}
+  klagesmundt2021instability: {tier: 1, systems: [stablecoin, defi]}
+  bartoletti2022theory: {tier: 1, systems: [defi]}
+  gudgeon2020decentralized: {tier: 1, systems: [defi]}
+  lloyd2023emergent: {tier: 1, systems: [defi, dao]}
+  barbereau2022defi: {tier: 1, systems: [defi, dao]}
+  sun2024decentralization: {tier: 1, systems: [defi, dao]}
+  austgen2023dao: {tier: 1, systems: [dao]}
+  axelsen2022when: {tier: 1, systems: [dao]}
+  fritsch2022voting: {tier: 1, systems: [dao]}
+  feichtinger2023hidden: {tier: 1, systems: [dao]}
+  weidener2025delegated: {tier: 1, systems: [dao]}
+  cocco2016modeling: {tier: 1, systems: [protocol]}
+  cocco2019agent: {tier: 1, systems: [protocol]}
+  gencer2018decentralization: {tier: 1, systems: [protocol]}
+  kwon2019impossibility: {tier: 1, systems: [protocol]}
+  schilling2019some: {tier: 1, systems: [protocol]}
+  roughgarden2020transaction: {tier: 1, systems: [protocol]}
+  reijsbergen2021transaction: {tier: 1, systems: [protocol]}
+  liu2022empirical: {tier: 1, systems: [protocol]}
+  sai2021taxonomy: {tier: 1, systems: [protocol]}
+  cong2025tokenomics: {tier: 1, systems: [protocol]}
+  campajola2022microvelocity: {tier: 1, systems: [protocol]}
+  tolmach2021survey: {tier: 1, systems: [protocol, defi]}
+  # --- Tier 2: related, not blockchain-based --------------------------------------
+  gelleri2009chiemgauer: {tier: 2, systems: [local_currency]}
+  godschalk2012demurrage: {tier: 2, systems: [local_currency]}
+  seyfang2013growing: {tier: 2, systems: [local_currency, mutual_credit, time_bank]}
+  seyfang2013desperately: {tier: 2, systems: [local_currency, mutual_credit, time_bank]}
+  seyfang2016diffusion: {tier: 2, systems: [local_currency, mutual_credit, time_bank]}
+  michel2015community: {tier: 2, systems: [local_currency, mutual_credit, time_bank]}
+  delarosa2015velocity: {tier: 2, systems: [local_currency, mutual_credit]}
+  tichit2019social: {tier: 2, systems: [local_currency]}
+  kanters2023physiology: {tier: 2, systems: [local_currency]}
+  kanters2024business: {tier: 2, systems: [local_currency]}
+  delandre2024topology: {tier: 2, systems: [local_currency], url: "https://www.ijccr.net/article/view/9503"}
+  schraven2001mutual: {tier: 2, systems: [mutual_credit]}
+  greco2013scale: {tier: 2, systems: [mutual_credit]}
+  stodder2016macro: {tier: 2, systems: [mutual_credit]}
+  littera2017sardex: {tier: 2, systems: [mutual_credit]}
+  iosifidis2018cyclic: {tier: 2, systems: [mutual_credit]}
+  ozanne2010time: {tier: 2, systems: [time_bank]}
+  collom2012key: {tier: 2, systems: [time_bank]}
+  valor2016time: {tier: 2, systems: [time_bank]}
+  # --- Tier 3: foundations --------------------------------------------------------
+  fisher1911purchasing: {tier: 3, systems: [foundations], url: "https://archive.org/details/purchasingpower00fish"}
+  fehr2000cooperation: {tier: 3, systems: [foundations]}
+  fehr2002altruistic: {tier: 3, systems: [foundations]}
+  gneezy2000fine: {tier: 3, systems: [foundations]}
+  frey2001motivation: {tier: 3, systems: [foundations]}
+  rochet2003platform: {tier: 3, systems: [foundations]}
+  ostrom2009beyond: {tier: 3, systems: [foundations], url: "https://www.nobelprize.org/prizes/economic-sciences/2009/ostrom/lecture/"}
+  cox2010review: {tier: 3, systems: [foundations]}
+  centola2018experimental: {tier: 3, systems: [foundations]}
+  li2026mathematical: {tier: 3, systems: [foundations]}
+  buterin2019flexible: {tier: 3, systems: [foundations]}
+  # --- Tier 0: methods ------------------------------------------------------------
+  windrum2007empirical: {tier: 0, systems: [methods], url: "https://www.jasss.org/10/2/8.html"}
+  tenbroeke2016which: {tier: 0, systems: [methods]}
+  grimm2020odd: {tier: 0, systems: [methods]}
+  collins2024methods: {tier: 0, systems: [methods]}
+  lamperti2018agent: {tier: 0, systems: [methods]}
+  epa2011expert: {tier: 0, systems: [methods]}
+  colson2018expert: {tier: 0, systems: [methods]}
+  ferrari2016ambiguity: {tier: 0, systems: [methods]}
+  # --- Tier 0: law ----------------------------------------------------------------
+  mica2023: {tier: 0, systems: [law], url: "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32023R1114"}
+  tfr2023: {tier: 0, systems: [law], url: "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32023R1113"}
+  amlr2024: {tier: 0, systems: [law], url: "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32024R1624"}
+  psd2_2015: {tier: 0, systems: [law], url: "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32015L2366"}
+  emd2_2009: {tier: 0, systems: [law], url: "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32009L0110"}
+  vat2006: {tier: 0, systems: [law], url: "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32006L0112"}
+  it_l53_2000: {tier: 0, systems: [law], url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:legge:2000-03-08;53~art27"}
+  ade2020risposta180: {tier: 0, systems: [law]}
+  eba_esma2024classification: {tier: 0, systems: [law]}
+  esma2024qualification: {tier: 0, systems: [law], url: "https://www.esma.europa.eu/node/217149"}
+  sec2026interpretation: {tier: 0, systems: [law], url: "https://www.sec.gov/rules-regulations/2026/03/s7-2026-09"}

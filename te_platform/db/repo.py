@@ -871,7 +871,12 @@ def _in_every_language(make: Callable[[str], Any]) -> Any:
 _LIGHT_CHUNK = (defer(m.Chunk.tsv), defer(m.Chunk.embedding))
 
 
-def _label_filters(failure_mode: str | None, parameter: str | None, kind: str | None) -> list[Any]:
+def _label_filters(
+    failure_mode: str | None,
+    parameter: str | None,
+    kind: str | None,
+    formal: bool | None = None,  # noqa: FBT001 (mirrors the search filters, in their order)
+) -> list[Any]:
     """Return the WHERE conditions for lit.search.v1's label filters.
 
     A passage not labelled yet (enriched_by NULL) passes every filter: while
@@ -886,9 +891,11 @@ def _label_filters(failure_mode: str | None, parameter: str | None, kind: str | 
         conditions.append(m.Chunk.parameters.contains([parameter]))
     if kind is not None:
         conditions.append(m.Chunk.kind == kind)
+    # `formal` comes from the text itself (chunking.is_formal), so every passage has it.
+    exact = [m.Chunk.formal.is_(True)] if formal else []
     if not conditions:
-        return []
-    return [or_(m.Chunk.enriched_by.is_(None), and_(*conditions))]
+        return exact
+    return [*exact, or_(m.Chunk.enriched_by.is_(None), and_(*conditions))]
 
 
 def _passage_row(c: m.Chunk, w: m.Work, score: float) -> dict[str, Any]:
@@ -906,6 +913,31 @@ def _passage_row(c: m.Chunk, w: m.Work, score: float) -> dict[str, Any]:
         "context": c.context,
         "text": c.text,
         "score": score,
+        "position": c.position,
+        "locator": c.locator,
+        "formal": c.formal,
+        "kind": c.kind,
+        "tier": w.tier,
+        "systems": list(w.systems),
+        "source_url": w.source_url,
+    }
+
+
+VIEW_NEIGHBOURS = 4  # passages shown on each side in the source viewer
+
+
+def _work_row(w: m.Work) -> dict[str, Any]:
+    """Return a work's bibliographic and catalog data."""
+    return {
+        "citation_key": w.citation_key,
+        "title": w.title,
+        "authors": w.authors,
+        "year": w.year,
+        "venue": w.venue,
+        "doi": w.doi,
+        "tier": w.tier,
+        "systems": list(w.systems),
+        "source_url": w.source_url,
     }
 
 
@@ -943,12 +975,69 @@ class LiteratureRepository:
                 section=c.section,
                 page=c.page,
                 text=c.text,
+                position=position,
+                locator=c.locator,
+                formal=c.formal,
                 context=header,
                 language=language,
             )
-            for c in chunks
+            for position, c in enumerate(chunks)
         )
         return work_id
+
+    def labelled_passages(self, citation_key: str) -> list[dict[str, Any]]:
+        """Return a work's passages with their labels, to carry them over to new passages."""
+        stmt = (
+            select(m.Chunk)
+            .options(*_LIGHT_CHUNK)
+            .join(m.Work, m.Work.id == m.Chunk.work_id)
+            .where(m.Work.citation_key == citation_key)
+        )
+        return [
+            {
+                "text": c.text,
+                "context": c.context,
+                "failure_modes": c.failure_modes,
+                "parameters": c.parameters,
+                "kind": c.kind,
+                "enriched_by": c.enriched_by,
+            }
+            for c in self._db.scalars(stmt).all()
+        ]
+
+    def replace_passages(
+        self,
+        citation_key: str,
+        chunks: Sequence[Chunk],
+        labels: Sequence[dict[str, Any] | None],
+        entry: dict[str, Any],
+    ) -> None:
+        """Replace a work's passages (labels: per passage, those to keep) and its catalog data."""
+        work = self._db.scalar(select(m.Work).where(m.Work.citation_key == citation_key))
+        if work is None:
+            raise NotFound(f"Work {citation_key} not found.")
+        work.tier, work.systems = entry["tier"], list(entry["systems"])
+        work.source_url = entry.get("url")
+        self._db.query(m.Chunk).filter(m.Chunk.work_id == work.id).delete()
+        header = passage_header(work.authors, work.year, work.title)
+        for position, (c, kept) in enumerate(zip(chunks, labels, strict=True)):
+            self._db.add(
+                m.Chunk(
+                    work_id=work.id,
+                    section=c.section,
+                    page=c.page,
+                    text=c.text,
+                    position=position,
+                    locator=c.locator,
+                    formal=c.formal,
+                    language=work.language,
+                    context=kept["context"] if kept else header,
+                    failure_modes=list(kept["failure_modes"]) if kept else [],
+                    parameters=list(kept["parameters"]) if kept else [],
+                    kind=kept["kind"] if kept else None,
+                    enriched_by=kept["enriched_by"] if kept else None,
+                )
+            )
 
     ## `te-platform lit enrich` (literature/enrich.py): the passages that have
     ## no labels yet, with what the model needs to know about their paper.
@@ -999,6 +1088,84 @@ class LiteratureRepository:
             chunk.embedding_stale = chunk.embedding is not None
 
     ## `te-platform lit add`: what the curator checks after adding a paper.
+    def apply_catalog(self, entries: dict[str, dict[str, Any]]) -> int:
+        """Write the curator's tier, systems and link to the works; return how many changed."""
+        changed = 0
+        for work in self._db.scalars(select(m.Work)).all():
+            entry = entries.get(work.citation_key)
+            if entry is not None:
+                work.tier, work.systems = entry["tier"], list(entry["systems"])
+                work.source_url = entry.get("url")
+                changed += 1
+        return changed
+
+    def work_outline(self, citation_key: str) -> dict[str, Any]:
+        """Return a work's data and its sections in reading order, for choosing what to read."""
+        work = self._db.scalar(select(m.Work).where(m.Work.citation_key == citation_key))
+        if work is None:
+            raise NotFound(f"No work with citation key {citation_key}.")
+        rows = self._db.execute(
+            select(m.Chunk.section, m.Chunk.page, m.Chunk.formal)
+            .where(m.Chunk.work_id == work.id)
+            .order_by(m.Chunk.position)
+        ).all()
+        sections: dict[str, dict[str, Any]] = {}
+        for section, page, formal in rows:
+            entry = sections.setdefault(
+                section, {"section": section, "page": page, "passages": 0, "formal_passages": 0}
+            )
+            entry["passages"] += 1
+            entry["formal_passages"] += int(formal)
+        return {**_work_row(work), "sections": list(sections.values())}
+
+    def section_passages(
+        self, citation_key: str, section: str, *, offset: int = 0, limit: int = 8
+    ) -> list[dict[str, Any]]:
+        """Return the passages of a section in reading order (a part of its name is enough)."""
+        name = section.replace("%", r"\%").replace("_", r"\_")
+        stmt = (
+            select(m.Chunk, m.Work)
+            .options(*_LIGHT_CHUNK)
+            .join(m.Work, m.Work.id == m.Chunk.work_id)
+            .where(m.Work.citation_key == citation_key, m.Chunk.section.ilike(f"%{name}%"))
+            .order_by(m.Chunk.position)
+            .offset(offset)
+            .limit(limit)
+        )
+        return [_passage_row(c, w, 0.0) for c, w in self._db.execute(stmt).all()]
+
+    def passages_around(
+        self, passage_id: int, *, before: int = 2, after: int = 2
+    ) -> list[dict[str, Any]]:
+        """Return a passage and its neighbours in the document, in reading order."""
+        chunk = self._db.get(m.Chunk, passage_id, options=_LIGHT_CHUNK)
+        if chunk is None:
+            raise NotFound(f"No passage {passage_id}.")
+        stmt = (
+            select(m.Chunk, m.Work)
+            .options(*_LIGHT_CHUNK)
+            .join(m.Work, m.Work.id == m.Chunk.work_id)
+            .where(
+                m.Chunk.work_id == chunk.work_id,
+                m.Chunk.position.between(chunk.position - before, chunk.position + after),
+            )
+            .order_by(m.Chunk.position)
+        )
+        return [_passage_row(c, w, 0.0) for c, w in self._db.execute(stmt).all()]
+
+    def passage_view(self, passage_id: int) -> dict[str, Any]:
+        """Return what a reader sees: the passage, its section around it, and where to go next."""
+        window = self.passages_around(passage_id, before=VIEW_NEIGHBOURS, after=VIEW_NEIGHBOURS)
+        current = next(r for r in window if r["id"] == passage_id)
+        section = [r for r in window if r["section"] == current["section"]]
+        index = {r["position"]: r["id"] for r in window}
+        return {
+            "passage": current,
+            "section_passages": section,
+            "previous_id": index.get(current["position"] - 1),
+            "next_id": index.get(current["position"] + 1),
+        }
+
     def work_summary(self, work_id: str, samples: int = 3) -> dict[str, Any]:
         """Return a work's key, language, passage count and a few evenly spread passages."""
         work = self._db.get(m.Work, work_id)
@@ -1037,7 +1204,7 @@ class LiteratureRepository:
     ## Optional filters on the passages' labels (literature/enrich.py):
     ## failure_mode ("FM1".."FM6"), parameter (enrich.PARAMETERS) and kind
     ## (enrich.KINDS). Unlabelled passages never match a filter.
-    def search_passages(
+    def search_passages(  # noqa: PLR0913 (keyword-only filters)
         self,
         query: str,
         limit: int,
@@ -1045,9 +1212,10 @@ class LiteratureRepository:
         failure_mode: str | None = None,
         parameter: str | None = None,
         kind: str | None = None,
+        formal: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Return the best-matching passages with their paper's citation data."""
-        filters = _label_filters(failure_mode, parameter, kind)
+        filters = _label_filters(failure_mode, parameter, kind, formal)
         rows = self._passages(
             _in_every_language(lambda cfg: func.websearch_to_tsquery(cfg, query)), limit, filters
         )
@@ -1074,20 +1242,23 @@ class LiteratureRepository:
 
     ## Hybrid search (literature/search.py): the passages found by meaning,
     ## with the same filters and row shape as the keyword search.
-    def passages_by_ids(
+    def passages_by_ids(  # noqa: PLR0913 (keyword-only filters)
         self,
         ids: Sequence[int],
         *,
         failure_mode: str | None = None,
         parameter: str | None = None,
         kind: str | None = None,
+        formal: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Return the given passages (those matching the filters), in the order of `ids`."""
         stmt = (
             select(m.Chunk, m.Work)
             .options(*_LIGHT_CHUNK)
             .join(m.Work, m.Work.id == m.Chunk.work_id)
-            .where(m.Chunk.id.in_(list(ids)), *_label_filters(failure_mode, parameter, kind))
+            .where(
+                m.Chunk.id.in_(list(ids)), *_label_filters(failure_mode, parameter, kind, formal)
+            )
         )
         found = {c.id: _passage_row(c, w, 0.0) for c, w in self._db.execute(stmt).all()}
         return [found[i] for i in ids if i in found]

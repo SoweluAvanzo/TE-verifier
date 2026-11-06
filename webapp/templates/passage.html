@@ -1,0 +1,37 @@
+{# NOTE: webapp/templates/passage.html: the source viewer. It opens in its own tab
+   from a citation in the chat and asks the agent service for the passage
+   (static/passage.js), so it is shown only to logged-in users. #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Source: Token Economy Verifier</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}" />
+</head>
+<body class="passage-page" data-passage-id="{{ passage_id }}">
+  <main class="passage-main">
+    <p id="passage-status" class="passage-status" role="status">Loading the passage…</p>
+    <article id="passage" hidden>
+      <h1 id="p-title"></h1>
+      <p id="p-byline" class="passage-byline"></p>
+      <p id="p-where" class="passage-where"></p>
+      <dl class="passage-facts">
+        <dt>Kind of evidence</dt><dd id="p-evidence"></dd>
+        <dt>Source group</dt><dd id="p-group"></dd>
+        <dt>Reading it</dt><dd id="p-how"></dd>
+      </dl>
+      <p id="p-context" class="passage-context"></p>
+      <div id="p-text" class="passage-text"></div>
+      <nav class="passage-nav" aria-label="Move through the document">
+        <a id="p-prev" hidden>Previous passage</a>
+        <a id="p-next" hidden>Next passage</a>
+        <a id="p-original" hidden target="_blank" rel="noopener">Open the original</a>
+      </nav>
+      <p class="passage-note">Text extracted from the PDF: formulas and tables may be garbled. Check the original before relying on them.</p>
+    </article>
+  </main>
+  <script src="{{ url_for('static', filename='passage.js') }}"></script>
+</body>
+</html>

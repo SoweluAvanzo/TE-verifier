@@ -35,7 +35,7 @@ db = ["sqlalchemy>=2.0", "alembic>=1.13", "psycopg[binary]>=3.2"]
 jobs = ["redis>=5.0", "rq>=1.16"]
 agent = ["fastapi>=0.115", "uvicorn>=0.30", "anthropic>=1.0", "mcp>=2.3", "httpx2>=2.15"]
 reports = ["weasyprint>=62", "jinja2>=3.1", "matplotlib>=3.8"]
-literature = ["pypdf>=4.0", "fastembed>=0.7"]  # fastembed: local multilingual embeddings for search
+literature = ["pypdf>=4.0", "pdfplumber>=0.11", "fastembed>=0.7"]  # fastembed: local multilingual embeddings for search
 evals = ["httpx2>=2.15", "anthropic>=1.0"]
 
 [project.scripts]
@@ -58,6 +58,8 @@ te-platform = "te_platform.cli:main"
 "jobs.cancel.v1" = "te_platform.tools.jobs_cancel:TOOL"
 "graph.flow.v1" = "te_platform.tools.graph_flow:TOOL"
 "lit.search.v1" = "te_platform.tools.lit_search:TOOL"
+"lit.read.v1" = "te_platform.tools.lit_read:TOOL"
+"spec.save.v1" = "te_platform.tools.spec_save:TOOL"
 "report.render_pdf.v1" = "te_platform.tools.report_render_pdf:TOOL"
 "report.publish.v1" = "te_platform.tools.report_publish:TOOL"
 "export.cadcad.v1" = "te_platform.tools.export_cadcad:TOOL"

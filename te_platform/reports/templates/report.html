@@ -342,7 +342,7 @@
     {% for c in citations %}
       <li>[{{ c.get("citation_key", "") }}] {{ c.get("authors", "") }}{% if c.get("year") %} ({{ c.year }}){% endif %}.
         <em>{{ c.get("title", "") }}</em>.{% if c.get("venue") %} {{ c.venue }}.{% endif %}
-        {% if c.get("doi") %}doi:{{ c.doi }}{% endif %}</li>
+        {% if c.get("original_url") %}<a href="{{ c.original_url }}">{{ c.original_url }}</a>{% elif c.get("doi") %}doi:{{ c.doi }}{% endif %}</li>
     {% endfor %}
     </ol>
   </section>

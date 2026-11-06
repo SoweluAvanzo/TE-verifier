@@ -392,6 +392,16 @@ class Work(Base):
     # "en", "it" or "fr", detected at ingestion (literature/chunking.py): the
     # search index stems its passages with this language's rules.
     language: Mapped[str] = mapped_column(String(2), default="en", server_default="en")
+    # How close the work is to tokenised systems (literature/catalog.yaml):
+    # 1 blockchain-based, 2 related but not blockchain-based (paper local
+    # currencies, mutual credit), 3 foundations to adapt, 0 law and methods.
+    tier: Mapped[int] = mapped_column(default=0, server_default="0")
+    # The kinds of system it is about: community_token, defi, law, methods, ...
+    systems: Mapped[list[str]] = mapped_column(
+        ARRAY(String(32)), default=list, server_default=sql_text("'{}'::varchar[]")
+    )
+    # Where a reader finds the original (no DOI, or a better page than the DOI's).
+    source_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -406,6 +416,12 @@ class Chunk(Base):
     section: Mapped[str] = mapped_column(Text, default="")
     page: Mapped[int | None]
     text: Mapped[str] = mapped_column(Text)
+    # Its place in the document, so a reader can continue to the next passage.
+    position: Mapped[int] = mapped_column(default=0, server_default="0")
+    # The citable element: "Article 19(1)-(3)", "Recital 12", "Theorem 3".
+    locator: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # States a formula, theorem, definition or proof (chunking.is_formal).
+    formal: Mapped[bool] = mapped_column(default=False, server_default=false())
 
     ## Labels written once per passage by `te-platform lit enrich`
     ## (literature/enrich.py; migration c3f1a8d26e57): one sentence placing
@@ -452,6 +468,7 @@ class Chunk(Base):
         ),
     )
     __table_args__ = (
+        Index("ix_chunks_work_position", "work_id", "position"),
         Index("ix_chunks_tsv", "tsv", postgresql_using="gin"),
         Index("ix_chunks_failure_modes", "failure_modes", postgresql_using="gin"),
         Index("ix_chunks_parameters", "parameters", postgresql_using="gin"),

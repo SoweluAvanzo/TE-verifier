@@ -1,0 +1,71 @@
+# Does the agent read its sources critically? Each question goes to a new session.
+# reads: lit.read.v1 must have been used (a law or a formula needs its surroundings)
+# system_type: lit.search.v1 must have been told this kind of system
+# formal: a search must have asked for formal passages
+# judgement: regular expressions; the answer must match each (what it says about the source)
+# sources: at least one must be cited through a link. none: the collection has no answer
+questions:
+  - id: law_limited_network
+    question: >
+      Our community token will only be accepted by about 30 shops in one town, and people
+      earn it by volunteering. Does MiCA apply to us, or are we exempt? Please base it on the text.
+    reads: true
+    sources: [mica2023]
+    judgement:
+      - "Article\\s*\\d+"
+      - "(exempt|exclu|limited network|does not apply|falls? (out|with)in|scope)"
+      - "(legal advice|lawyer|counsel|depends|would need|check|if )"
+  - id: empirical_time_bank
+    question: >
+      I'm designing a paper-based time bank for a neighbourhood. How many of the registered members
+      should I expect to be active? I need a number to start from.
+    system_type: time_bank
+    sources: [collom2012key, valor2016time, ozanne2010time, seyfang2013growing, michel2015community]
+    judgement:
+      - "\\d"
+      - "(study|studies|case|empirical|observed|data|sample|reports?)"
+      - "(may|might|differ|your|comparable|context|depend|estimate)"
+  - id: formal_amm
+    question: >
+      My DeFi design uses a constant-product AMM. I understand the idea already. I now want to model it
+      properly and verify its properties. What formal foundations should I build on?
+    system_type: defi
+    formal: true
+    reads: true
+    sources: [bartoletti2022theory]
+    judgement:
+      - "(theorem|lemma|proposition|formal|definition|transition|semantics|invariant)"
+      - "(model|verif|map|your design|input|parameter)"
+  - id: foundation_adaptation
+    question: >
+      Can I use the quantity equation of money, MV = PT, to decide how many tokens to issue for my
+      blockchain community token for neighbourhood services?
+    system_type: community_token
+    sources: [fisher1911purchasing, domenicale2026six, cong2020tokenomics, campajola2022microvelocity]
+    judgement:
+      - "(assum|adapt|does not (directly )?(hold|apply)|differ|unlike|on-chain|token)"
+      - "(velocity|V\\b)"
+      - "(my own|our reasoning|my reasoning|adaptation|in your case|for your|here)"
+  - id: paper_to_chain
+    question: >
+      Should my blockchain community token use demurrage, a fee on holding? What does experience show?
+    system_type: community_token
+    sources: [godschalk2012demurrage, gelleri2009chiemgauer, delarosa2015velocity, michel2015community]
+    judgement:
+      - "(paper|chiemgauer|not blockchain|non-blockchain|local currenc|complementary)"
+      - "(on-chain|on chain|blockchain|smart contract|token)"
+      - "(transfer|differ|may not|might|would|caution|adapt|automat|cheap|cost)"
+  - id: methodology
+    question: >
+      I ran a simulation of my token economy and got results. How should I validate the agent-based model
+      before trusting it?
+    sources: [collins2024methods, windrum2007empirical, lamperti2018agent, tenbroeke2016which, grimm2020odd]
+    judgement:
+      - "(validat|calibrat|sensitivity)"
+      - "(method|approach|procedure|technique)"
+  - id: not_covered
+    question: >
+      What royalty percentage does the research recommend for NFT music artists on secondary sales?
+    none: true
+    judgement:
+      - "(does not|doesn't|do not|don't|no (source|passage|study|direct|evidence)|not cover|nothing|could not find|couldn't find|not find|not address|lacks?)"

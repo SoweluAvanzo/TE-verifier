@@ -27,6 +27,7 @@ from typing import Any
 from te_platform.agent.forms import ASK_USER
 from te_platform.agent.mcp_bridge import from_provider_name
 from te_platform.agent.notes import is_platform_note
+from te_platform.agent.sources import sources_in
 
 TITLE_LENGTH = 70
 
@@ -96,12 +97,28 @@ def _tool_use_item(
             "questions": [str(q.get("label", "")) for q in form.get("questions", [])],
         }
     result = results.get(tid)
-    return {
+    tool = from_provider_name(str(block.get("name", "")))
+    item: dict[str, Any] = {
         "kind": "tool",
-        "tool": from_provider_name(str(block.get("name", ""))),
+        "tool": tool,
         # None: no result yet (the call waits for the user's confirmation).
         "ok": None if result is None else not result.get("is_error", False),
     }
+    sources = _stored_sources(tool, result)
+    if sources:
+        item["sources"] = sources
+    return item
+
+
+def _stored_sources(tool: str, result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return the passages listed by a stored literature result (agent/sources.py)."""
+    if result is None or result.get("is_error"):
+        return []
+    content = result.get("content")
+    if isinstance(content, list):  # a list of text blocks, as some providers store it
+        content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    payload = _form_result(content)
+    return sources_in(tool, payload.get("result"))
 
 
 def _form_result_item(block: dict[str, Any]) -> dict[str, Any]:

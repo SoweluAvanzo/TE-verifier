@@ -203,6 +203,7 @@ from te_platform.agent.events import (
     Done,
     FormRequested,
     JobProgress,
+    SourcesFound,
     SpecUpdated,
     ToolFinished,
     ToolStarted,
@@ -228,6 +229,7 @@ from te_platform.agent.notes import (
     promised_action,
 )
 from te_platform.agent.providers.base import ChatProvider, Stop, TextDelta, ToolCall, Usage
+from te_platform.agent.sources import sources_in
 from te_platform.config import get_settings
 from te_platform.registry.context import CallContext, Principal, SessionFacts
 from te_platform.registry.policy import Policy
@@ -403,13 +405,18 @@ class AgentLoop:
         block = self.p.tool_result(call.tool_use_id, text, is_error=not outcome["ok"])
         return block, outcome
 
-    async def _ui_events_for(self, outcome: dict[str, Any]) -> list[AgentEvent]:
+    async def _ui_events_for(  # noqa: PLR0911 (one return per kind of tool)
+        self, outcome: dict[str, Any]
+    ) -> list[AgentEvent]:
         """Panel updates derived from successful tool results."""
         if not outcome["ok"]:
             return []
         r = outcome["payload"].get("result", {})
         tool = outcome["tool"]
-        if tool == "elicit.record_answer.v1":
+        found = sources_in(tool, r)
+        if found:
+            return [SourcesFound(sources=found)]
+        if tool == "elicit.record_answer.v1" or (tool == "spec.save.v1" and r.get("saved")):
             slots = await self.load_slots() if self.load_slots else []
             return [
                 SpecUpdated(

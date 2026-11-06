@@ -272,9 +272,70 @@ links). Never skip it. */
   // A report link the assistant wrote as bare text (/agent/reports/<id>?exp=…&sig=…)
   // is not a link in Markdown: make it one. Only this site's report endpoint.
   const REPORT_URL = /(^|[\s(:])(\/agent\/reports\/[0-9a-f]{32}\?exp=\d+&sig=[A-Za-z0-9_-]+)(?![^\s)]*\))/g;
+  // Sources seen in this conversation: a citation the assistant wrote as plain
+  // text ("Collom 2012, p. 4", collom2012key) still becomes a link to its passage.
+  const knownSources = new Map();
+  const CITE_LINK = /^\[(.+)\]\((\/literature\/passage\/\d+)\)$/;
+
+  function rememberSources(sources) {
+    for (const s of sources) {
+      const match = CITE_LINK.exec(s.cite_markdown || "");
+      if (!match) continue;
+      const [, cite, link] = match;
+      knownSources.set(cite, link);
+      const name = cite.split(",")[0];
+      if (!knownSources.has(name)) knownSources.set(name, link);
+      if (s.citation_key && !knownSources.has(s.citation_key)) knownSources.set(s.citation_key, link);
+    }
+  }
+
+  function linkKnownSources(text) {
+    const names = [...knownSources.keys()].sort((a, b) => b.length - a.length);
+    if (!names.length) return text;
+    const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    // What is already a link ("[...](...)") is matched first and kept as it is.
+    const pattern = new RegExp(`\\[[^\\]]*\\]\\([^)]*\\)|(?<![\\w/])(${escaped.join("|")})(?!\\w)`, "g");
+    return text.replace(pattern, (whole, name) => (name ? `[${name}](${knownSources.get(name)})` : whole));
+  }
+
+  function showSources(sources) {
+    if (!sources.length) return;
+    rememberSources(sources);
+    const box = document.createElement("details");
+    box.className = "sources";
+    const title = document.createElement("summary");
+    title.textContent = `Sources consulted (${sources.length})`;
+    box.appendChild(title);
+    const list = document.createElement("ul");
+    for (const s of sources) {
+      const match = CITE_LINK.exec(s.cite_markdown || "");
+      if (!match) continue;
+      const item = document.createElement("li");
+      const a = document.createElement("a");
+      a.textContent = match[1];
+      a.href = match[2];
+      a.target = "_blank";
+      a.rel = "noopener";
+      item.appendChild(a);
+      if (s.title) item.appendChild(document.createTextNode(`: ${s.title}`));
+      const kind = document.createElement("span");
+      kind.className = "source-kind";
+      kind.textContent = [s.evidence_type, s.source_group].filter(Boolean).join("; ");
+      item.appendChild(kind);
+      list.appendChild(item);
+    }
+    box.appendChild(list);
+    log.appendChild(box);
+    log.scrollTop = log.scrollHeight;
+  }
+
   function renderMarkdown(el, markdownText) {
-    const linked = markdownText.replace(REPORT_URL, "$1[Open the report (PDF)]($2)");
+    const linked = linkKnownSources(markdownText).replace(REPORT_URL, "$1[Open the report (PDF)]($2)");
     el.innerHTML = DOMPurify.sanitize(marked.parse(linked));
+    for (const a of el.querySelectorAll('a[href^="/literature/passage/"]')) {
+      a.target = "_blank";
+      a.rel = "noopener";
+    }
     // Report links open in a new tab, so the conversation stays where it is.
     for (const a of el.querySelectorAll('a[href^="/agent/reports/"]')) {
       a.target = "_blank";
@@ -391,6 +452,9 @@ re-rendered (Markdown may only be valid once more text has arrived). */
             break;
           case "tool_started":
             addLine("tool-line", `Running ${ev.tool}…`);
+            break;
+          case "sources_found":
+            showSources(ev.sources);
             break;
           case "tool_finished":
             // A precondition error is normal (the assistant corrects itself),
@@ -845,6 +909,7 @@ forms still open; GET /agent/sessions lists the user's conversations. */
 
   // Empty the page: the log, the open forms and the panel.
   function clearConversation() {
+    knownSources.clear();
     log.replaceChildren();
     openForms.clear();
     document.getElementById("session-state").textContent = "not started";
@@ -870,6 +935,7 @@ forms still open; GET /agent/sessions lists the user's conversations. */
       else if (item.kind === "tool") {
         const state = item.ok === null ? "" : item.ok ? " ok" : " err";
         addLine(`tool-line${state}`, item.ok === false ? `${item.tool}: not run` : item.tool);
+        showSources(item.sources || []);
       } else if (item.kind === "form_asked" && !pendingIds.has(item.tool_use_id)) askedCard(item);
       else if (item.kind === "form_answers") formSummary(item.answers.map((a) => [a.question, a.display]));
       else if (item.kind === "form_skipped") addLine("tool-line", "Form not answered.");

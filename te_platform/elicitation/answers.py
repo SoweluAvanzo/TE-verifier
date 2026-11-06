@@ -150,6 +150,22 @@ def _decoded(value: Any) -> Any:
     return value
 
 
+def _structured(value: Any) -> Any:
+    """Return a list or object some models send as JSON text ('["CUE"]') as data.
+
+    Some models send every tool argument as a string. Nothing that parses as a
+    JSON list or object is meant as prose, so this is safe for text slots too.
+    Without it, the decisive list and table questions could never be answered
+    with such a model, and the session could never reach verification.
+    """
+    if isinstance(value, str) and value.lstrip()[:1] in {"[", "{"}:
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
 def _number(value: Any) -> float:
     """Read one number (bool is refused: True is not 1 here)."""
     if isinstance(value, bool) or not isinstance(value, int | float):
@@ -249,10 +265,15 @@ def apply_answer(
         # The field stays empty: its absence is the honest unknown (protocol.py).
         set_value(new, slot.ir_path, _check(slot, None), indices)
         return new
+    raw = _structured(raw)
     if slot.answer_type == "list":
         if indices:
-            raise InvalidInput(f"Slot {slot.id} is answered for all items at once (no indices).")
-        _set_column(new, slot, raw)
+            raise InvalidInput(
+                f"Slot {slot.id} is answered for all items at once: leave indices out and "
+                'give a JSON list, e.g. value: ["first", "second"].'
+            )
+        # One bare value is a list of one (a single token's name).
+        _set_column(new, slot, [raw] if isinstance(raw, str) else raw)
     else:
         # An unknown number is the whole interval to sweep, not one value.
         stored = swept if swept is not None else _shaped(slot, raw)

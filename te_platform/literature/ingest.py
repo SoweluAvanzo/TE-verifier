@@ -16,7 +16,7 @@
 ## USED BY      cli.py (`te-platform lit ingest <pdf> --bib <entry.bib>
 ##              --licence <id> [--full-text-allowed]`). The curator runs it and reviews
 ##              the printed summary; end users can never upload papers (D15).
-## DEPENDS ON   pypdf, literature/chunking.py, db/session.py, db/repo.py
+## DEPENDS ON   literature/extract.py, catalog.py, chunking.py, db/session.py, db/repo.py
 ##              (LiteratureRepository).
 ## WHY          D15: a curated, reviewed collection is the point of the
 ##              feature; recording the licence per work lets search.py and the
@@ -79,11 +79,11 @@
 import re
 from pathlib import Path
 
-from pypdf import PdfReader
-
 from te_platform.db.repo import LiteratureRepository
 from te_platform.db.session import session_scope
+from te_platform.literature.catalog import is_legal, lookup
 from te_platform.literature.chunking import Chunk, detect_language, split_into_chunks
+from te_platform.literature.extract import extract_pages
 
 _ENTRY = re.compile(r"@\w+\s*\{\s*([^,\s]+)\s*,(.*)\}\s*$", re.DOTALL)
 _FIELD = re.compile(r"(\w+)\s*=\s*[{\"](.*?)[}\"]\s*(?:,|$)", re.DOTALL)
@@ -99,22 +99,33 @@ def _parse_bibtex(text: str) -> dict[str, str]:
     return fields
 
 
-def ingest_pdf(pdf_path: Path, bib_path: Path, licence: str, *, full_text_allowed: bool) -> str:
-    """Add one paper (PDF + BibTeX entry) to the collection; return the new work id."""
-    bib = _parse_bibtex(bib_path.read_text(encoding="utf-8"))
+def ingest_pdf(  # noqa: PLR0913 (keyword-only options of one curator command)
+    pdf_path: Path,
+    bib_path: Path,
+    licence: str,
+    *,
+    full_text_allowed: bool,
+    tier: int | None = None,
+    systems: list[str] | None = None,
+    source_url: str | None = None,
+) -> str:
+    """Add one paper (PDF + BibTeX entry) to the collection; return the new work id.
 
-    # extract_text() returns the text layer of each page. Scanned PDFs have
-    # no text layer (OCR would be needed): fail loudly rather than store
-    # an empty paper.
-    # Some PDFs put NUL characters in their text layer; PostgreSQL text
-    # columns refuse them, and they carry no meaning, so they are dropped.
-    pages = [
-        (page.extract_text() or "").replace("\x00", "") for page in PdfReader(str(pdf_path)).pages
-    ]
+    tier, systems and source_url come from these arguments or else from
+    literature/catalog.yaml; a work in neither stays tier 0 (never promoted).
+    """
+    bib = _parse_bibtex(bib_path.read_text(encoding="utf-8"))
+    entry = lookup(bib["citation_key"]) or {}
+    systems = systems if systems is not None else entry.get("systems", [])
+    legal = is_legal(systems)
+
+    # Scanned PDFs have no text layer (OCR would be needed): fail loudly
+    # rather than store an empty paper.
+    pages, strong = extract_pages(pdf_path, legal=legal)
     if not any(p.strip() for p in pages):
         raise ValueError(f"{pdf_path} has no extractable text (scanned PDF?).")
 
-    chunks = split_into_chunks(pages)
+    chunks = split_into_chunks(pages, legal=legal, strong=strong)
     if not full_text_allowed:
         # Keep only what the licence allows: the abstract from BibTeX if
         # present, otherwise the first chunk (usually the abstract).
@@ -131,6 +142,9 @@ def ingest_pdf(pdf_path: Path, bib_path: Path, licence: str, *, full_text_allowe
         "licence": licence,
         "full_text_allowed": full_text_allowed,
         "language": detect_language(" ".join(pages)),
+        "tier": tier if tier is not None else entry.get("tier", 0),
+        "systems": systems,
+        "source_url": source_url or entry.get("url"),
     }
     with session_scope() as db:
         return LiteratureRepository(db).add_work(metadata, chunks)

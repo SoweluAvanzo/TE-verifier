@@ -488,3 +488,24 @@ SOLUTION: complete reference code (deactivated on purpose, see ACTIVATE)
 .msg.user.failed { opacity: 0.55; }
 .msg-note { align-self: flex-end; margin: -0.4rem 0 0; font-size: 0.8rem; color: var(--color-muted); }
 
+
+/* --- Sources consulted, under an answer, and the source viewer --------------------- */
+.sources { align-self: flex-start; max-width: 100%; font-size: 0.85rem; color: var(--color-muted); }
+.sources summary { cursor: pointer; }
+.sources ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+.sources li { margin-bottom: 0.3rem; }
+.source-kind { display: block; font-size: 0.8rem; }
+.passage-page { margin: 0; }
+.passage-main { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+.passage-main h1 { font-size: 1.3rem; margin: 0 0 0.3rem; }
+.passage-byline, .passage-where, .passage-note, .passage-status { color: var(--color-muted); font-size: 0.9rem; margin: 0.2rem 0; }
+.passage-facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 0.8rem; margin: 1rem 0; font-size: 0.9rem; }
+.passage-facts dt { color: var(--color-muted); }
+.passage-facts dd { margin: 0; }
+.passage-context { font-style: italic; }
+.passage-text p { line-height: 1.55; }
+.passage-current { background: #fff6d6; color: #1a1a1a; border-left: 3px solid #d9a400; padding: 0.4rem 0.7rem; }
+.passage-nav { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1.2rem 0 0.6rem; }
+@media (prefers-color-scheme: dark) {
+  .passage-current { background: #453a10; color: inherit; }
+}

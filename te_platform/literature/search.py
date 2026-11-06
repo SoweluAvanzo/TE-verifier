@@ -74,6 +74,7 @@ from pydantic import BaseModel
 from te_platform.db.repo import LiteratureRepository
 from te_platform.db.session import session_scope
 from te_platform.literature import embed, rerank
+from te_platform.literature.reading import source_fields
 
 PASSAGE_MAX_CHARS = 600
 ## At most this many passages per paper in one result list: otherwise one
@@ -99,6 +100,21 @@ class Hit(BaseModel):
     section: str = ""
     passage: str
     score: float
+    locator: str = ""  # "Article 19(1)-(3)", "Theorem 3"
+    formal: bool = False
+    kind: str | None = None
+    context: str = ""  # one sentence placing the passage in its document
+    systems: list[str] = []
+    # literature/reading.py source_fields: citation, links, how to read it
+    passage_id: int
+    cite: str
+    cite_markdown: str
+    link: str
+    original_url: str | None = None
+    evidence_type: str
+    source_tier: int
+    source_group: str
+    how_to_read: str
 
 
 def _shorten(text: str) -> str:
@@ -117,6 +133,52 @@ RRF_K = 60
 KEYWORD_WEIGHT = 1.0
 MEANING_WEIGHT = 1.0
 MEANING_POOL = 60  # passages taken from the ranking by meaning
+
+
+RANK_K = 5  # how quickly relevance falls with rank, against the source priority below
+# Priority of a source, by how close it is to the system being designed. It
+# reorders passages that are similarly relevant; a far better passage from a
+# farther tier still comes first. Law and methods apply by subject: never moved.
+SAME_SYSTEM = 1.3
+OTHER_BLOCKCHAIN = 1.15
+RELATED_NOT_BLOCKCHAIN = 1.0
+FOUNDATIONS = 0.85
+NEUTRAL = 1.0
+TIER_FOUNDATIONS = 3
+RECENT_FROM = 2018  # a year's advantage from here on, for sources about real systems
+PER_RECENT_YEAR = 0.01
+MAX_RECENCY = 0.08
+NON_BLOCKCHAIN = frozenset({"local_currency", "mutual_credit", "time_bank"})
+
+
+def source_priority(row: dict[str, Any], system_type: str | None) -> float:
+    """Return how much to favour a passage for its source, whatever the words matched."""
+    tier = row.get("tier", 0)
+    if tier == 0:
+        return NEUTRAL
+    if tier == TIER_FOUNDATIONS:
+        return FOUNDATIONS
+    same = system_type is not None and system_type in row.get("systems", ())
+    if same:
+        base = SAME_SYSTEM
+    elif tier == 1:
+        # For a non-blockchain design, tokens are a neighbour rather than the same thing.
+        base = RELATED_NOT_BLOCKCHAIN if system_type in NON_BLOCKCHAIN else OTHER_BLOCKCHAIN
+    else:
+        base = OTHER_BLOCKCHAIN if system_type in NON_BLOCKCHAIN else RELATED_NOT_BLOCKCHAIN
+    years = max(0, (row.get("year") or 0) - RECENT_FROM)
+    return base + min(MAX_RECENCY, years * PER_RECENT_YEAR)
+
+
+def _prioritised(
+    order: dict[int, float], rows: dict[int, dict[str, Any]], system_type: str | None
+) -> dict[int, float]:
+    """Reorder a ranking by relevance rank times source priority, best first."""
+    scored = {
+        chunk_id: source_priority(rows[chunk_id], system_type) / (RANK_K + rank)
+        for rank, chunk_id in enumerate(order, start=1)
+    }
+    return dict(sorted(scored.items(), key=lambda kv: -kv[1]))
 
 
 def _fuse(rankings: list[tuple[float, list[int]]]) -> dict[int, float]:
@@ -152,13 +214,15 @@ def _meaning_ids(query: str) -> list[int]:
     return embed.nearest(query, MEANING_POOL)
 
 
-def search(
+def search(  # noqa: PLR0913 (keyword-only filters of one query)
     query: str,
     limit: int = 5,
     *,
     failure_mode: str | None = None,
     parameter: str | None = None,
     kind: str | None = None,
+    formal: bool | None = None,
+    system_type: str | None = None,
 ) -> list[Hit]:
     """Return the passages that best match the query, best first.
 
@@ -167,7 +231,12 @@ def search(
     (literature/enrich.py); no paper appears more than MAX_PER_WORK times.
     """
     limit = max(1, min(limit, 20))  # bound the work per call
-    filters = {"failure_mode": failure_mode, "parameter": parameter, "kind": kind}
+    filters = {
+        "failure_mode": failure_mode,
+        "parameter": parameter,
+        "kind": kind,
+        "formal": formal,
+    }
     meaning = _meaning_ids(query)
     with session_scope() as db:
         repo = LiteratureRepository(db)
@@ -182,18 +251,19 @@ def search(
             (MEANING_WEIGHT, [i for i in meaning if i in rows]),
         ]
     )
-    order = _reranked(query, order, rows)
+    order = _prioritised(_reranked(query, order, rows), rows, system_type)
     per_work: dict[str, int] = {}
     hits: list[Hit] = []
     for chunk_id, fused in order.items():
         row = {**rows[chunk_id], "score": round(fused, 6)}
-        row.pop("context", None)
         key = row["citation_key"]
         if per_work.get(key, 0) >= MAX_PER_WORK:
             continue
         per_work[key] = per_work.get(key, 0) + 1
-        row.pop("id")
-        hits.append(Hit(passage=_shorten(row.pop("text")), **row))
+        fields = source_fields(row)
+        for internal in ("id", "position", "tier", "source_url"):
+            row.pop(internal)
+        hits.append(Hit(passage=_shorten(row.pop("text")), **row, **fields))
         if len(hits) == limit:
             break
     return hits

@@ -182,6 +182,10 @@ services:
 ##   Guide 8.1: uvicorn --reload restarts the agent when a file changes.
   agent:
     <<: *dev-app
+    # Public resolvers for the model's address: a home router's DNS can time out
+    # ("Temporary failure in name resolution") while the internet itself works.
+    # Service names such as `mcp` are still answered by Docker's own DNS.
+    dns: [1.1.1.1, 8.8.8.8]
     command: ["uvicorn", "te_platform.agent.app:app", "--host", "0.0.0.0", "--port", "8000",
               "--reload"]
     ports: ["127.0.0.1:8002:8000"]
