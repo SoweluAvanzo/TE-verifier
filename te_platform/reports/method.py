@@ -344,6 +344,24 @@ def _token_ids(experiment: dict[str, Any]) -> list[str]:
     return list((first.get("trajectories") or {}).keys())[:3]
 
 
+def _has_supply_data(experiment: dict[str, Any], token: str) -> bool:
+    """Return True when a variant's trajectory shows any tokens: an empty chart says nothing."""
+    return any(
+        point.get("M", 0)
+        for v in experiment.get("variants", [])
+        for point in (v.get("trajectories") or {}).get(token) or []
+    )
+
+
+def _supply_chart(experiments: list[dict[str, Any]]) -> tuple[int, str] | None:
+    """Return (test number, token) of the one supply chart: the latest test with data."""
+    for n, exp in reversed(list(enumerate(experiments, start=1))):
+        for token in _token_ids(exp):
+            if _has_supply_data(exp, token):
+                return n, token
+    return None
+
+
 def figure_ids(
     design: dict[str, Any] | None,
     simulation: dict[str, Any] | None,
@@ -355,11 +373,71 @@ def figure_ids(
         ids.append("flow")
     if any(r.get("simulated") for r in (simulation or {}).get("per_fm_results") or []):
         ids.append("simulation")
-    for n, exp in enumerate(experiments, start=1):
-        ids += [f"experiment{n}-supply-{tok}" for tok in _token_ids(exp)]
-        if _has_monte_carlo(exp):
-            ids.append(f"experiment{n}-violations")
+    chart = _supply_chart(experiments)
+    if chart:
+        ids.append(f"experiment{chart[0]}-supply-{chart[1]}")
     return ids
+
+
+_SHORT_QUESTIONS = {
+    "FM1": "Too many tokens",
+    "FM2": "Spent too fast",
+    "FM3": "Created vs removed",
+    "FM4": "Free riding",
+    "FM5": "Too few members",
+    "FM6": "Control",
+}
+_CELL_WORDS = {
+    "fail": "Can fail",
+    "pass": "Holds",
+    "pass_as_intended": "As intended",
+    "inconclusive": "Not decided",
+    "not_applicable": "n/a",
+}
+_WORST_FIRST = ("fail", "inconclusive", "pass_as_intended", "pass", "not_applicable")
+
+
+def _worst_status(statuses: list[str]) -> str:
+    return next((s for s in _WORST_FIRST if s in statuses), "")
+
+
+def test_matrix(experiments: list[dict[str, Any]], spec: dict[str, Any]) -> dict[str, Any]:
+    """Return every tested variant, in one table: a row per variant, a column per question.
+
+    One column per question whatever the number of tokens (the worst answer over
+    the tokens), so the table fits the page however many variants were tested.
+    """
+    from te_platform.reports.design import change_words  # noqa: PLC0415 (design imports this)
+
+    columns = list(_SHORT_QUESTIONS)
+    groups = []
+    baseline_shown = False
+    for n, exp in enumerate(experiments, start=1):
+        rows = []
+        for v in exp.get("variants", []):
+            changes = v.get("changes") or []
+            if not changes and baseline_shown:
+                continue  # the design as it is: once is enough
+            baseline_shown = baseline_shown or not changes
+            words = "; ".join(dict.fromkeys(change_words(c["path"], c["value"], spec) for c in changes))
+            by_question: dict[str, list[str]] = {}
+            for verdict in v.get("verdicts", []):
+                key = str(verdict.get("failure_mode", ""))[:3]
+                by_question.setdefault(key, []).append(str(verdict.get("status", "")))
+            rows.append(
+                {
+                    "name": "Your design" if not changes else str(v.get("name", "")).replace("_", " "),
+                    "change": (str(v.get("description") or "") or words)[:120],
+                    "cells": [_worst_status(by_question.get(c, [])) for c in columns],
+                }
+            )
+        if rows:
+            groups.append({"title": f"Test {n}. {exp.get('title', '')}"[:110], "rows": rows})
+    return {
+        "columns": [_SHORT_QUESTIONS[c] for c in columns],
+        "groups": groups,
+        "words": _CELL_WORDS,
+    }
 
 
 def _sim_caption(simulation: dict[str, Any]) -> str:
@@ -397,26 +475,15 @@ def figures(
                 "caption": _sim_caption(sim),
                 "svg": charts.violation_probability_svg(sim.get("per_fm_results") or []),
             }
-    for n, exp in enumerate(experiments, start=1):
-        job = str(exp.get("job_id", ""))[:16]
-        d = exp.get("design") or {}
-        for tok in _token_ids(exp):
-            out[f"experiment{n}-supply-{tok}"] = {
-                "title": f"Test {n}: {tok} in circulation, week by week",
-                "caption": f"The number of {tok} in circulation over {d.get('horizon')} weeks "
-                "for each variant, in the typical case (every value at the middle of its "
-                "range, no randomness): each week adds the tokens created and subtracts "
-                "those removed, and the total never goes below zero. A flat line at zero "
-                f"means tokens are removed as fast as they are created. Source: test {job}.",
-                "svg": charts.experiment_supply_svg(exp, tok),
-            }
-        if _has_monte_carlo(exp):
-            out[f"experiment{n}-violations"] = {
-                "title": f"Test {n}: how often each problem appeared, per variant",
-                "caption": f"For each variant, the share of {d.get('monte_carlo_runs')} "
-                f"simulated runs (random seed {d.get('seed')}) in which each problem "
-                "appeared. A missing bar means the mathematical check had already settled "
-                f"that question for the variant, so it was not simulated. Source: test {job}.",
-                "svg": charts.experiment_violation_svg(exp),
-            }
+    chart = _supply_chart(experiments)
+    if chart:
+        n, token = chart
+        d = experiments[n - 1].get("design") or {}
+        out[f"experiment{n}-supply-{token}"] = {
+            "title": f"Test {n}: {token} in circulation, week by week",
+            "caption": f"The number of {token} in circulation over {d.get('horizon')} weeks for "
+            "each variant, with every value at the middle of its range: each week adds the "
+            "tokens created and subtracts those removed.",
+            "svg": charts.experiment_supply_svg(experiments[n - 1], token),
+        }
     return out

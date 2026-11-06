@@ -106,6 +106,8 @@ class SessionFacts(BaseModel):
     current_spec: dict[str, Any] | None = None    # the latest spec itself
     verification_ref: str | None = None           # latest verification of the CURRENT spec
     verified_spec_hash: str | None = None         # which spec that verification belongs to
+    # Answers the designer gave that the current spec does not hold: the checks ran without them.
+    answers_not_in_design: list[str] = Field(default_factory=list)
     open_decisive_slots: list[str] = Field(default_factory=list)  # from elicitation/
     finished_simulation_for_current_ref: bool = False
     report_for_current_ref: bool = False

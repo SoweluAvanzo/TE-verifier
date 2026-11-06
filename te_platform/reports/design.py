@@ -36,9 +36,10 @@ from schema import TokenEconomy
 
 from te_platform.agent.forms import ASK_USER
 from te_platform.agent.notes import is_platform_note
+from te_platform.elicitation.paths import get_value, has_value
 from te_platform.elicitation.protocol import current_protocol
 from te_platform.reports.method import steps
-from te_platform.reports.plain import CHECKS, describe, rule_words
+from te_platform.reports.plain import is_clock_event, CHECKS, describe, rule_words
 
 ## Short names for the inputs table (slot id -> label). Slots not listed
 ## fall back to their id.
@@ -99,17 +100,42 @@ VALUE_MAX = 160  # a longer structured value is shown in the rules table instead
 NARRATIVE_SECTIONS: dict[str, str] = {
     "executive_summary": "In brief",
     "design_overview": "The design",
-    "participants": "Who takes part",
-    "token_flows": "How tokens are created and removed",
-    "governance": "Who decides",
     **{f"check_FM{n}": CHECKS[f"FM{n}"]["name"] for n in range(1, 7)},
     "recommendations": "What to change",
-    "legal_feasibility": "Legal feasibility",
     "limitations": "What this analysis could not check",
-    "methodology": "Notes on how the design was studied",
-    "explanation": "Further explanation",
+    "legal_feasibility": "Legal feasibility",
 }
-DESIGN_SECTIONS = ("design_overview", "participants", "token_flows", "governance")
+DESIGN_SECTIONS = ("design_overview",)
+# The standard report has a fixed length, for its reader and for the models that
+# write and then review it: tools/report_render_pdf.py refuses longer text, and
+# tools/report_publish.py a longer report.
+MAX_PAGES = 12
+WORD_LIMITS: dict[str, int] = {
+    "executive_summary": 130,
+    "design_overview": 130,
+    **{f"check_FM{n}": 70 for n in range(1, 7)},
+    "recommendations": 220,
+    "limitations": 110,
+    "legal_feasibility": 170,
+}
+FIGURE_NOTE_WORDS = 45
+
+
+def over_word_limit(narrative: dict[str, str], figure_notes: dict[str, str]) -> list[str]:
+    """Return a complaint per section or figure note longer than the standard allows."""
+    long = [
+        f"{key}: {len(text.split())} words, at most {WORD_LIMITS[key]}"
+        for key, text in narrative.items()
+        if key in WORD_LIMITS and len(text.split()) > WORD_LIMITS[key]
+    ]
+    long += [
+        f"figure {key}: {len(text.split())} words, at most {FIGURE_NOTE_WORDS}"
+        for key, text in figure_notes.items()
+        if len(text.split()) > FIGURE_NOTE_WORDS
+    ]
+    return long
+
+
 CHECK_SECTIONS = tuple(f"check_FM{n}" for n in range(1, 7))
 EVALUATION_SECTIONS = CHECK_SECTIONS  # the template's name for the evaluation part
 
@@ -240,6 +266,10 @@ def path_label(path: str) -> str:
     """Describe a design field path in words (the path itself is printed next to it)."""
     if path in _IR_LABELS:
         return _IR_LABELS[path]
+    m = re.match(r"events\[(?P<event>[^\]]+)\]\.(?P<what>payload|frequency)\b", path)
+    if m:
+        event = m["event"].replace("_", " ")
+        return f"{'tokens per' if m['what'] == 'payload' else 'how often:'} {event}"
     m = re.match(
         r"tokens\[(?P<tok>[^\]]+)\]\.(?P<kind>emission|burn)_rules\[(?P<i>\d+)\]\.(?P<rest>.+)$",
         path,
@@ -299,6 +329,36 @@ def _token_id(spec: dict[str, Any], indices: list[int]) -> str | None:
     return None
 
 
+_ABSENT = object()
+MAX_VALUE_CHARS = 110  # the whole rule is in the rules table of section 1
+
+
+def _decoded_value(value: Any) -> Any:
+    """Return a value some models stored as JSON text ('{"min": 1, "max": 2}') as data."""
+    if isinstance(value, str) and value.lstrip()[:1] in {"[", "{"}:
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _value_in_design(spec: dict[str, Any], answer: dict[str, Any]) -> Any:
+    """Return what the design holds for an answer's slot, or _ABSENT if it holds nothing."""
+    slot = current_protocol().slot(answer["slot_id"])
+    if slot is None or slot.answer_type == "list":
+        return _decoded_value(answer["value"])  # a list slot spans all elements: the answer is the row
+    indices = tuple(answer["indices"])
+    try:
+        return (
+            get_value(spec, slot.ir_path, indices)
+            if has_value(spec, slot.ir_path, indices)
+            else _ABSENT
+        )
+    except (KeyError, IndexError, TypeError, ValueError):
+        return answer["value"]
+
+
 def _inputs(
     spec: dict[str, Any], answers: list[dict[str, Any]], messages: list[dict[str, Any]]
 ) -> list[dict[str, str]]:
@@ -311,16 +371,23 @@ def _inputs(
         token = _token_id(spec, a["indices"]) if a["slot_id"].startswith("tokens.") else None
         if token and a["slot_id"] != "tokens.ids":
             label = f"{label} ({token})"
-        value = describe(a["slot_id"], a["value"], spec, token)
+        in_design = _value_in_design(spec, a)
+        recorded = describe(a["slot_id"], _decoded_value(a["value"]), spec, token)
+        value = recorded if in_design is _ABSENT else describe(a["slot_id"], in_design, spec, token)
         quote = str(a.get("user_quote") or "")
         if a["status"] == "estimated":
             note = basis.get(a["slot_id"], "")
         else:
             note = quote if quote and quote != value else ""
+        # The table states what was checked; a different recorded answer is said, not hidden.
+        if in_design is _ABSENT and a["status"] in ("committed", "estimated"):
+            note = f"{note} Not part of the design that was checked.".strip()
+        elif value != recorded and a["status"] in ("committed", "estimated"):
+            note = f"{note} First recorded as {recorded}.".strip()
         rows.append(
             {
                 "label": label,
-                "value": value,
+                "value": value if len(value) <= MAX_VALUE_CHARS else f"{value[:MAX_VALUE_CHARS].rstrip()}…",
                 "source": SOURCES.get(a["status"], a["status"]),
                 "status": a["status"],
                 "note": note,
@@ -342,7 +409,11 @@ def _rules(spec: dict[str, Any]) -> list[dict[str, str]]:
                     {
                         "token": tok.get("id", ""),
                         "kind": kind,
-                        "when": ev.get("label", event_id) if ev else "every week",
+                        "when": (
+                            ev.get("label", event_id)
+                            if ev and not is_clock_event(ev)
+                            else "every week, by the clock"
+                        ),
                         "summary": rule_words(rule, events, tok.get("id", "tokens")),
                     }
                 )

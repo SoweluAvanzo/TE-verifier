@@ -133,7 +133,8 @@ def violation_probability_svg(per_fm_results: list[dict[str, Any]]) -> str:
     ax.barh(names, dynamic, left=deploy, label="appeared later")
     ax.set_xlim(0, 1)
     ax.set_xlabel("share of simulated runs in which the problem appeared")
-    ax.legend(loc="lower right")
+    # Below the axes: a long bar reaches the right edge, and a legend there would hide it.
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=2, frameon=False)
     ax.invert_yaxis()
     return _to_svg(fig)
 
@@ -143,10 +144,14 @@ def violation_probability_svg(per_fm_results: list[dict[str, Any]]) -> str:
 ## like the variants table next to it.
 def experiment_supply_svg(experiment: dict[str, Any], token: str) -> str:
     """Draw tokens in circulation over time, one line per variant."""
-    fig, ax = plt.subplots(figsize=(6, 2.8))
+    fig, ax = plt.subplots(figsize=(6, 2.4))
     for v in experiment.get("variants", []):
         points = (v.get("trajectories") or {}).get(token) or []
-        ax.plot([p["t"] for p in points], [p["M"] for p in points], label=v["name"])
+        ax.plot(
+            [p["t"] for p in points],
+            [p["M"] for p in points],
+            label=str(v["name"]).replace("_", " "),
+        )
     ax.set_xlabel("week")
     ax.set_ylabel(f"{token} in circulation")
     ax.set_ylim(bottom=0)  # a count of tokens: never below zero

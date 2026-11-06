@@ -113,6 +113,7 @@
 ## SOLUTION: complete reference code (commented out on purpose)
 ## =============================================================================
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -127,7 +128,7 @@ from te_platform.errors import InvalidInput, NotFound
 from te_platform.jobs import queue
 from te_platform.registry.context import CallContext
 from te_platform.registry.spec import ToolSpec
-from te_platform.reports.design import NARRATIVE_SECTIONS, design_context
+from te_platform.reports.design import NARRATIVE_SECTIONS, design_context, over_word_limit
 from te_platform.reports.method import figure_ids
 from te_platform.reports.numbers_check import check_narrative, collect_numbers
 from te_platform.reports.plain import jargon
@@ -229,6 +230,18 @@ def _load_results(
         }
 
 
+_PASSAGE_LINK = re.compile(r"\[([^\]]+)\]\(/literature/passage/\d+\)")
+
+
+def _without_passage_links(text: str) -> str:
+    """Keep a citation's words and drop its link to the source viewer.
+
+    The viewer needs a login, so the link would be dead in a PDF that is passed
+    on, and its passage number is not a figure the number check could find.
+    """
+    return _PASSAGE_LINK.sub(r"\1", text)
+
+
 def _checked_citations(
     citations: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -246,6 +259,12 @@ def _checked_citations(
 
 async def handle(inp: ReportRenderInput, ctx: CallContext) -> ReportRenderOutput:
     """Check the narrative's numbers, then queue the PDF rendering."""
+    inp = inp.model_copy(
+        update={
+            "narrative": {k: _without_passage_links(v) for k, v in inp.narrative.items()},
+            "figure_notes": {k: _without_passage_links(v) for k, v in inp.figure_notes.items()},
+        }
+    )
     vref = ctx.facts.verification_ref
     if vref is None:
         raise InvalidInput("A verification_ref is required.")
@@ -297,6 +316,12 @@ async def handle(inp: ReportRenderInput, ctx: CallContext) -> ReportRenderOutput
         complaints.append(
             "Write for a reader who does not know the research or its vocabulary. Replace: "
             + "; ".join(f"in {k}: {', '.join(terms)}" for k, terms in wordy.items())
+        )
+    too_long = over_word_limit(inp.narrative, inp.figure_notes)
+    if too_long:
+        complaints.append(
+            "The report has a fixed length; shorten these and say only what the reader "
+            "needs: " + "; ".join(too_long)
         )
     citations, unknown_keys = await anyio.to_thread.run_sync(
         lambda: _checked_citations(inp.citations)

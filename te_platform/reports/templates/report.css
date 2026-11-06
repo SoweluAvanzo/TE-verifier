@@ -55,7 +55,7 @@
 
 @page {
   size: A4;
-  margin: 22mm 18mm 20mm 18mm;
+  margin: 18mm 16mm 16mm 16mm;
   @top-right { content: "Token economy report"; font-size: 8pt; color: #666; }
   @bottom-center { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #666; }
 }
@@ -63,15 +63,16 @@
   @top-right { content: none; }
 }
 
-body { font-family: "DejaVu Sans", sans-serif; font-size: 10pt; line-height: 1.4; color: #111; }
-h1 { font-size: 20pt; margin-top: 30mm; }
+body { font-family: "DejaVu Sans", sans-serif; font-size: 9.5pt; line-height: 1.35; color: #111; }
+h1 { font-size: 20pt; margin: 2mm 0 1mm; }
 h2 { font-size: 14pt; border-bottom: 1px solid #ccc; padding-bottom: 2pt; }
 h2, h3, h4 { break-after: avoid; }
 section { margin-bottom: 8mm; }
 .cover { break-after: page; }
 
-table { border-collapse: collapse; width: 100%; }
-th, td { border: 1px solid #ccc; padding: 3pt 5pt; text-align: left; vertical-align: top; }
+/* NOTE: fixed layout and wrapping keep every table inside the page, whatever its text. */
+table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+th, td { border: 1px solid #ccc; padding: 2.5pt 4pt; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
 thead { display: table-header-group; }
 tr, article.fm, .chart { break-inside: avoid; }
 
@@ -120,3 +121,34 @@ table.symbols td { font-size: 8.5pt; }
 article.question { break-inside: avoid; margin: 3mm 0 5mm; }
 table.result td, table.glance td { font-size: 9pt; }
 .appendix h4 { font-size: 10pt; }
+
+/* The standard report (at most 12 pages). */
+h3 { font-size: 10.5pt; margin: 4mm 0 1mm; }
+h4 { font-size: 10pt; margin: 0 0 1mm; }
+p { margin: 1.5mm 0; }
+section { margin-bottom: 5mm; }
+.subtitle { color: #555; margin-top: 0; }
+th.wide { width: 34%; }
+.asks { color: #444; font-size: 8.5pt; }
+.result-line { font-size: 8.5pt; margin: 1mm 0; padding: 1mm 2mm; background: #f6f6f6; }
+.status-text-fail { background: #fde8e8; }
+.status-text-pass, .status-text-pass_as_intended { background: #e9f7ee; }
+.status-text-inconclusive { background: #fff6dd; }
+article.question { margin: 2mm 0 3.5mm; }
+.narrative { padding-left: 4mm; }
+figure.fig { margin: 3mm 0; }
+.chart svg { max-height: 70mm; }
+.chart.flow svg { max-height: 45mm; }
+.small { font-size: 8.5pt; }
+table.matrix { font-size: 8pt; }
+table.matrix th, table.matrix td { padding: 2pt 3pt; }
+table.matrix th.variant, table.matrix td.variant { width: 34%; }
+table.matrix tr.group td { background: #eef1f6; font-weight: bold; }
+table.inputs, table.formal, table.provenance { font-size: 7.5pt; }
+table.formal code, table.provenance code { font-size: 7pt; overflow-wrap: anywhere; }
+table.provenance th { width: 25%; }
+dl.terms { column-count: 2; column-gap: 6mm; font-size: 8pt; margin: 0; }
+dl.terms dt { margin-top: 1mm; break-after: avoid; }
+dl.terms dd { margin: 0; break-inside: avoid; }
+ol.citations { font-size: 8pt; padding-left: 5mm; margin: 0; }
+ol.citations li { overflow-wrap: anywhere; margin-bottom: 1mm; }

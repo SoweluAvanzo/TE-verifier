@@ -121,6 +121,12 @@
   {% set fig_no = {} %}
   {% for fid in figures %}{% set _ = fig_no.update({fid: loop.index}) %}{% endfor %}
 
+  {#- The standard report: a fixed order, at most 12 pages (reports/design.py MAX_PAGES).
+      Each result is stated once: the summary table holds the answers, the sections
+      say what they mean, the annex holds what a specialist needs to check them. -#}
+  {% macro short_sim(text) -%}
+    {{- (text or "—") | replace("appeared in ", "") | replace(" simulated runs", " runs") -}}
+  {%- endmacro %}
   <section class="cover">
     <h1>{{ provenance.spec_name or "Token economy" }}</h1>
     <p class="subtitle">Design and sustainability report, {{ provenance.generated_at[:10] }}</p>
@@ -131,14 +137,15 @@
     {% endif %}
     <h2>The six questions at a glance</h2>
     <table class="glance">
-      <caption>Each question was answered twice: for the <strong>worst case</strong> (the
-        least favourable values within your ranges: if it holds there, it holds always) and
-        for the <strong>typical case</strong> (every value at the middle of its range).</caption>
-      <thead><tr><th>Question</th><th>Worst case</th><th>Typical case</th></tr></thead>
+      <caption>Each question was answered three ways. <strong>Worst case</strong>: the least
+        favourable values within your ranges; if it holds there, it always holds.
+        <strong>Typical case</strong>: every value at the middle of its range.
+        <strong>Simulation</strong>: how many simulated runs showed the problem.</caption>
+      <thead><tr><th class="wide">Question</th><th>Worst case</th><th>Typical case</th><th>Simulation</th></tr></thead>
       <tbody>
       {% for area in assessment.areas %}{% for q in area.questions %}{% for r in q.rows %}
         <tr class="status-{{ r.status }}"><td>{{ q.name }}{% if r.subject %} ({{ r.subject }}){% endif %}</td>
-          <td>{{ r.worst }}</td><td>{{ r.typical }}</td></tr>
+          <td>{{ r.worst }}</td><td>{{ r.typical }}</td><td>{{ short_sim(r.simulation) }}</td></tr>
       {% endfor %}{% endfor %}{% endfor %}
       </tbody>
     </table>
@@ -147,28 +154,19 @@
       Tables and figure descriptions are generated from the results.</p>
   </section>
 
-  {% if terms %}
-  <section class="terms">
-    <h2>Words used in this report</h2>
-    <dl>{% for term, text in terms %}<dt>{{ term }}</dt><dd>{{ text }}</dd>{% endfor %}</dl>
-  </section>
-  {% endif %}
-
   {% set has_design = design.get("description") or design.get("inputs") or design.get("rules")
-     or (design_sections | select("in", narrative) | list) %}
+     or narrative.get("design_overview") %}
   {% if has_design %}
   <section>
     <h2>1. Your design</h2>
     {% if design.get("description") %}
-      <h3>In your words</h3>
-      <blockquote class="designer">{{ design.description }}</blockquote>
+      <blockquote class="designer">{{ design.description | truncate(600) }}</blockquote>
     {% endif %}
-    {% for key in design_sections %}{{ ai_section(key) }}{% endfor %}
+    {% if narrative.get("design_overview") %}<div class="narrative">{{ paras(narrative["design_overview"]) }}</div>{% endif %}
     {% if "flow" in figures %}{{ figure("flow", fig_no["flow"]) }}{% endif %}
     {% if design.get("rules") %}
       <table class="rules">
-        <caption>Every rule that creates or removes tokens, with the activity that triggers it
-          and how many tokens it moves.</caption>
+        <caption>Every rule that creates or removes tokens.</caption>
         <thead><tr><th>Token</th><th></th><th>When</th><th>How many</th></tr></thead>
         <tbody>
         {% for r in design.rules %}
@@ -181,260 +179,131 @@
   {% endif %}
 
   <section>
-    <h2>{% if has_design %}2. {% endif %}Is it sustainable?</h2>
-    <p>A token economy is sustainable only if four things hold at the same time. Each is
-      tested by one or more questions; for each question you find what it asks, why it
-      matters, the result, and what the result means for your design.</p>
-    {% for area in assessment.areas %}
-      <h3>{{ area.title }}</h3>
-      <p class="need">{{ area.need }}</p>
-      {% for q in area.questions %}
-        <article class="question">
-          <h4>{{ q.name }}</h4>
-          <p><strong>The question.</strong> {{ q.question }} <strong>Why it matters.</strong> {{ q.why }}</p>
-          <table class="result">
-            <thead><tr>{% if q.rows | selectattr("subject") | list %}<th>Token</th>{% endif %}<th>Worst case</th><th>Typical case</th><th>If it fails</th><th>Simulation</th></tr></thead>
-            <tbody>
-            {% for r in q.rows %}
-              <tr class="status-{{ r.status }}">{% if q.rows | selectattr("subject") | list %}<td>{{ r.subject }}</td>{% endif %}
-                <td>{{ r.worst }}</td><td>{{ r.typical }}</td><td>{{ r.fixable or "—" }}</td><td>{{ r.simulation or "—" }}</td></tr>
-            {% endfor %}
-            </tbody>
-          </table>
-          {% if q.rows | selectattr("status", "equalto", "inconclusive") | list %}
-            <p class="note">“Not decided” means the mathematical check could not settle this
-              question for every combination of your values, so the simulation was used to
-              see how often the problem actually appears.</p>
-          {% endif %}
-          {% if narrative.get("check_" ~ q.id) %}
-            <div class="narrative">{{ paras(narrative["check_" ~ q.id]) }}</div>
-          {% endif %}
-        </article>
-      {% endfor %}
-    {% endfor %}
-    {% if "simulation" in figures %}
-      <h3>What the simulation showed</h3>
-      {{ figure("simulation", fig_no["simulation"]) }}
-    {% endif %}
+    <h2>{% if has_design %}2. {% endif %}Results, question by question</h2>
+    {% for area in assessment.areas %}{% for q in area.questions %}
+      <article class="question">
+        <h4>{{ q.name }}</h4>
+        <p class="asks">{{ q.question }} {{ q.why }}</p>
+        {% for r in q.rows %}
+          <p class="result-line status-text-{{ r.status }}">{% if r.subject %}{{ r.subject }}: {% endif %}<strong>Worst case:</strong> {{ r.worst }}{% if r.fixable %} ({{ r.fixable }}){% endif %}. <strong>Typical case:</strong> {{ r.typical }}.{% if r.simulation %} <strong>Simulation:</strong> {{ short_sim(r.simulation) }}.{% endif %}</p>
+        {% endfor %}
+        {% if narrative.get("check_" ~ q.id) %}
+          <div class="narrative">{{ paras(narrative["check_" ~ q.id]) }}</div>
+        {% endif %}
+      </article>
+    {% endfor %}{% endfor %}
+    {% if "simulation" in figures %}{{ figure("simulation", fig_no["simulation"]) }}{% endif %}
   </section>
 
-  {% if experiments %}
+  {% if matrix.groups %}
   <section>
-    <h2>{% if has_design %}3. {% endif %}Ideas tested</h2>
-    <p>Each idea was tested by copying the design, changing a few values (a variant), and
-      answering the same six questions for every variant.</p>
-    {% for exp in experiments %}
-      {% set n = loop.index %}
-      <article class="experiment">
-        <h3>Test {{ n }}. {{ exp.title }}</h3>
-        <p><strong>The question.</strong> {{ exp.question }}</p>
-        <table class="variants">
-          <caption>The variants and what each one changes.</caption>
-          <thead><tr><th>Variant</th><th>What it represents</th><th>What changes</th></tr></thead>
-          <tbody>
-          {% for v in exp.variants %}
-            <tr><td>{{ v.name }}</td><td>{{ v.description or ("Your design as it is" if loop.first else "") }}</td>
-              <td>{% for c in v.changes %}{{ change_words(c.path, c.value, design.get("spec", {})) }}{% if not loop.last %}; {% endif %}{% endfor %}</td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-        <table class="verdicts">
-          <caption>The worst-case answer to each question, for each variant.</caption>
-          <thead><tr><th>Question</th>{% for v in exp.variants %}<th>{{ v.name }}</th>{% endfor %}</tr></thead>
-          <tbody>
-          {% for row in exp.variants[0].verdicts %}
-            {% set i = loop.index0 %}
-            <tr><td>{{ check_name(row.failure_mode) }}{% if row.subject != "system" %} ({{ row.subject }}){% endif %}</td>
-              {% for v in exp.variants %}{% set st = v.verdicts[i].status if v.verdicts|length > i else "" %}<td class="cell-{{ st }}">{{ verdict_words.get(st, "—") }}</td>{% endfor %}</tr>
-          {% endfor %}
-          </tbody>
-        </table>
-        {% for fid in figures if fid.startswith("experiment" ~ n ~ "-") %}{{ figure(fid, fig_no[fid]) }}{% endfor %}
-      </article>
-    {% endfor %}
+    <h2>{% if has_design %}3. {% endif %}What was tested</h2>
+    <p>Each idea was tested by copying the design, changing a few values, and answering the
+      same six questions again (worst case).</p>
+    <table class="matrix">
+      <thead><tr><th class="variant">Variant</th>{% for c in matrix.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for g in matrix.groups %}
+        <tr class="group"><td colspan="{{ matrix.columns | length + 1 }}">{{ g.title }}</td></tr>
+        {% for row in g.rows %}
+          <tr><td class="variant"><strong>{{ row.name }}</strong>{% if row.change %}<br>{{ row.change }}{% endif %}</td>
+            {% for st in row.cells %}<td class="cell-{{ st }}">{{ matrix.words.get(st, "—") }}</td>{% endfor %}</tr>
+        {% endfor %}
+      {% endfor %}
+      </tbody>
+    </table>
+    {% for fid in figures if fid.startswith("experiment") %}{{ figure(fid, fig_no[fid]) }}{% endfor %}
   </section>
   {% endif %}
 
   {% if narrative.get("recommendations") %}
   <section>
-    <h2>{% if has_design %}{{ 4 if experiments else 3 }}. {% endif %}{{ sections["recommendations"] }}</h2>
+    <h2>{% if has_design %}{{ 4 if matrix.groups else 3 }}. {% endif %}{{ sections["recommendations"] }}</h2>
     <div class="narrative">{{ paras(narrative["recommendations"]) }}</div>
   </section>
   {% endif %}
 
+  {% if narrative.get("limitations") or narrative.get("legal_feasibility") %}
   <section>
-    <h2>How the design was studied</h2>
-    {% if design.get("steps") %}
-      {% set st = design.steps %}
-      <p>The design was described in a conversation ({{ st.user_turns }} message(s) and
-        {{ st.forms }} form(s) from you): {{ st.answers.committed }} value(s) came from you,
-        {{ st.answers.estimated }} were estimates you kept, and {{ st.answers.unknown }}
-        were unknown. Then, in this order:</p>
-      <ol class="steps">{% for s in st.steps %}<li>{{ s }}</li>{% endfor %}</ol>
+    <h2>{% if has_design %}{{ 5 if matrix.groups else 4 }}. {% endif %}Limits and legal orientation</h2>
+    {% if narrative.get("limitations") %}
+      <h3>{{ sections["limitations"] }}</h3>
+      <div class="narrative">{{ paras(narrative["limitations"]) }}</div>
     {% endif %}
-    <p><strong>The mathematical check (worst case).</strong> Each question corresponds to a
-      condition that a sustainable design must meet, taken from published research on why
-      token economies fail. A computer program searches all combinations of values within
-      your ranges for one that breaks the condition. If there is none, the answer
-      “holds in every case” is a proof, not an estimate; if there is one, the question
-      “can fail”, and the report says whether adjusting your numbers would be enough.</p>
-    <p><strong>The typical case.</strong> The same conditions evaluated with every value at
-      the middle of its range: how the design behaves under ordinary conditions. A question
-      can fail in the worst case and still be fine in the typical case; that means it fails
-      only in less likely combinations of your values.</p>
-    <p><strong>The simulation.</strong> For the questions the mathematical check could not
-      settle for every case, the community was re-enacted on the computer member by member,
-      week by week, many times, with values drawn at random within your ranges, to see how
-      often the problem actually appears and how soon.</p>
-    {{ ai_section("methodology") }}
-  </section>
-
-  {% if design.get("inputs") %}
-  <section>
-      <h2>All the values used</h2>
-      <table class="inputs">
-        <caption>Each value, and where it comes from. “You”: given by you (in your words).
-          “Estimate”: proposed by the assistant on the basis shown, and kept by you.
-          “Unknown”: you did not know it, so every plausible value was checked.</caption>
-        <thead><tr><th>What</th><th>Value</th><th>From</th><th>Your words, or the basis</th></tr></thead>
-        <tbody>
-        {% for i in design.inputs %}
-          <tr class="src-{{ i.status }}"><td>{{ i.label }}</td><td>{{ i.value }}</td>
-            <td>{{ i.source }}</td><td>{{ i.note }}</td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-  </section>
-  {% endif %}
-
-  {% if narrative.get("legal_feasibility") %}
-  <section>
-    <h2>{{ sections["legal_feasibility"] }}</h2>
-    <p class="ai-label">A first orientation from the cited legal sources, not legal advice:
-      have it reviewed by a qualified lawyer in the countries concerned before launch.</p>
-    <div class="narrative">{{ paras(narrative["legal_feasibility"]) }}</div>
-  </section>
-  {% endif %}
-
-  {% if narrative.get("limitations") %}
-  <section>
-    <h2>{{ sections["limitations"] }}</h2>
-    <div class="narrative">{{ paras(narrative["limitations"]) }}</div>
-  </section>
-  {% endif %}
-
-  {% set others = narrative | reject("in", sections) | list %}
-  {% if narrative.get("explanation") or others %}
-  <section class="narrative-extra">
-    <h2>{{ sections["explanation"] }}</h2>
-    {% if narrative.get("explanation") %}<div class="narrative">{{ paras(narrative["explanation"]) }}</div>{% endif %}
-    {% for key in others %}
-      <h3>{{ key | replace("_", " ") | capitalize }}</h3>
-      <div class="narrative">{{ paras(narrative[key]) }}</div>
-    {% endfor %}
-  </section>
-  {% endif %}
-
-  {% if citations %}
-  <section>
-    <h2>References</h2>
-    <ol class="citations">
-    {% for c in citations %}
-      <li>[{{ c.get("citation_key", "") }}] {{ c.get("authors", "") }}{% if c.get("year") %} ({{ c.year }}){% endif %}.
-        <em>{{ c.get("title", "") }}</em>.{% if c.get("venue") %} {{ c.venue }}.{% endif %}
-        {% if c.get("original_url") %}<a href="{{ c.original_url }}">{{ c.original_url }}</a>{% elif c.get("doi") %}doi:{{ c.doi }}{% endif %}</li>
-    {% endfor %}
-    </ol>
+    {% if narrative.get("legal_feasibility") %}
+      <h3>{{ sections["legal_feasibility"] }}</h3>
+      <p class="note">A first orientation from the cited legal sources, not legal advice:
+        have it reviewed by a qualified lawyer in the countries concerned before launch.</p>
+      <div class="narrative">{{ paras(narrative["legal_feasibility"]) }}</div>
+    {% endif %}
   </section>
   {% endif %}
 
   <section class="appendix">
-    <h2>Technical appendix</h2>
-    <p>For specialists: the formal names, conditions and raw results behind the plain
-      answers above. The six questions are the six failure modes (FM1 to FM6) of
-      Domenicale, Avanzo and Schifanella, “Six Failure Modes: A Pre-Deployment Diagnostic
-      Framework for Tokenized Collaborative Economies” (DLT 2026).</p>
+    <h2>Annex</h2>
+    <h3>How the results were obtained</h3>
+    <p class="small"><strong>Worst case:</strong> a program searches all combinations of values
+      within your ranges for one that breaks each condition of the six-failure-mode framework
+      (Domenicale, Avanzo, Schifanella, DLT 2026). If none exists, “holds in every case” is a
+      proof. <strong>Typical case:</strong> the same conditions with every value at the middle
+      of its range. <strong>Simulation:</strong> the community is re-enacted member by member,
+      many times, with values drawn at random within your ranges.</p>
 
-    <h3>A. The questions and their failure modes</h3>
-    <table>
-      <thead><tr><th>Question in this report</th><th>Failure mode</th><th>Verdict</th><th>Triage</th><th>Risk band</th></tr></thead>
+    {% if design.get("inputs") %}
+      <h3>All the values used</h3>
+      <table class="inputs">
+        <caption>“You”: given by you. “Estimate”: proposed by the assistant and kept by you.
+          “Unknown”: you did not know it, so every plausible value was checked.</caption>
+        <thead><tr><th class="wide">What</th><th>Value</th><th>From</th><th class="wide">Your words, or the basis</th></tr></thead>
+        <tbody>
+        {% for i in design.inputs %}
+          <tr class="src-{{ i.status }}"><td>{{ i.label }}</td><td>{{ i.value }}</td>
+            <td>{{ i.source }}</td><td>{{ i.note | truncate(150) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <h3>The formal conditions</h3>
+    <table class="formal">
+      <thead><tr><th>Question</th><th>Result</th><th class="wide">Condition as evaluated</th><th class="wide">What it requires</th></tr></thead>
       <tbody>
       {% for v in verification.verdicts %}
         <tr><td>{{ check_name(v.failure_mode) }}{% if v.subject != "system" %} ({{ v.subject }}){% endif %}</td>
-          <td>{{ v.get("failure_mode_name") or v.failure_mode }}</td><td>{{ v.status }}</td>
-          <td>{{ v.get("structural_status") or "—" }}</td><td>{{ v.risk_level }}</td></tr>
+          <td class="cell-{{ v.status }}">{{ verdict_words.get(v.status, v.status) }}</td>
+          <td><code>{{ v.formal_condition }}</code></td>
+          <td>{% for c in (v.critical_values or [])[:3] %}{{ humanize(c.parameter) }} {{ c.direction }} {{ fmt(c.value) }}{% if not loop.last %}; {% endif %}{% endfor %}</td></tr>
       {% endfor %}
       </tbody>
     </table>
 
-    {% if technical_terms %}
-    <h3>B. Technical terms</h3>
-    <dl class="terms">{% for term, text in technical_terms %}<dt>{{ term }}</dt><dd>{{ text }}</dd>{% endfor %}</dl>
+    {% if terms %}
+      <h3>Words used in this report</h3>
+      <dl class="terms">{% for term, text in terms %}<dt>{{ term }}</dt><dd>{{ text }}</dd>{% endfor %}</dl>
     {% endif %}
 
-    <h3>C. The formal conditions</h3>
-    {% for m in models %}
-      <article class="model">
-        <h4>{{ m.id }}. {{ m.name }} — “{{ check_name(m.id) }}”</h4>
-        <p>{{ m.statement }}</p>
-        <p><strong>Condition for a sustainable design</strong> (paper {{ m.section }}):
-          <code>{{ m.paper_condition }}</code></p>
-        {% if m.checked %}
-          <p><strong>As evaluated</strong> (per subject, with its verdict; for a failing check
-            the formula is the violation found possible):</p>
-          <ul>{% for c in m.checked %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
-        {% endif %}
-        <table class="symbols">
-          <thead><tr><th>Symbol</th><th>Meaning</th><th>Units</th></tr></thead>
-          <tbody>{% for v in m.symbols %}<tr><td>{{ v.symbol }}</td><td>{{ v.name }}: {{ v.description }}</td><td>{{ v.units }}</td></tr>{% endfor %}</tbody>
-        </table>
-      </article>
-    {% endfor %}
+    {% if citations %}
+      <h3>References</h3>
+      <ol class="citations">
+      {% for c in citations %}
+        <li>[{{ c.get("citation_key", "") }}] {{ c.get("authors", "") }}{% if c.get("year") %} ({{ c.year }}){% endif %}.
+          <em>{{ c.get("title", "") }}</em>.{% if c.get("venue") %} {{ c.venue }}.{% endif %}
+          {% if c.get("original_url") %}<a href="{{ c.original_url }}">{{ c.original_url }}</a>{% elif c.get("doi") %}doi:{{ c.doi }}{% endif %}</li>
+      {% endfor %}
+      </ol>
+    {% endif %}
 
-    <h3>D. Verifier output per failure mode</h3>
-    {% for v in verification.verdicts %}
-      <article class="fm">
-        <h4>{{ v.get("failure_mode_name") or v.failure_mode }} — {{ v.subject }}: {{ v.status | replace("_", " ") }}</h4>
-        <p><strong>Formal condition:</strong> <code>{{ v.formal_condition }}</code></p>
-        <p>{{ v.explanation }}</p>
-        {% if v.counterexample %}
-          <p><strong>Counterexample.</strong> {{ v.counterexample.narrative }}</p>
-          <table class="kv">
-            {% for name, value in v.counterexample.parameter_values.items() %}
-              <tr><th>{{ humanize(name) }}</th><td>{{ fmt(value) }}</td></tr>
-            {% endfor %}
-          </table>
-        {% endif %}
-        {% if v.critical_values %}
-          <ul>
-            {% for c in v.critical_values %}
-              <li><strong>{{ humanize(c.parameter) }} {{ c.direction }} {{ fmt(c.value) }}</strong>
-                  ({{ c.formula }}). {{ c.explanation }}</li>
-            {% endfor %}
-          </ul>
-        {% endif %}
-        {% if v.suggestions %}
-          <ul>{% for s in v.suggestions %}<li>{{ s }}</li>{% endfor %}</ul>
-        {% endif %}
-      </article>
-    {% endfor %}
-
-    <h3>E. Provenance</h3>
+    <h3>Provenance</h3>
     <table class="provenance">
       <caption>What this report was computed from, so every result can be reproduced.</caption>
       <tr><th>Spec hash</th><td><code>{{ provenance.spec_hash }}</code></td></tr>
       <tr><th>Verification ref</th><td><code>{{ verification.verification_ref }}</code></td></tr>
       <tr><th>Verifier version</th><td>{{ provenance.verifier_version }}</td></tr>
       <tr><th>Tool policy / protocol</th><td>{{ provenance.policy_version }} / {{ provenance.protocol_version }}</td></tr>
-      {% for exp in experiments %}<tr><th>Test {{ loop.index }}</th><td><code>{{ exp.get("job_id", "") }}</code></td></tr>{% endfor %}
       <tr><th>Generated</th><td>{{ provenance.generated_at }}</td></tr>
     </table>
     {% if provenance.overrides %}
-      <ul>
-      {% for o in provenance.overrides %}
-        <li><code>{{ o.precondition }}</code> on {{ o.tool }}: “{{ o.reason }}”</li>
-      {% endfor %}
-      </ul>
+      <ul>{% for o in provenance.overrides %}<li><code>{{ o.precondition }}</code> on {{ o.tool }}: “{{ o.reason }}”</li>{% endfor %}</ul>
     {% endif %}
   </section>
 

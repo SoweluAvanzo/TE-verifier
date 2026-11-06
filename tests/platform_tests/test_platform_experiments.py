@@ -139,10 +139,10 @@ def test_the_report_prints_the_experiment_with_its_charts_and_notes() -> None:
         figure_notes={i: "The supply levels off." for i in ids},
     )
     text = " ".join("".join(p.extract_text() for p in PdfReader(BytesIO(pdf)).pages).split())
-    assert "Test 1. Burn more" in text and "Does removing more HOUR" in text
+    assert "Test 1. Burn more" in text and "Burn 3" in text
     assert "Figure 1. Test 1: HOUR in circulation, week by week" in text
     assert "What it shows." in text and "The supply levels off." in text
-    assert "Words used in this report" in text and "C. The formal conditions" in text
+    assert "Words used in this report" in text and "The formal conditions" in text
     assert "What this analysis could not check" in text
 
 

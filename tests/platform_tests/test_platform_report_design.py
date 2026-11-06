@@ -81,8 +81,9 @@ MESSAGES = [
 def test_inputs_say_who_gave_each_value_and_why() -> None:
     rows = {r["label"]: r for r in design_context(SPEC, ANSWERS, MESSAGES)["inputs"]}
     n = rows["Active members"]
-    assert (n["value"], n["source"]) == ("30 to 50", "You")
-    assert n["note"] == "about 40 volunteers, between 30 and 50"
+    # This spec holds 50 to 300: the table states what was checked, and the first answer.
+    assert (n["value"], n["source"]) == ("50 to 300", "You")
+    assert n["note"] == "about 40 volunteers, between 30 and 50 First recorded as 30 to 50."
     k = next(r for label, r in rows.items() if label.startswith("Kinds of things to spend on"))
     assert k["source"] == "Estimate" and "17 workshops" in k["note"]
     noticed = rows["Chance that taking without contributing is noticed"]
@@ -172,19 +173,18 @@ def test_the_report_answers_first_then_explains() -> None:
         }
     )
     flat = " ".join(text.split())
-    # The answer comes first, then the design, the six questions, the methods, the
-    # specialists' appendix.
+    # The answer comes first, then the design, the results, the limits, the annex.
     assert flat.index("Not yet sustainable") < flat.index("The six questions at a glance")
     assert (
         flat.index("1. Your design")
-        < flat.index("2. Is it sustainable?")
-        < flat.index("How the design was studied")
-        < flat.index("Technical appendix")
+        < flat.index("2. Results, question by question")
+        < flat.index("Limits and legal orientation")
+        < flat.index("Annex")
     )
     assert "Hours are removed when spent." in flat
-    assert "not legal advice" in flat and "In your words" in flat
+    assert "not legal advice" in flat
     # Jargon only in the appendix: the main part names the questions plainly.
-    main = flat[: flat.index("Technical appendix")]
+    main = flat[: flat.index("Annex")]
     assert "FM1" not in main and "Monte Carlo" not in main and "verifier" not in main.lower()
     assert "HOUR_burn" not in flat  # internal names are humanised
 

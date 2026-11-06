@@ -20,6 +20,7 @@
 ##              tools/report_render_pdf.py.
 ## =============================================================================
 
+import json
 import re
 from typing import Any
 
@@ -197,17 +198,54 @@ def amount_words(ac: dict[str, Any] | None) -> str:
 def rule_words(rule: dict[str, Any], events: dict[str, dict[str, Any]], token: str) -> str:
     """One creation or removal rule as a sentence."""
     fn = rule.get("function") or {}
-    amount = (
-        "an amount given by a formula"
-        if fn.get("expression")
-        else amount_words(fn.get("asymptotic_class"))
-    )
     event_id = (rule.get("trigger") or {}).get("event_id")
     ev = events.get(event_id or "")
-    if ev is None:
+    amount = _amount_of_rule(fn, ev)
+    if ev is None or is_clock_event(ev):
         return f"{amount} {token} per week"
-    freq = amount_words(ev.get("frequency")) if ev.get("frequency") else "an unknown number of"
-    return f"{amount} {token} each time: {ev.get('label', event_id)} ({freq} times a week)"
+    freq = _frequency_words(ev.get("frequency"))
+    return f"{amount} {token} each time, {freq} times a week"
+
+
+def is_clock_event(event: dict[str, Any]) -> bool:
+    """Return True for an event the platform made for a rule that runs by the clock."""
+    return str(event.get("id", "")).startswith("_auto_") and not event.get("frequency")
+
+
+def _amount_of_rule(function: dict[str, Any], event: dict[str, Any] | None) -> str:
+    """Say how much one rule moves, reading the simple expressions people write."""
+    expression = function.get("expression")
+    if not expression:
+        return amount_words(function.get("asymptotic_class"))
+    if isinstance(expression, dict):
+        variable = expression.get("var") or {}
+        if variable.get("ns") == "event" and event is not None:
+            field = (variable.get("path") or [""])[0]
+            for item in event.get("payload") or []:
+                if item.get("name") == field and item.get("range"):
+                    return range_words(item["range"])
+    text = json.dumps(expression) if not isinstance(expression, str) else expression
+    if "state" in text and ("M" in text or "supply" in text):
+        params = ", ".join(
+            f"{str(p.get('name', '')).replace('_', ' ')} {range_words(p['range'])}"
+            for p in function.get("parameters") or []
+            if p.get("range")
+        )
+        return "a share of the tokens in circulation" + (f" ({params})" if params else "") + " of"
+    return "an amount given by a formula of"
+
+
+def _frequency_words(frequency: dict[str, Any] | None) -> str:
+    """Say how often an event happens per week."""
+    if not frequency:
+        return "an unknown number of"
+    if frequency.get("bounds"):
+        return range_words(frequency["bounds"])
+    declared = frequency.get("parameter_ranges") or {}
+    level = declared.get("c") or declared.get("b")
+    if level and not declared.get("a"):
+        return range_words(level)
+    return amount_words(frequency)
 
 
 def _rules_words(value: Any, events: dict[str, Any], tok: str) -> str:
@@ -219,9 +257,9 @@ def _rules_words(value: Any, events: dict[str, Any], tok: str) -> str:
 def _events_words(value: Any, _events: dict[str, Any], _tok: str) -> str:
     return (
         "; ".join(
-            f"{e.get('label', e.get('id'))} ({amount_words(e.get('frequency'))} times a week)"
+            f"{e.get('label', e.get('id'))} ({_frequency_words(e.get('frequency'))} times a week)"
             for e in value
-            if isinstance(e, dict)
+            if isinstance(e, dict) and not is_clock_event(e)
         )
         or "none"
     )

@@ -69,6 +69,10 @@ def display_transcript(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 items.append({"kind": "user_text", "text": b["text"]})
             elif r["role"] == "user" and kind == "tool_result" and b.get("tool_use_id") in forms:
                 items.append(_form_result_item(b))
+    # The conversation ends with no reply after what the assistant last received:
+    # its turn was cut short (a restart, a lost connection) or is still running.
+    if chat and chat[-1]["role"] == "user":
+        items.append({"kind": "unfinished"})
     return items
 
 

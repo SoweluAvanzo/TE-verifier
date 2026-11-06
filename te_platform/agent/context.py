@@ -212,6 +212,12 @@ def current_state_note(facts: SessionFacts, state: str, *, full: bool) -> str:
         f"- State: {state}. Decisive questions still open: {open_slots}.",
         f"- Latest verification: {facts.verification_ref or 'none for the current design'}.",
     ]
+    if facts.answers_not_in_design:
+        lines.append(
+            "- Answers the designer gave that the current design does not hold, so the checks "
+            f"ran without them: {', '.join(facts.answers_not_in_design)}. Save the design again "
+            "with spec.save.v1, which restores them, and verify again."
+        )
     if full and facts.current_spec is not None:
         lines.append(
             "- Current design (older tool output was shortened to fit the model's window):\n"

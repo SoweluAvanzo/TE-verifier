@@ -401,3 +401,75 @@ def test_citations_print_the_collections_data_not_the_models(stored_work: str) -
 def test_a_citation_outside_the_collection_is_refused() -> None:
     citations, unknown = _checked_citations([{"citation_key": "made-up-2024"}])
     assert citations == [] and unknown == ["made-up-2024"]
+
+
+## --- Reaching a report the designer can download ---------------------------------------
+def test_citation_links_are_removed_from_a_report() -> None:
+    from te_platform.tools.report_render_pdf import _without_passage_links  # noqa: PLC0415
+
+    text = "As shown ([Godschalk 2012, p. 9](/literature/passage/14611)), with 8 percent."
+    assert _without_passage_links(text) == "As shown (Godschalk 2012, p. 9), with 8 percent."
+
+
+def test_the_values_table_shows_what_was_checked() -> None:
+    from te_platform.reports.design import _inputs  # noqa: PLC0415
+
+    spec = _template()
+    spec["participants"]["expected_Q"] = {"min": 800, "max": 11200}
+    answer = {
+        "slot_id": "participants.Q",
+        "indices": [],
+        "value": {"min": 100, "max": 4000},
+        "status": "estimated",
+        "user_quote": "",
+    }
+    row = _inputs(spec, [answer], [])[0]
+    assert "11" in row["value"].replace(",", "") and "800" in row["value"]
+    assert "First recorded as" in row["note"]
+
+
+def test_the_values_table_says_when_an_answer_was_not_checked() -> None:
+    from te_platform.reports.design import _inputs  # noqa: PLC0415
+
+    spec = _template()
+    del spec["governance"]["token_balance_gini"]
+    answer = {
+        "slot_id": "governance.gini",
+        "indices": [],
+        "value": {"min": 0.6, "max": 0.8},
+        "status": "committed",
+        "user_quote": "Some members hold much more",
+    }
+    assert "Not part of the design" in _inputs(spec, [answer], [])[0]["note"]
+
+
+def test_answers_the_design_lacks_are_found() -> None:
+    from te_platform.elicitation.ranking import answers_missing_from_spec  # noqa: PLC0415
+
+    spec = _template()
+    del spec["governance"]["token_balance_gini"]
+    answers = [
+        {"slot_id": "governance.gini", "indices": [], "status": "committed"},
+        {"slot_id": "governance.gamma", "indices": [], "status": "estimated"},
+    ]
+    assert answers_missing_from_spec(spec, answers) == ["governance.gini"]
+
+
+def test_the_agent_is_told_about_answers_the_design_lacks() -> None:
+    facts = SessionFacts(session_id="s", owner_id="u", answers_not_in_design=["governance.gini"])
+    assert "governance.gini" in current_state_note(facts, "verified", full=False)
+
+
+def test_a_conversation_cut_short_says_so() -> None:
+    from te_platform.agent.transcript import display_transcript  # noqa: PLC0415
+
+    def assistant(text: str) -> dict:
+        return {"role": "assistant", "content": {"content": [{"type": "text", "text": text}]}}
+
+    answered = [{"role": "user", "content": {"content": [{"type": "text", "text": "hi"}]}}, assistant("hello")]
+    assert all(i["kind"] != "unfinished" for i in display_transcript(answered))
+    cut = [
+        *answered,
+        {"role": "user", "content": {"content": [{"type": "tool_result", "tool_use_id": "x", "content": "{}"}]}},
+    ]
+    assert display_transcript(cut)[-1]["kind"] == "unfinished"

@@ -813,7 +813,7 @@ async def test_report_accepts_numbers_from_the_simulation(
     request = {
         "spec": spec,
         "verification_ref": ref,
-        "narrative": {"explanation": f"In the simulation the value was {written}."},
+        "narrative": {"limitations": f"In the simulation the value was {written}."},
         # One note per chart: with the simulation, its chart is in the report too.
         "figure_notes": {i: "See the table." for i in figure_ids(None, simulation, [])},
     }

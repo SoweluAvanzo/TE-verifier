@@ -28,6 +28,7 @@ from te_platform.errors import InvalidInput
 from te_platform.jobs import queue
 from te_platform.registry.context import CallContext
 from te_platform.registry.spec import ToolSpec
+from te_platform.reports.design import MAX_PAGES
 from te_platform.security.signed_urls import sign_download
 
 
@@ -68,6 +69,12 @@ def _publish(ctx: CallContext, job_id: str, review: str) -> dict[str, Any]:
         raise InvalidInput(
             "The report is not rendered yet: call jobs.status.v1 with wait_s 30, read its "
             "review_text, then publish."
+        )
+    pages = int(job.result.get("pages", 0))
+    if pages > MAX_PAGES:
+        raise InvalidInput(
+            f"The report has {pages} pages, at most {MAX_PAGES}. Render it again with shorter "
+            "sections, or with fewer tests included."
         )
     report_id = str(job.result["report_id"])
     with session_scope() as db:

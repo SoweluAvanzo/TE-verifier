@@ -939,6 +939,7 @@ forms still open; GET /agent/sessions lists the user's conversations. */
       } else if (item.kind === "form_asked" && !pendingIds.has(item.tool_use_id)) askedCard(item);
       else if (item.kind === "form_answers") formSummary(item.answers.map((a) => [a.question, a.display]));
       else if (item.kind === "form_skipped") addLine("tool-line", "Form not answered.");
+      else if (item.kind === "unfinished") addLine("tool-line err", "The assistant has not finished this reply: it may have been interrupted. Nothing is lost: write \"continue\" to carry on.");
     }
     log.scrollTop = log.scrollHeight;
   }

@@ -1282,7 +1282,8 @@ def test_failed_turn_keeps_a_message_with_tool_results(client: TestClient) -> No
         i["kind"]
         for i in client.get(f"/agent/sessions/{sid}", headers=headers).json()["transcript"]
     ]
-    assert kinds[-1] == "form_answers"
+    # The failed turn left no reply, and the transcript says so.
+    assert kinds[-2:] == ["form_answers", "unfinished"]
 
 
 ## An exhausted API account is named as such: retrying cannot help.

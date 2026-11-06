@@ -981,6 +981,11 @@ def _is_rate_variable(variable: str) -> bool:
     return variable.startswith(("rho[", "net_emission_per_period["))
 
 
+def _settles_after_startup(variable: str) -> bool:
+    """Return True for what start-up distorts: a rate, or holdings while few have earned yet."""
+    return _is_rate_variable(variable) or variable in ("effective_gini", "token_balance_gini")
+
+
 def _record_rates(rates: dict[str, list[dict[str, float]]], state: State) -> None:
     """Keep each token's creation and removal of this period (and their capacity)."""
     for token_id, token in state["tokens"].items():
@@ -1101,8 +1106,8 @@ def _run_once(
                 except (KeyError, ZeroDivisionError):
                     value = float("nan")
                 # Deployment (t = 0) is read as declared; then steady-state rates.
-                steady = agent_driven and t > 0 and _is_rate_variable(p.variable)
-                if steady and t >= RATE_STARTUP:
+                steady = agent_driven and t > 0 and _settles_after_startup(p.variable)
+                if steady and t >= RATE_STARTUP and _is_rate_variable(p.variable):
                     token_id = p.variable.partition("[")[2][:-1]
                     value = _steady_rate(p.variable, p.threshold, rates[token_id])
                 if p.variable == "phi_times_K":

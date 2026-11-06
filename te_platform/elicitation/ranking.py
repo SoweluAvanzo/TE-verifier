@@ -343,6 +343,24 @@ def _estimated(items: list[Item], needed: list[Item]) -> list[Question]:
     return [_question(it, matters=it in needed) for it in est]
 
 
+def answers_missing_from_spec(spec: dict[str, Any], answers: list[dict[str, Any]]) -> list[str]:
+    """Return the slots the designer answered that the spec holds no value for."""
+    protocol = current_protocol()
+    missing = []
+    for answer in answers:
+        slot = protocol.slot(answer["slot_id"])
+        if slot is None or slot.answer_type == "list":
+            continue
+        if answer["status"] not in ("committed", "estimated"):
+            continue
+        try:
+            if not has_value(spec, slot.ir_path, tuple(answer["indices"])):
+                missing.append(slot.id)
+        except (KeyError, IndexError, TypeError, ValueError):
+            missing.append(slot.id)
+    return sorted(set(missing))
+
+
 def open_decisive_slots(spec: dict[str, Any], answers: list[dict[str, Any]]) -> list[str]:
     """Return the ids of decisive slots that apply and are not answered yet.
 

@@ -195,6 +195,7 @@ def render_pdf(  # noqa: PLR0913  one argument per report part
         check_name=plain.check_name,
         verdict_words=plain.VERDICT_WORDS,
         experiments=experiments,
+        matrix=method.test_matrix(experiments, (design or {}).get("spec") or {}),
         design=design or {},
         sections=NARRATIVE_SECTIONS,
         design_sections=DESIGN_SECTIONS,

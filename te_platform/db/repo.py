@@ -212,6 +212,7 @@ from te_platform.db import models as m
 
 ## Guide 7.5: the decisive slots still open (renamed: the method has a
 ## parameter called open_decisive_slots).
+from te_platform.elicitation.ranking import answers_missing_from_spec
 from te_platform.elicitation.ranking import open_decisive_slots as ranked_open_slots
 from te_platform.errors import NotFound
 
@@ -382,6 +383,9 @@ class Repository:
             verification_ref=vref,
             verified_spec_hash=current_hash if vref else None,
             open_decisive_slots=sorted(open_decisive_slots),
+            answers_not_in_design=answers_missing_from_spec(
+                spec_row.spec if spec_row else {}, self.get_answers(session_id)
+            ),
             finished_simulation_for_current_ref=sims > 0,
             report_for_current_ref=reports > 0,
             running_jobs=running,
