@@ -101,7 +101,7 @@ def _rule_midpoint_rate(
     # by binding each ParamDecl to the midpoint of its declared range.
     if getattr(rule.function, "expression", None) is not None:
         from verifier.expr_eval import EvalEnv, evaluate
-        from verifier.simulate.trajectory import _initial_supplies
+        from verifier.simulate.trajectory import _initial_supplies, _midpoint_event_payload
         params = {}
         for p in (rule.function.parameters or []):
             params[p.name] = (p.range.min + p.range.max) / 2.0
@@ -111,6 +111,7 @@ def _rule_midpoint_rate(
             state={"t": periods_horizon / 2.0, "M": _initial_supplies(te)},
             params=params,
             consts={"horizon": periods_horizon},
+            event=_midpoint_event_payload(rule, te) or None,
             agents=[], tokens=[], events=[], assets=[],
         )
         try:

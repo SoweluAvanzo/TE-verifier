@@ -1099,6 +1099,16 @@ class LiteratureRepository:
                 changed += 1
         return changed
 
+    def works_by_keys(self, citation_keys: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Return the bibliography and link of the given works, by citation key."""
+        works = self._db.scalars(select(m.Work).where(m.Work.citation_key.in_(list(citation_keys))))
+        found = {}
+        for w in works:
+            row = _work_row(w)
+            row["original_url"] = w.source_url or (f"https://doi.org/{w.doi}" if w.doi else None)
+            found[w.citation_key] = row
+        return found
+
     def work_outline(self, citation_key: str) -> dict[str, Any]:
         """Return a work's data and its sections in reading order, for choosing what to read."""
         work = self._db.scalar(select(m.Work).where(m.Work.citation_key == citation_key))

@@ -98,10 +98,10 @@
 ## SOLUTION: complete reference code (commented out on purpose)
 ## =============================================================================
 
-from typing import Any
+from typing import Annotated, Any
 
 import anyio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from te_platform.config import get_settings
 from te_platform.db.repo import Repository
@@ -113,6 +113,14 @@ from te_platform.registry.policy import load_policy
 from te_platform.registry.spec import ToolSpec
 
 
+def _at_most_six(value: Any) -> Any:
+    """Cap a larger request at what one form holds: asking for more is not an error."""
+    try:
+        return min(int(value), 6)
+    except (TypeError, ValueError):
+        return value
+
+
 class NextQuestionsInput(BaseModel):
     """What a caller sends to elicit.next_questions.v1."""
 
@@ -122,7 +130,7 @@ class NextQuestionsInput(BaseModel):
         "the output then contains the new session_id, to pass in every later call.",
     )
     # Short interview: the few "ask" questions go in one form, so up to 6.
-    max_questions: int = Field(
+    max_questions: Annotated[int, BeforeValidator(_at_most_six)] = Field(
         default=6,
         ge=1,
         le=6,

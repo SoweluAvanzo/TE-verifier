@@ -99,6 +99,71 @@ def _all_emission_capped(te: TokenEconomy, token: Token) -> bool:
     )
 
 
+def _declared_burn_lower_bound(token: Token, te: TokenEconomy) -> float:
+    """Lowest declared per-period removal: each rule's lowest amount times lowest frequency."""
+    from verifier.events_resolver import resolve_trigger
+    from verifier.expr_eval import EvalEnv, evaluate
+    from verifier.failure_modes.fm1_oversupply import _event_amounts
+
+    total = 0.0
+    for rule in token.burn_rules:
+        expression = getattr(rule.function, "expression", None)
+        if expression is None:
+            return 0.0
+        params = {p.name: p.range.min for p in (rule.function.parameters or [])}
+        try:
+            amount = float(
+                evaluate(
+                    expression,
+                    EvalEnv(
+                        state={"t": 0.0},
+                        params=params,
+                        consts={"horizon": 52.0},
+                        event=_event_amounts(rule, te, "min"),
+                        agents=[],
+                        tokens=[],
+                        events=[],
+                        assets=[],
+                    ),
+                )
+            )
+        except Exception:
+            return 0.0
+        frequency = resolve_trigger(rule, te).event_frequency
+        total += amount * (_frequency_lowest(frequency) if frequency is not None else 1.0)
+    return max(0.0, total)
+
+
+def _frequency_lowest(frequency) -> float:
+    """Lowest value of a constant, bounded or linear frequency (at t = 0)."""
+    if frequency.bounds is not None:
+        return frequency.bounds.min
+    for name in ("c", "b"):
+        declared = frequency.parameter_ranges.get(name)
+        if declared is not None:
+            return declared.min
+    return 0.0
+
+
+def _rates_vary_independently(token: Token, te: TokenEconomy) -> bool:
+    """Return True when creation and removal follow different events with ranged frequencies."""
+    from verifier.events_resolver import resolve_trigger
+
+    def ranged_events(rules) -> set[str]:
+        found = set()
+        for rule in rules:
+            frequency = resolve_trigger(rule, te).event_frequency
+            if rule.trigger.event_id is None or frequency is None:
+                continue
+            bounds = [frequency.bounds, *frequency.parameter_ranges.values()]
+            if any(b is not None and b.max > b.min for b in bounds):
+                found.add(rule.trigger.event_id)
+        return found
+
+    created, removed = ranged_events(token.emission_rules), ranged_events(token.burn_rules)
+    return bool(created) and bool(removed) and not (created & removed)
+
+
 class FM3BurnEmission(FailureMode):
     name = "FM3: Burn / Emission Imbalance"
     description = (
@@ -282,16 +347,21 @@ class FM3BurnEmission(FailureMode):
         # Critical value — ρ* is the configurable floor. The actionable
         # quantity is the implied burn rate: any model with ρ < ρ_floor
         # tells the user how much more burn they need.
+        floor_reason = (
+            f" (raised from {config.rho_floor:g} by the declared resilience goal, NFR1)"
+            if nfr1_mult != 1.0
+            else ""
+        )
         critical_values: list[CriticalValue] = [
             CriticalValue(
                 parameter="rho",
-                value=RHO_BURN_COVERAGE_FLOOR,
+                value=rho_floor_effective,
                 direction=">=",
-                formula=f"ρ* = {RHO_BURN_COVERAGE_FLOOR:g}   (configurable floor)",
+                formula=f"ρ* = {rho_floor_effective:g}   (configurable floor{floor_reason})",
                 explanation=(
                     f"Burn coverage ratio ρ = B/E must reach at least "
-                    f"{RHO_BURN_COVERAGE_FLOOR:g} for the steady-state "
-                    f"supply stability condition to hold."
+                    f"{rho_floor_effective:g} for the steady-state "
+                    f"supply stability condition to hold{floor_reason}."
                 ),
                 source="config",
             )
@@ -308,7 +378,7 @@ class FM3BurnEmission(FailureMode):
         result = solver.check()
         if result == z3.sat:
             model = solver.model()
-            ce = self._build_counterexample(model, token, E_total, B_total)
+            ce = self._build_counterexample(model, token, E_total, B_total, rho_floor_effective)
             structural_note = self._structural_note(
                 is_demand_driven=is_demand_driven, is_rule_driven=is_rule_driven
             )
@@ -338,14 +408,43 @@ class FM3BurnEmission(FailureMode):
                 and E_val < 0.1 * E_declared_ub
                 and not wide_declaration
             )
-            if wide_declaration:
+            # Creation and removal driven by different events with ranged
+            # frequencies vary independently: the check must hold when the
+            # first is at its highest and the second at its lowest. Z3's
+            # witness is only one violating point, so a burn floor read from
+            # it would not make the check pass.
+            B_declared_lb = _declared_burn_lower_bound(token, te)
+            independent = _rates_vary_independently(token, te)
+            worst_case_burn = E_declared_ub * rho_floor_effective
+            if independent and not wide_declaration:
+                E_val = E_declared_ub
+                B_val = B_declared_lb
+                narrative = (
+                    f"Creation and removal of {token.id} are driven by separate events "
+                    f"whose frequencies are declared independently: up to "
+                    f"≈{E_declared_ub:g} tokens can be created in a period in which as "
+                    f"few as ≈{B_declared_lb:g} are removed. Matching the amount per "
+                    f"event does not close this gap. For the check to hold, the lowest "
+                    f"removal must reach ≈{worst_case_burn:g} per period. Either narrow "
+                    f"the declared frequencies to what really occurs together, or cap "
+                    f"the tokens in circulation (outstanding_supply_cap), so creation "
+                    f"stops at the cap whatever the event counts."
+                    + (
+                        f" With the declared resilience goal the floor is "
+                        f"{rho_floor_effective:g}: a cap bounds the supply, but this "
+                        f"check still asks removal to exceed creation."
+                        if rho_floor_effective > 1.0
+                        else ""
+                    )
+                )
+            elif wide_declaration:
                 narrative = (
                     f"Your declared emission range for {token.id} permits "
                     f"up to ≈{E_declared_ub:g} tokens/period — more than "
                     f"3× the upper Q bound ({Q_hi:g}/period). Z3 picked "
                     f"E ≈ {E_val:g} as the worst-case witness, which is "
                     f"why the implied burn floor "
-                    f"({E_val * RHO_BURN_COVERAGE_FLOOR:.2f}) is so high. "
+                    f"({E_val * rho_floor_effective:.2f}) is so high. "
                     f"The first-order fix is to **narrow your declared "
                     f"emission range** so its upper bound reflects the "
                     f"realistic maximum. Once narrowed, the implied burn "
@@ -379,14 +478,14 @@ class FM3BurnEmission(FailureMode):
                 )
                 narrative = (
                     f"Raise per-period burn for {token.id} to at least "
-                    f"{E_val * RHO_BURN_COVERAGE_FLOOR:.2f} tokens — the "
+                    f"{E_val * rho_floor_effective:.2f} tokens — the "
                     f"emission rate at the worst-case Z3 assignment. "
                     + tail
                 )
             recommendation = NumericRecommendation(
                 parameter="B_per_period",
                 current_range=(B_val, B_val),
-                safe_threshold=E_val * RHO_BURN_COVERAGE_FLOOR,
+                safe_threshold=E_val * rho_floor_effective,
                 direction=">=",
                 narrative=narrative,
             )
@@ -398,11 +497,11 @@ class FM3BurnEmission(FailureMode):
                     f"ρ = B/E∞ < {rho_floor_effective:g}, E∞ = min(E, B) "
                     f"(capped; insufficient burn coverage)"
                     if cap is not None
-                    else f"ρ = B/E < {RHO_BURN_COVERAGE_FLOOR} (insufficient burn coverage)"
+                    else f"ρ = B/E < {rho_floor_effective:g} (insufficient burn coverage)"
                 ),
                 explanation=(
                     f"There exist parameter values for {token.id} under which "
-                    f"burn coverage ratio ρ falls below {RHO_BURN_COVERAGE_FLOOR}, "
+                    f"burn coverage ratio ρ falls below {rho_floor_effective:g}, "
                     f"meaning supply grows faster than it can be retired. "
                     f"{structural_note}"
                 ),
@@ -420,10 +519,10 @@ class FM3BurnEmission(FailureMode):
             failure_mode=self.name,
             subject=token.id,
             status=Status.PASS,
-            formal_condition=f"ρ ≥ {RHO_BURN_COVERAGE_FLOOR} for all parameter values",
+            formal_condition=f"ρ ≥ {rho_floor_effective:g} for all parameter values",
             explanation=(
                 f"Burn coverage ratio ρ for {token.id} stays at or above "
-                f"{RHO_BURN_COVERAGE_FLOOR} under every parameter assignment "
+                f"{rho_floor_effective:g} under every parameter assignment "
                 f"in the declared ranges."
                 + (
                     f" Burn is demand-driven, which is the structurally strong "
@@ -665,6 +764,7 @@ class FM3BurnEmission(FailureMode):
         token: Token,
         E_total: z3.ArithRef,
         B_total: z3.ArithRef,
+        floor: float = RHO_BURN_COVERAGE_FLOOR,
     ) -> Counterexample:
         params: dict[str, float] = {}
         for d in model.decls():
@@ -681,7 +781,7 @@ class FM3BurnEmission(FailureMode):
         narrative = (
             f"With these parameter values, average emission ≈ {E_val:.2f}/period "
             f"and average burn ≈ {B_val:.2f}/period, giving ρ ≈ {rho:.3f} "
-            f"(below the {RHO_BURN_COVERAGE_FLOOR} floor)."
+            f"(below the {floor:g} floor)."
         )
         return Counterexample(parameter_values=params, narrative=narrative)
 
@@ -701,6 +801,10 @@ class FM3BurnEmission(FailureMode):
         s.append(
             "Consider a threshold-driven burn that activates when supply "
             "exceeds a target M*."
+        )
+        s.append(
+            "Cap the tokens in circulation (outstanding_supply_cap): creation "
+            "then stops at the cap, so supply cannot outgrow removal."
         )
         return s
 

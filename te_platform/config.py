@@ -261,6 +261,10 @@ class Settings(BaseSettings):
     # The short interview records ~20 estimates in one turn (one call each).
     agent_max_tool_calls_per_turn: int = 40
     agent_max_seconds_per_turn: float = 180.0
+    # Prompt size at which agent/context.py starts thinning superseded tool output.
+    # Keep it well below the model's real window: some servers silently drop the
+    # START of a longer prompt (Utopia's qwen: at 131072 tokens, measured).
+    agent_context_tokens: int = 100_000
     agent_session_token_budget: int = 400_000
     agent_mcp_url: str = "http://mcp:8000/mcp"
     agent_mcp_api_key: pydantic.SecretStr | None = None

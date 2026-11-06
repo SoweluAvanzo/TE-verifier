@@ -128,6 +128,43 @@ def resolve_action_set(agent_type) -> list[ActionKind]:
     return list(DEFAULT_ACTION_SET_BY_ROLE[AgentRole.UNSPECIFIED.value])
 
 
+def with_spending_path(te):
+    """Return ``te`` with a way to realize its burn rules in the agent loop.
+
+    Burn pools are drained only by agents choosing REDEEM. A design whose
+    participants both earn and spend is often declared with one type, role
+    ``contributor``, whose default actions exclude REDEEM, and its tokens could
+    then never be retired however the burn rules read. Types with no declared
+    action set may therefore also spend, as much as they earn. An action set
+    the author declared is kept: that is a statement about the design.
+    """
+    if not any(token.burn_rules for token in te.tokens):
+        return te
+    types = te.participants.agent_types
+    if any(ActionKind.REDEEM in resolve_action_set(at) for at in types):
+        return te
+    adapted = []
+    for at in types:
+        if at.action_set or ActionKind.EARN not in resolve_action_set(at):
+            adapted.append(at)
+            continue
+        utility = at.utility
+        if utility is None:
+            weights = resolve_utility(at)
+            utility = UtilityWeights(**{**weights, "redemption_value": weights["income_yield"]})
+        adapted.append(
+            at.model_copy(
+                update={
+                    "action_set": [*resolve_action_set(at), ActionKind.REDEEM],
+                    "utility": utility,
+                }
+            )
+        )
+    return te.model_copy(
+        update={"participants": te.participants.model_copy(update={"agent_types": adapted})}
+    )
+
+
 def resolve_utility(agent_type) -> dict[str, float]:
     """Get UtilityWeights for an agent type as a plain dict.
 
@@ -774,6 +811,32 @@ def prepare_pools(
         value = _sample_stochastic_rule_value(rule, freq_ac, freq_dist, sampler, state)
         pools[token_id][side] = pools[token_id].get(side, 0.0) + value
     return pools
+
+
+def redeem_remaining(
+    redeemers: list[dict[str, Any]],
+    state: dict[str, Any],
+    pools: dict[str, dict[str, float]],
+    realized: dict[str, dict[str, float]],
+    token_id: str,
+) -> None:
+    """Draw what is left of the burn pool from this period's redeemers, by balance.
+
+    A redeemer first takes an equal share, limited by its balance. What others
+    could not pay is demand all the same, so those who still hold tokens cover
+    it; without this the burn was understated whenever one redeemer held less
+    than the share, while creation has no such limit.
+    """
+    left = pools.get(token_id, {}).get("B", 0.0) - realized[token_id]["B"]
+    held = sum(a.get("balance", 0.0) for a in redeemers)
+    if left <= 0 or held <= 0:
+        return
+    paid = min(left, held)
+    for agent in redeemers:
+        part = paid * agent.get("balance", 0.0) / held
+        agent["balance"] = agent.get("balance", 0.0) - part
+    state["tokens"][token_id]["M"] = max(0.0, state["tokens"][token_id]["M"] - paid)
+    realized[token_id]["B"] += paid
 
 
 def compute_pool_shares(

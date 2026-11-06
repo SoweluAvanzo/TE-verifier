@@ -53,6 +53,21 @@ def _has_xt_mint(te: TokenEconomy, token: Token) -> bool:
     )
 
 
+def _event_amounts(rule, te, side: str) -> dict[str, float] | None:
+    """The scalar fields of a rule's triggering event, at the "min" or "max" of their range."""
+    if te is None or rule.trigger.event_id is None:
+        return None
+    try:
+        event = te.get_event(rule.trigger.event_id)
+    except KeyError:
+        return None
+    return {
+        field.name: getattr(field.range, side)
+        for field in (event.payload or [])
+        if getattr(field, "range", None) is not None
+    }
+
+
 def _declared_emission_upper_bound(token: Token, te=None) -> float:
     """Heuristic upper bound of the declared per-period emission.
 
@@ -129,6 +144,7 @@ def _declared_emission_upper_bound(token: Token, te=None) -> float:
                         state={"t": H},
                         params=params,
                         consts={"horizon": H},
+                        event=_event_amounts(rule, te, "max"),
                         agents=[], tokens=[], events=[], assets=[],
                     ),
                 ))

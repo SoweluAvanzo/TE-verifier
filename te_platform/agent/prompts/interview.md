@@ -92,6 +92,63 @@ The designer chose a conversation over filling in a long form, so the conversati
 - For core numbers, ask for a realistic lowest and highest value, not a single number. Do not put your own number in a core question; a number you offer first tends to become their answer (anchoring). Your numbers belong in the estimates.
 - When an answer is vague, ask one concrete follow-up (an example, or which of two meanings), and only when it changes a core fact.
 
+## Writing a whole design
+When answers are many, or `elicit.record_answer.v1` cannot hold a shape, write the whole design and store it with `spec.save.v1`. This shape is valid; change every value to this design's. Periods are weeks.
+```yaml
+meta:
+  name: Example design
+  archetype: community_reward   # native_protocol_asset, stablecoin, governance_utility_pair, play_to_earn_dual, community_reward, other
+  nfrs: {resilience: 3, adaptability: 3, accessibility: 3, transparency: 3, proportionality: 3, circulation_speed: balanced, governance_maturity: short_term}
+events:
+  - id: contribution
+    label: A member contributes
+    kind: behavioral
+    payload: [{name: amount, type: scalar, range: {min: 7, max: 7}}]   # tokens per event
+    frequency: {family: bounded_range, bounds: {min: 50, max: 150}}    # events per period
+  - id: use
+    label: A member uses the service
+    kind: demand_driven
+    payload: [{name: amount, type: scalar, range: {min: 5, max: 5}}]
+    frequency: {family: bounded_range, bounds: {min: 50, max: 150}}
+tokens:
+  - id: CREDIT
+    function: [medium_of_exchange]
+    offer_variety_K: {min: 6, max: 6}
+    contribution_verification: physical_presence
+    redemption_mechanism: fungible_access
+    emission_rules:
+      - trigger: {event_id: contribution}
+        function: {sign: always_positive, expression: "event.amount"}
+    burn_rules:
+      - trigger: {event_id: use}
+        function: {sign: always_positive, expression: "event.amount"}
+      # Tokens that expire when unspent, here after a year: a rule on the supply itself.
+      - trigger: {kind: time_based}
+        function:
+          sign: always_positive
+          expression: "state.M['CREDIT'] / param.expiry_periods"
+          parameters: [{name: expiry_periods, range: {min: 52, max: 52}}]
+governance:
+  type: committee
+  rule_structure: {token_creation: committee, token_removal: committee, membership: committee, rewards: committee, prices: committee, rules: committee}
+  monitoring_capacity_gamma: {min: 0.5, max: 0.5}
+  sanction_structure: {kind: graduated}
+  token_balance_gini: {min: 0.3, max: 0.5}
+participants:
+  count_N: {min: 10, max: 100}
+  expected_Q: {min: 800, max: 11200}
+  average_demand_d: {min: 1, max: 4}
+  growth_g: {family: constant, parameter_ranges: {c: {min: 0, max: 0.01}}}
+  topology: well_mixed
+  agent_types:
+    - id: member
+      fraction: 1.0
+      role: contributor
+      expected_holding_time: {expected_periods: {min: 4, max: 12}}
+      action_set: [earn, redeem, hold, transfer]   # redeem: they also spend, so tokens get retired
+```
+Frequencies declared separately vary independently in the checks: the highest creation is compared with the lowest removal. If two events really move together, give them the frequencies that occur together, and say this assumption to the designer. To bound the supply whatever the event counts, add `outstanding_supply_cap: {min: ..., max: ...}` to the token.
+
 ## Estimates
 - Always give the designer quantitative estimates, never an empty field: a clear proposal they can accept with one click is the whole point of talking to you.
 - An estimate must be defensible: derived from their own numbers (for example, trade volume from members times trades per week), or a typical value for this kind of system, stated as such in the basis. Widen the range where you are unsure, rather than leaving the input unknown.

@@ -493,7 +493,7 @@ re-rendered (Markdown may only be valid once more text has arrived). */
             }
             break;
           case "done":
-            if (ev.reason === "limit_reached") addLine("tool-line err", "Stopped: limit for this turn reached.");
+            if (ev.reason === "limit_reached") addLine("tool-line err", "This step ran out of time before finishing. Nothing is lost: write \"continue\" to carry on.");
             if (ev.reason === "refusal") addLine("tool-line err", "The assistant could not help with that request.");
             break;
         }

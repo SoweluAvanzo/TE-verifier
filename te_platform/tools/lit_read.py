@@ -30,6 +30,8 @@ PASSAGES_PER_CALL = 8
 class LitReadInput(BaseModel):
     """What a caller sends to lit.read.v1."""
 
+    session_id: str | None = Field(default=None, description="The design session, if any.")
+
     what: Literal["outline", "section", "around"] = Field(
         description="'outline': the sections of a work. 'section': the passages of one "
         "section. 'around': the passages before and after one passage."

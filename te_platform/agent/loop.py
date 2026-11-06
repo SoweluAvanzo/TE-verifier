@@ -191,12 +191,14 @@
 ## typed a message instead).
 
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import anyio
 
+from te_platform.agent.context import current_state_note, fit_history, prompt_tokens
 from te_platform.agent.events import (
     AgentEvent,
     ConfirmationRequired,
@@ -234,6 +236,8 @@ from te_platform.config import get_settings
 from te_platform.registry.context import CallContext, Principal, SessionFacts
 from te_platform.registry.policy import Policy
 from te_platform.registry.state import compute_state, tools_for_state
+
+log = logging.getLogger("te_platform.agent")
 
 
 @dataclass
@@ -362,6 +366,25 @@ class AgentLoop:
         # ask_user (agent/forms.py) runs here, in the agent, in every state;
         # always LAST, so the order of the MCP tools never shifts.
         return [*mcp_tools, ASK_USER_TOOL]
+
+    async def _prompt_for_model(
+        self, history: list[dict[str, Any]], tools: list[Any]
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Return the system prompt and history to send (agent/context.py).
+
+        The stored history is never changed: only what this request sees.
+        """
+        facts = await self.load_facts()
+        ctx = CallContext(principal=self.principal, tool_id="", tool_input={}, session=facts)
+        state = compute_state(ctx, self.policy)
+        fixed = prompt_tokens(self.system) + prompt_tokens(json.dumps(tools, default=str))
+        messages, thinned = fit_history(history, self.s.agent_context_tokens - fixed)
+        system = f"{self.system}\n\n{current_state_note(facts, state, full=thinned.level > 0)}"
+        if thinned.level > 0:
+            log.info("context thinned: level %s, %s tokens", thinned.level, thinned.tokens)
+        if thinned.over_budget:
+            log.warning("context over budget: %s tokens", thinned.tokens)
+        return system, messages
 
     async def _append(self, history: list[dict[str, Any]], message: dict[str, Any]) -> None:
         history.append(message)
@@ -543,9 +566,9 @@ class AgentLoop:
         """Send one request with the tools of the current state; forward its text."""
         # `pev` = PROVIDER event (providers/base.py), not to be confused
         # with the agent's own UI events (events.py) yielded to the browser.
-        async for pev in self.p.stream(
-            system=self.system, messages=history, tools=await self._allowed_tools()
-        ):
+        tools = await self._allowed_tools()
+        system, messages = await self._prompt_for_model(history, tools)
+        async for pev in self.p.stream(system=system, messages=messages, tools=tools):
             if isinstance(pev, TextDelta):
                 yield TextEvent(text=pev.text)
             elif isinstance(pev, ToolCall):

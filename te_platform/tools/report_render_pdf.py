@@ -121,7 +121,7 @@ import anyio
 from pydantic import BaseModel, Field
 
 from te_platform.config import get_settings
-from te_platform.db.repo import Repository
+from te_platform.db.repo import LiteratureRepository, Repository
 from te_platform.db.session import session_scope
 from te_platform.errors import InvalidInput, NotFound
 from te_platform.jobs import queue
@@ -229,6 +229,21 @@ def _load_results(
         }
 
 
+def _checked_citations(
+    citations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return the citations with their bibliography from the collection, and unknown keys.
+
+    The model's copy of a title or link is not evidence: what the report prints
+    comes from the collection. Page and passage stay as the model cited them.
+    """
+    keys = [str(c.get("citation_key", "")) for c in citations]
+    with session_scope() as db:
+        known = LiteratureRepository(db).works_by_keys(keys)
+    checked = [{**c, **known[k]} for c, k in zip(citations, keys, strict=True) if k in known]
+    return checked, sorted({k for k in keys if k not in known})
+
+
 async def handle(inp: ReportRenderInput, ctx: CallContext) -> ReportRenderOutput:
     """Check the narrative's numbers, then queue the PDF rendering."""
     vref = ctx.facts.verification_ref
@@ -253,8 +268,11 @@ async def handle(inp: ReportRenderInput, ctx: CallContext) -> ReportRenderOutput
     ids = figure_ids(results["design"], results["simulation"], results["experiments"])
     missing = [i for i in ids if not inp.figure_notes.get(i, "").strip()]
     extra = sorted(set(inp.figure_notes) - set(ids))
+    # Every problem is reported at once: a report is long, and rewriting it for
+    # one complaint at a time wastes a model call each, near the context limit.
+    complaints: list[str] = []
     if missing or extra:
-        raise InvalidInput(
+        complaints.append(
             "figure_notes must interpret every chart of the report. "
             + (f"Missing: {', '.join(missing)}. " if missing else "")
             + (f"Not in this report: {', '.join(extra)}. " if extra else "")
@@ -276,17 +294,26 @@ async def handle(inp: ReportRenderInput, ctx: CallContext) -> ReportRenderOutput
     # appendix, which the report generates itself (reports/plain.py).
     wordy = {k: jargon(v) for k, v in texts.items() if jargon(v)}
     if wordy:
-        raise InvalidInput(
+        complaints.append(
             "Write for a reader who does not know the research or its vocabulary. Replace: "
             + "; ".join(f"in {k}: {', '.join(terms)}" for k, terms in wordy.items())
         )
-    problems = check_narrative(texts, collect_numbers([evidence, inp.citations]))
+    citations, unknown_keys = await anyio.to_thread.run_sync(
+        lambda: _checked_citations(inp.citations)
+    )
+    if unknown_keys:
+        complaints.append(
+            "These citations are not in the literature collection, so they cannot be cited: "
+            + ", ".join(unknown_keys)
+        )
+    problems = check_narrative(texts, collect_numbers([evidence, citations]))
     if problems:
-        # InvalidInput -> VALIDATION_ERROR with this message: the agent sees
-        # exactly which numbers to remove or correct.
-        raise InvalidInput(
+        # The agent sees exactly which numbers to remove or correct.
+        complaints.append(
             "The narrative contains numbers not found in the results: " + "; ".join(problems)
         )
+    if complaints:
+        raise InvalidInput(" ".join(complaints))
 
     # 4. Queue the rendering. report_id is chosen here so the download URL
     #    can be signed now, before the PDF exists. Every call makes a NEW
@@ -304,7 +331,7 @@ async def handle(inp: ReportRenderInput, ctx: CallContext) -> ReportRenderOutput
         "include_simulations": inp.include_simulations,
         "session_id": inp.session_id,
         "expires_at": expires_at.isoformat(),
-        "citations": inp.citations,
+        "citations": citations,
         "figure_notes": inp.figure_notes,
     }
     job_id = await anyio.to_thread.run_sync(

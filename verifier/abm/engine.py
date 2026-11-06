@@ -53,6 +53,8 @@ from schema import (
 from verifier import elicitation
 from schema import ActionKind
 from verifier.abm.actions import (
+    redeem_remaining,
+    with_spending_path,
     apply_reputation_decay,
     build_type_cache,
     compute_pool_shares,
@@ -331,6 +333,7 @@ def _build_initial_state(
 ) -> tuple[State, dict[str, Any]]:
     """Sample once per run, build the initial state + frozen params dict
     (which the per-period step function reuses)."""
+    te = with_spending_path(te)
     token_ids = [t.id for t in te.tokens]
     state = initial_state(token_ids=token_ids, t=0)
 
@@ -785,12 +788,20 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
                 agents_by_id=agents_by_id,
             )
 
+        if primary_token_id in realized:
+            redeem_remaining(
+                [a for a, ak in decisions if ak == ActionKind.REDEEM],
+                state, pools, realized, primary_token_id,
+            )
+
         # Overlay realized rates onto the per-period state. Stochastic
         # rules' samples are still drawn (above, via prepare_pools);
         # the difference is that pool depletion is now agent-driven.
         for tid in state["tokens"]:
             state["tokens"][tid]["E"] = realized[tid]["E"]
             state["tokens"][tid]["B"] = realized[tid]["B"]
+            state["tokens"][tid]["E_capacity"] = pools[tid].get("E", 0.0)
+            state["tokens"][tid]["B_capacity"] = pools[tid].get("B", 0.0)
 
         # Phase-E follow-up: realize cross-token flows in the agent
         # path. The pre-Phase-E ABM threaded cross_token_flows into
@@ -950,6 +961,72 @@ def _step_state(state: State, params: dict[str, Any]) -> State:
 # ---------------------------------------------------------------------------
 
 
+# FM1 and FM3 state conditions on creation and removal RATES in steady state
+# (docs/proofs/fm3.md). A single period does not show one: at launch nobody
+# holds tokens, so nothing can be retired and rho = 0 in every run. So after
+# the deployment check at t = 0, they are read over a trailing window once the
+# start-up has passed, in agent-driven runs. Weekly periods: half a year.
+RATE_WINDOW = 26
+RATE_STARTUP = 2 * RATE_WINDOW
+# Removal cannot exceed what exists: when the burn capacity covers creation and
+# most of what was created is being removed, the supply is levelling off: measured
+# coverage rises towards 1 whatever the capacity, as holdings build up until those
+# who spend can pay the full burn. Far below that, agents are not really spending:
+# measured on capacity 1.14 x creation, half-year coverage stays above about 0.8
+# from the second half-year on, and is 0 when the declared types cannot spend.
+SUPPLY_LIMITED_COVERAGE = 0.75
+
+
+def _is_rate_variable(variable: str) -> bool:
+    return variable.startswith(("rho[", "net_emission_per_period["))
+
+
+def _record_rates(rates: dict[str, list[dict[str, float]]], state: State) -> None:
+    """Keep each token's creation and removal of this period (and their capacity)."""
+    for token_id, token in state["tokens"].items():
+        rates.setdefault(token_id, []).append(
+            {
+                "E": token["E"],
+                "B": token["B"],
+                "E_capacity": token.get("E_capacity", token["E"]),
+                "B_capacity": token.get("B_capacity", token["B"]),
+            }
+        )
+
+
+def _steady_rate(variable: str, threshold: float, rates: list[dict[str, float]]) -> float:
+    """Return a rate variable over the trailing window (header above)."""
+    window = rates[-RATE_WINDOW:]
+    created = sum(r["E"] for r in window)
+    removed = sum(r["B"] for r in window)
+    if variable.startswith("net_emission_per_period["):
+        return (created - removed) / len(window)
+    if created <= 0:
+        return threshold  # nothing created: coverage says nothing (0/0)
+    measured = removed / created
+    capacity = sum(r["E_capacity"] for r in window)
+    planned = sum(r["B_capacity"] for r in window) / capacity if capacity > 0 else measured
+    if planned >= threshold and measured >= SUPPLY_LIMITED_COVERAGE:
+        return planned
+    return measured
+
+
+def _contribution_margin(
+    phi_history: list[float], state: State, declared_d_max: float
+) -> float:
+    """Return φ·K comparable with FM4's threshold, for THIS run's demand.
+
+    The threshold is written for the highest declared demand (the static check
+    must hold for all of them); a run has its own demand d, so it asks
+    φ·K >= d·(...), that is φ·K·(d_max/d) >= d_max·(...). φ is averaged over the
+    trailing window: agents act at random, and one quiet period is no collapse.
+    """
+    window = phi_history[-RATE_WINDOW:]
+    phi_times_K = (sum(window) / len(window)) * (max(state["K"].values()) if state["K"] else 0.0)
+    d = state.get("d", 0.0)
+    return phi_times_K * declared_d_max / d if d > 0 else float("inf")
+
+
 def _run_once(
     te: TokenEconomy,
     sampler: Sampler,
@@ -1009,7 +1086,13 @@ def _run_once(
             for key, preds in fm_predicates.items()
         }
 
+    agent_driven = bool(state.get("agents"))
+    rates: dict[str, list[dict[str, float]]] = {}
+    phi_history: list[float] = []
     for t in range(horizon + 1):
+        if agent_driven:
+            _record_rates(rates, state)
+        phi_history.append(state["phi"])
         for key, preds in fm_predicates.items():
             holds = []
             for pidx, p in enumerate(preds):
@@ -1017,9 +1100,18 @@ def _run_once(
                     value = derived_variable(state, p.variable)
                 except (KeyError, ZeroDivisionError):
                     value = float("nan")
+                # Deployment (t = 0) is read as declared; then steady-state rates.
+                steady = agent_driven and t > 0 and _is_rate_variable(p.variable)
+                if steady and t >= RATE_STARTUP:
+                    token_id = p.variable.partition("[")[2][:-1]
+                    value = _steady_rate(p.variable, p.threshold, rates[token_id])
+                if p.variable == "phi_times_K":
+                    value = _contribution_margin(
+                        phi_history, state, te.participants.average_demand_d.max
+                    )
                 if trajectories is not None:
                     trajectories[key][pidx][t] = value
-                holds.append(_check_safety(p, value))
+                holds.append(True if steady and t < RATE_STARTUP else _check_safety(p, value))
             # Alternatives (alternative_group) are OR-ed, the rest AND-ed.
             if first_violation[key] is None and not fm_safe(preds, holds):
                 first_violation[key] = t

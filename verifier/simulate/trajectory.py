@@ -206,10 +206,7 @@ def _rule_base_rate_at(rule, t: float, te=None, supply=None) -> float:
         params = {}
         for p in (rule.function.parameters or []):
             params[p.name] = (p.range.min + p.range.max) / 2.0
-        event_payload = {}
-        # Event payload not threadable from this layer without a TE
-        # handle. _ac_at_time path below is the legacy fallback when
-        # the expression references only state/param.
+        event_payload = _midpoint_event_payload(rule, te)
         try:
             fn = float(_ev(
                 rule.function.expression,
@@ -231,6 +228,26 @@ def _rule_base_rate_at(rule, t: float, te=None, supply=None) -> float:
     else:
         fn = _ac_at_time(rule.function.asymptotic_class, t)
     return fn * _freq_factor_at(rule, t, te)
+
+
+def _midpoint_event_payload(rule, te) -> dict[str, float]:
+    """Midpoint of each scalar field of the rule's triggering event.
+
+    Without it, a rule written ``event.amount`` could not be evaluated here and
+    counted as a rate of 0, so the trajectory showed no creation and no removal.
+    """
+    event_id = rule.trigger.event_id
+    if te is None or event_id is None:
+        return {}
+    try:
+        event = te.get_event(event_id)
+    except KeyError:
+        return {}
+    return {
+        field.name: (field.range.min + field.range.max) / 2.0
+        for field in (event.payload or [])
+        if getattr(field, "range", None) is not None
+    }
 
 
 def _freq_factor_at(rule, t: float, te=None) -> float:

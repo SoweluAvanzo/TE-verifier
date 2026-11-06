@@ -271,7 +271,30 @@ def _suggestions(registry: Registry, ctx: CallContext) -> list[Suggestion]:
 ## One `return` per refusal keeps the steps in the order they run, readable
 ## top to bottom; splitting them into helpers would hide that order. Hence
 ## the two complexity rules are switched off for this one function.
-async def _run_steps(  # noqa: C901, PLR0911  one exit per pipeline step, see above
+def _decode_json_arguments(
+    raw_input: dict[str, Any], error: ValidationError
+) -> dict[str, Any] | None:
+    """Return the input with objects and lists sent as JSON text decoded, if there are any.
+
+    Some models send every argument as a string ('{"values": [7, 9]}'). Where
+    the schema asked for an object or a list, and the text is one, the intent
+    is not in doubt; the model should not spend a turn on it.
+    """
+    decoded = dict(raw_input)
+    changed = False
+    for item in error.errors(include_url=False):
+        key = item["loc"][0] if item["loc"] else None
+        value = decoded.get(key) if isinstance(key, str) else None
+        if isinstance(value, str) and value.lstrip()[:1] in {"[", "{"}:
+            try:
+                decoded[key] = json.loads(value)
+            except ValueError:
+                continue
+            changed = True
+    return decoded if changed else None
+
+
+async def _run_steps(  # noqa: C901, PLR0911, PLR0912  one exit per pipeline step, see above
     registry: Registry,
     tool_id: str,
     raw_input: dict[str, Any],
@@ -302,7 +325,13 @@ async def _run_steps(  # noqa: C901, PLR0911  one exit per pipeline step, see ab
 
     # 3. validate input against the tool's Pydantic model.
     try:
-        validated = tool.input_model.model_validate(raw_input)
+        try:
+            validated = tool.input_model.model_validate(raw_input)
+        except ValidationError as first:
+            decoded = _decode_json_arguments(raw_input, first)
+            if decoded is None:
+                raise
+            validated = tool.input_model.model_validate(decoded)
     except ValidationError as exc:
         return _fail(
             ctx,

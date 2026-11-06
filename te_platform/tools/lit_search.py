@@ -74,7 +74,7 @@
 from typing import Literal
 
 import anyio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from te_platform.literature import search as lit
 from te_platform.literature.catalog import SystemType
@@ -87,6 +87,12 @@ FailureMode = Literal["FM1", "FM2", "FM3", "FM4", "FM5", "FM6"]
 
 class LitSearchInput(BaseModel):
     """What a caller sends to lit.search.v1."""
+
+    # A misspelt filter must be refused: ignored, the search would run unfiltered
+    # and the agent would believe it had filtered.
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str | None = Field(default=None, description="The design session, if any.")
 
     query: str = Field(
         min_length=3,
